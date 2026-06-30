@@ -11,9 +11,9 @@
 - [x] **P1.1** Khởi tạo monorepo: `backend/`, `frontend/`, `docker/`, `nginx/`, `scripts/`
 - [x] **P1.2** FastAPI project structure (routers, services, models, schemas, core)
 - [x] **P1.3** `core/config.py` — Pydantic Settings đọc `.env`
-- [ ] **P1.4** Auth: register, login (JWT access + refresh)
-- [ ] **P1.5** Auth: logout (blacklist token qua Redis)
-- [ ] **P1.6** RBAC: role `user` / `admin` + `get_current_user` dependency
+- [x] **P1.4** Auth: register, login (JWT access + refresh)
+- [x] **P1.5** Auth: logout (blacklist token qua Redis)
+- [x] **P1.6** RBAC: role `user` / `admin` + `get_current_user` dependency
 - [ ] **P1.7** CRUD module `repositories` (thêm/xóa/xem repo URL)
 - [ ] **P1.8** Module `review_jobs` (tạo job, lấy status, cancel)
 - [ ] **P1.9** Module `reports` (query report, issues list filter/pagination)
@@ -28,13 +28,13 @@
 - [ ] **P1.18** Error handling middleware + custom exceptions
 
 **Done khi:**
-- [ ] `/auth/register`, `/auth/login`, `/auth/refresh`, `/auth/logout` hoạt động
-- [ ] JWT + RBAC đúng
+- [x] `/auth/register`, `/auth/login`, `/auth/refresh`, `/auth/logout` hoạt động
+- [x] JWT + RBAC đúng
 - [ ] CRUD `/repositories` hoạt động
 - [ ] `POST /review-jobs` tạo job + enqueue Celery
 - [ ] Worker clone repo, chạy structure + static analysis
 - [ ] Ruff/Bandit parse thành `NormalizedIssue`
-- [ ] `/docs` (Swagger) hoạt động
+- [x] `/docs` (Swagger) hoạt động
 
 ---
 
@@ -60,10 +60,10 @@
 ## PHASE 3 — Database Layer (Ngày 8–11)
 
 **PostgreSQL**
-- [ ] **P3.1** SQLAlchemy 2.0 async engine + session factory
-- [ ] **P3.2** Models: User, Repository, ReviewJob, ReviewReport, ReviewIssue, JobStatusHistory
-- [ ] **P3.3** Relationships + FK + indexes
-- [ ] **P3.4** Alembic setup + initial migration
+- [x] **P3.1** SQLAlchemy 2.0 async engine + session factory
+- [x] **P3.2** Models: User, Repository, ReviewJob, ReviewReport, ReviewIssue, JobStatusHistory
+- [x] **P3.3** Relationships + FK + indexes
+- [x] **P3.4** Alembic setup + initial migration
 
 **MongoDB**
 - [ ] **P3.5** Motor (async PyMongo) client setup
@@ -72,8 +72,8 @@
 - [ ] **P3.8** CRUD helpers theo collection
 
 **Redis**
-- [ ] **P3.9** Redis async client setup
-- [ ] **P3.10** Token blacklist service (set + TTL)
+- [x] **P3.9** Redis async client setup
+- [x] **P3.10** Token blacklist service (set + TTL)
 - [ ] **P3.11** Pub/Sub cho job progress
 - [ ] **P3.12** Rate limiting per user (counter + TTL)
 
