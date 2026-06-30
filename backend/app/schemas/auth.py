@@ -73,6 +73,13 @@ class TokenPairResponse(BaseModel):
     user: UserResponse
 
 
+class AccessTokenResponse(BaseModel):
+    """Public auth response returned when refresh token is stored in a cookie."""
+
+    access_token: str
+    user: UserResponse
+
+
 class LogoutResponse(BaseModel):
     """Response returned after blacklisting the current access token."""
 

@@ -1,17 +1,21 @@
 """Application settings loaded from environment variables and .env."""
 
 from functools import lru_cache
+from pathlib import Path
 from typing import Literal
 
 from pydantic import SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+BACKEND_DIR = Path(__file__).resolve().parents[2]
+PROJECT_ROOT = BACKEND_DIR.parent
 
 
 class Settings(BaseSettings):
     """Runtime configuration for the RepoGuard AI backend."""
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=(PROJECT_ROOT / ".env", BACKEND_DIR / ".env"),
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",
@@ -21,6 +25,13 @@ class Settings(BaseSettings):
     environment: str = "development"
     debug: bool = False
     api_prefix: str = "/api"
+    cors_allowed_origins: list[str] = [
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+    ]
+    cors_allowed_origin_regex: str | None = (
+        r"^https?://(localhost|127\.0\.0\.1|[0-9]{1,3}(\.[0-9]{1,3}){3}):300[0-9]$"
+    )
 
     postgres_host: str = "localhost"
     postgres_port: int = 5432

@@ -13,6 +13,7 @@ from app.core.dependencies import (
 from app.core.exceptions import AuthenticationError
 from app.models.user import User
 from app.schemas.auth import (
+    AccessTokenResponse,
     LoginRequest,
     LogoutRequest,
     LogoutResponse,
@@ -46,24 +47,28 @@ async def register(
 
 @router.post(
     "/login",
-    response_model=TokenPairResponse,
+    response_model=AccessTokenResponse,
     summary="Login with email and password",
 )
 async def login(
     payload: LoginRequest,
     response: Response,
     auth_service: Annotated[AuthService, Depends(get_auth_service)],
-) -> TokenPairResponse:
+) -> AccessTokenResponse:
     """Authenticate credentials and return a new token pair."""
 
     token_pair = await auth_service.login(payload)
     _set_refresh_cookie(response, token_pair.refresh_token)
-    return token_pair
+    _delete_legacy_access_cookie(response)
+    return AccessTokenResponse(
+        access_token=token_pair.access_token,
+        user=token_pair.user,
+    )
 
 
 @router.post(
     "/refresh",
-    response_model=TokenPairResponse,
+    response_model=AccessTokenResponse,
     summary="Refresh JWT tokens",
 )
 async def refresh(
@@ -71,7 +76,7 @@ async def refresh(
     auth_service: Annotated[AuthService, Depends(get_auth_service)],
     payload: Annotated[RefreshTokenRequest | None, Body()] = None,
     refresh_token_cookie: Annotated[str | None, Cookie(alias="refreshToken")] = None,
-) -> TokenPairResponse:
+) -> AccessTokenResponse:
     """Rotate a valid refresh token into a new access/refresh pair."""
 
     refresh_token = (
@@ -82,7 +87,11 @@ async def refresh(
 
     token_pair = await auth_service.refresh(refresh_token)
     _set_refresh_cookie(response, token_pair.refresh_token)
-    return token_pair
+    _delete_legacy_access_cookie(response)
+    return AccessTokenResponse(
+        access_token=token_pair.access_token,
+        user=token_pair.user,
+    )
 
 
 @router.post(
@@ -105,6 +114,7 @@ async def logout(
     )
     await auth_service.logout(access_token, refresh_token)
     _delete_refresh_cookie(response)
+    _delete_legacy_access_cookie(response)
     return LogoutResponse(message=f"User {current_user.email} logged out")
 
 
@@ -128,9 +138,10 @@ def _set_refresh_cookie(response: Response, refresh_token: str) -> None:
         key=settings.refresh_cookie_name,
         value=refresh_token,
         max_age=max_age,
+        path="/api/auth",
         httponly=True,
-        secure=settings.refresh_cookie_secure,
-        samesite=settings.refresh_cookie_samesite,
+        secure=True,
+        samesite="lax",
     )
 
 
@@ -138,7 +149,18 @@ def _delete_refresh_cookie(response: Response) -> None:
     settings = get_settings()
     response.delete_cookie(
         key=settings.refresh_cookie_name,
+        path="/api/auth",
         httponly=True,
-        secure=settings.refresh_cookie_secure,
-        samesite=settings.refresh_cookie_samesite,
+        secure=True,
+        samesite="lax",
+    )
+
+
+def _delete_legacy_access_cookie(response: Response) -> None:
+    response.delete_cookie(
+        key="auth_token",
+        path="/",
+        httponly=True,
+        secure=True,
+        samesite="lax",
     )

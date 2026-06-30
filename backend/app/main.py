@@ -2,14 +2,18 @@
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+import logging
 
 from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.core.config import get_settings
 from app.core.exceptions import AppError
 from app.db.redis import close_redis_client
 from app.routers.auth import router as auth_router
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -30,6 +34,15 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.cors_allowed_origins,
+    allow_origin_regex=settings.cors_allowed_origin_regex,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 
 @app.exception_handler(AppError)
 async def handle_app_error(_request: Request, error: AppError) -> JSONResponse:
@@ -43,6 +56,20 @@ async def handle_app_error(_request: Request, error: AppError) -> JSONResponse:
         status_code=error.status_code,
         content={"detail": error.detail},
         headers=headers,
+    )
+
+
+@app.exception_handler(Exception)
+async def handle_unexpected_error(
+    _request: Request,
+    error: Exception,
+) -> JSONResponse:
+    """Return a stable JSON response for unexpected errors during development."""
+
+    logger.exception("Unhandled backend error")
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal server error"},
     )
 
 

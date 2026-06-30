@@ -94,11 +94,11 @@
 
 ## PHASE 4 — Frontend Next.js 15 (Ngày 12–17)
 
-- [ ] **P4.1** Setup Next.js 15 App Router + Tailwind + shadcn/ui
-- [ ] **P4.2** Axios instance + interceptor auto-refresh token
-- [ ] **P4.3** Zustand stores: `authStore`, `jobStore`, `filterStore`
+- [x] **P4.1** Setup Next.js 15 App Router + Tailwind + shadcn/ui
+- [x] **P4.2** Axios instance + interceptor auto-refresh token
+- [x] **P4.3** Redux Toolkit: `authSlice`, `jobSlice`, `filterSlice` + typed hooks
 - [ ] **P4.4** TypeScript types cho mọi API response
-- [ ] **P4.5** `/login`, `/register` + protected route middleware
+- [x] **P4.5** `/login`, `/register` + protected route middleware
 - [ ] **P4.6** Dashboard layout: sidebar + navbar responsive
 - [ ] **P4.7** `/dashboard` — overview, stats cards
 - [ ] **P4.8** `/repositories` + `/repositories/[id]`

@@ -28,6 +28,7 @@ class DecodedToken(TypedDict):
 
     subject: UUID
     token_type: TokenType
+    issued_at: datetime
     expires_at: datetime
     token_id: str
 
@@ -82,13 +83,17 @@ def decode_token(token: str, expected_type: TokenType) -> DecodedToken:
 
     subject = payload.get("sub")
     token_type = payload.get("type")
+    issued_at = payload.get("iat")
     expires_at = payload.get("exp")
     token_id = payload.get("jti")
 
     if not isinstance(subject, str) or not isinstance(token_type, str):
         raise AuthenticationError("Invalid token claims")
 
-    if not isinstance(expires_at, int) or not isinstance(token_id, str):
+    if not isinstance(issued_at, int) or not isinstance(expires_at, int):
+        raise AuthenticationError("Invalid token claims")
+
+    if not isinstance(token_id, str):
         raise AuthenticationError("Invalid token claims")
 
     if token_type != expected_type.value:
@@ -102,6 +107,7 @@ def decode_token(token: str, expected_type: TokenType) -> DecodedToken:
     return DecodedToken(
         subject=user_id,
         token_type=expected_type,
+        issued_at=datetime.fromtimestamp(issued_at, tz=UTC),
         expires_at=datetime.fromtimestamp(expires_at, tz=UTC),
         token_id=token_id,
     )

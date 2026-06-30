@@ -3,7 +3,7 @@
 from typing import Annotated
 
 from fastapi import Depends
-from fastapi.security import OAuth2PasswordBearer
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -17,7 +17,7 @@ from app.repositories.user_repository import UserRepository
 from app.services.auth_service import AuthService
 from app.services.token_blacklist import TokenBlacklistService
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
+bearer_scheme = HTTPBearer()
 
 
 async def get_redis() -> Redis:
@@ -43,11 +43,11 @@ async def get_auth_service(
 
 
 async def get_current_access_token(
-    token: Annotated[str, Depends(oauth2_scheme)],
+    credentials: Annotated[HTTPAuthorizationCredentials, Depends(bearer_scheme)],
 ) -> str:
     """Extract the current bearer access token from Authorization header."""
 
-    return token
+    return credentials.credentials
 
 
 async def get_current_user(
@@ -60,7 +60,13 @@ async def get_current_user(
     is_blacklisted = await auth_service.token_blacklist_service.is_blacklisted(
         decoded_token["token_id"]
     )
-    if is_blacklisted:
+    is_user_token_invalid = (
+        await auth_service.token_blacklist_service.is_user_token_invalid(
+            decoded_token["subject"],
+            decoded_token["issued_at"],
+        )
+    )
+    if is_blacklisted or is_user_token_invalid:
         raise AuthenticationError("Access token has been revoked")
 
     return await auth_service.get_active_user(decoded_token["subject"])

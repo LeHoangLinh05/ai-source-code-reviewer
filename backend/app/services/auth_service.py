@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 import logging
 from uuid import UUID
 
+from app.core.config import get_settings
 from app.core.exceptions import (
     AuthenticationError,
     ConflictError,
@@ -101,6 +102,12 @@ class AuthService:
         await self.token_blacklist_service.add_to_blacklist(
             decoded_access_token["token_id"],
             max(ttl_seconds, 0),
+        )
+        settings = get_settings()
+        await self.token_blacklist_service.invalidate_user_tokens_issued_before(
+            decoded_access_token["subject"],
+            datetime.now(UTC),
+            settings.jwt_access_token_expire_minutes * 60,
         )
         if refresh_token is None:
             return
