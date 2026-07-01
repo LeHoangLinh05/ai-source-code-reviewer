@@ -10,7 +10,6 @@ export type User = {
 };
 
 export type AuthResponse = {
-  access_token: string;
   user: User;
 };
 

@@ -2,22 +2,30 @@
 
 from typing import Annotated
 
-from fastapi import Depends
+from fastapi import Cookie, Depends
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import get_settings
 from app.core.exceptions import AuthenticationError, AuthorizationError
 from app.core.security import TokenType, decode_token
 from app.db.postgres import get_async_session
 from app.db.redis import get_redis_client
 from app.models.user import User, UserRole
 from app.repositories.refresh_token_repository import RefreshTokenRepository
+from app.repositories.report_repository import ReportRepository
+from app.repositories.repository_repository import RepositoryRepository
+from app.repositories.review_job_repository import ReviewJobRepository
 from app.repositories.user_repository import UserRepository
 from app.services.auth_service import AuthService
+from app.services.job_service import ReviewJobService
+from app.services.job_queue_service import JobQueueService
+from app.services.report_service import ReportService
+from app.services.repository_service import RepositoryService
 from app.services.token_blacklist import TokenBlacklistService
 
-bearer_scheme = HTTPBearer()
+bearer_scheme = HTTPBearer(auto_error=False)
 
 
 async def get_redis() -> Redis:
@@ -42,12 +50,58 @@ async def get_auth_service(
     )
 
 
-async def get_current_access_token(
-    credentials: Annotated[HTTPAuthorizationCredentials, Depends(bearer_scheme)],
-) -> str:
-    """Extract the current bearer access token from Authorization header."""
+async def get_repository_service(
+    session: Annotated[AsyncSession, Depends(get_async_session)],
+) -> RepositoryService:
+    """Build repository service with request-scoped DB access."""
 
-    return credentials.credentials
+    repository_repository = RepositoryRepository(session)
+    return RepositoryService(repository_repository)
+
+
+async def get_review_job_service(
+    session: Annotated[AsyncSession, Depends(get_async_session)],
+) -> ReviewJobService:
+    """Build review job service with request-scoped DB access."""
+
+    review_job_repository = ReviewJobRepository(session)
+    repository_repository = RepositoryRepository(session)
+    job_queue_service = JobQueueService()
+    return ReviewJobService(
+        review_job_repository,
+        repository_repository,
+        job_queue_service,
+    )
+
+
+async def get_report_service(
+    session: Annotated[AsyncSession, Depends(get_async_session)],
+) -> ReportService:
+    """Build report service with request-scoped DB access."""
+
+    report_repository = ReportRepository(session)
+    return ReportService(report_repository)
+
+
+async def get_current_access_token(
+    credentials: Annotated[
+        HTTPAuthorizationCredentials | None,
+        Depends(bearer_scheme),
+    ],
+    access_token_cookie: Annotated[
+        str | None,
+        Cookie(alias=get_settings().access_cookie_name),
+    ] = None,
+) -> str:
+    """Extract the current access token from bearer auth or HttpOnly cookie."""
+
+    if credentials is not None:
+        return credentials.credentials
+
+    if access_token_cookie is not None:
+        return access_token_cookie
+
+    raise AuthenticationError("Access token is required")
 
 
 async def get_current_user(

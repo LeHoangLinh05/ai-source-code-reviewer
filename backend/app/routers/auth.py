@@ -13,13 +13,12 @@ from app.core.dependencies import (
 from app.core.exceptions import AuthenticationError
 from app.models.user import User
 from app.schemas.auth import (
-    AccessTokenResponse,
+    AuthSessionResponse,
     LoginRequest,
     LogoutRequest,
     LogoutResponse,
     RefreshTokenRequest,
     RegisterRequest,
-    TokenPairResponse,
     UserResponse,
 )
 from app.services.auth_service import AuthService
@@ -29,7 +28,7 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 
 @router.post(
     "/register",
-    response_model=TokenPairResponse,
+    response_model=AuthSessionResponse,
     status_code=status.HTTP_201_CREATED,
     summary="Register a user account",
 )
@@ -37,38 +36,37 @@ async def register(
     payload: RegisterRequest,
     response: Response,
     auth_service: Annotated[AuthService, Depends(get_auth_service)],
-) -> TokenPairResponse:
-    """Create a user account and return access and refresh tokens."""
+) -> AuthSessionResponse:
+    """Create a user account and store auth tokens in cookies."""
 
     token_pair = await auth_service.register(payload)
+    _set_access_cookie(response, token_pair.access_token)
     _set_refresh_cookie(response, token_pair.refresh_token)
-    return token_pair
+    return AuthSessionResponse(user=token_pair.user)
 
 
 @router.post(
     "/login",
-    response_model=AccessTokenResponse,
+    response_model=AuthSessionResponse,
     summary="Login with email and password",
 )
 async def login(
     payload: LoginRequest,
     response: Response,
     auth_service: Annotated[AuthService, Depends(get_auth_service)],
-) -> AccessTokenResponse:
+) -> AuthSessionResponse:
     """Authenticate credentials and return a new token pair."""
 
     token_pair = await auth_service.login(payload)
+    _set_access_cookie(response, token_pair.access_token)
     _set_refresh_cookie(response, token_pair.refresh_token)
     _delete_legacy_access_cookie(response)
-    return AccessTokenResponse(
-        access_token=token_pair.access_token,
-        user=token_pair.user,
-    )
+    return AuthSessionResponse(user=token_pair.user)
 
 
 @router.post(
     "/refresh",
-    response_model=AccessTokenResponse,
+    response_model=AuthSessionResponse,
     summary="Refresh JWT tokens",
 )
 async def refresh(
@@ -76,7 +74,7 @@ async def refresh(
     auth_service: Annotated[AuthService, Depends(get_auth_service)],
     payload: Annotated[RefreshTokenRequest | None, Body()] = None,
     refresh_token_cookie: Annotated[str | None, Cookie(alias="refreshToken")] = None,
-) -> AccessTokenResponse:
+) -> AuthSessionResponse:
     """Rotate a valid refresh token into a new access/refresh pair."""
 
     refresh_token = (
@@ -86,12 +84,10 @@ async def refresh(
         raise AuthenticationError("Refresh token is required")
 
     token_pair = await auth_service.refresh(refresh_token)
+    _set_access_cookie(response, token_pair.access_token)
     _set_refresh_cookie(response, token_pair.refresh_token)
     _delete_legacy_access_cookie(response)
-    return AccessTokenResponse(
-        access_token=token_pair.access_token,
-        user=token_pair.user,
-    )
+    return AuthSessionResponse(user=token_pair.user)
 
 
 @router.post(
@@ -113,9 +109,30 @@ async def logout(
         payload.refresh_token if payload is not None else refresh_token_cookie
     )
     await auth_service.logout(access_token, refresh_token)
+    _delete_access_cookie(response)
     _delete_refresh_cookie(response)
     _delete_legacy_access_cookie(response)
     return LogoutResponse(message=f"User {current_user.email} logged out")
+
+
+@router.post(
+    "/logout-all",
+    response_model=LogoutResponse,
+    summary="Logout all sessions",
+)
+async def logout_all(
+    response: Response,
+    access_token: Annotated[str, Depends(get_current_access_token)],
+    current_user: Annotated[User, Depends(get_current_user)],
+    auth_service: Annotated[AuthService, Depends(get_auth_service)],
+) -> LogoutResponse:
+    """Revoke every refresh token issued for the current user."""
+
+    await auth_service.logout_all(access_token, current_user)
+    _delete_access_cookie(response)
+    _delete_refresh_cookie(response)
+    _delete_legacy_access_cookie(response)
+    return LogoutResponse(message=f"All sessions for {current_user.email} logged out")
 
 
 @router.get(
@@ -131,6 +148,20 @@ async def get_me(
     return current_user
 
 
+def _set_access_cookie(response: Response, access_token: str) -> None:
+    settings = get_settings()
+    max_age = settings.jwt_access_token_expire_minutes * 60
+    response.set_cookie(
+        key=settings.access_cookie_name,
+        value=access_token,
+        max_age=max_age,
+        path="/api",
+        httponly=True,
+        secure=settings.refresh_cookie_secure,
+        samesite=settings.refresh_cookie_samesite,
+    )
+
+
 def _set_refresh_cookie(response: Response, refresh_token: str) -> None:
     settings = get_settings()
     max_age = settings.jwt_refresh_token_expire_days * 24 * 60 * 60
@@ -140,8 +171,19 @@ def _set_refresh_cookie(response: Response, refresh_token: str) -> None:
         max_age=max_age,
         path="/api/auth",
         httponly=True,
-        secure=True,
-        samesite="lax",
+        secure=settings.refresh_cookie_secure,
+        samesite=settings.refresh_cookie_samesite,
+    )
+
+
+def _delete_access_cookie(response: Response) -> None:
+    settings = get_settings()
+    response.delete_cookie(
+        key=settings.access_cookie_name,
+        path="/api",
+        httponly=True,
+        secure=settings.refresh_cookie_secure,
+        samesite=settings.refresh_cookie_samesite,
     )
 
 
@@ -151,8 +193,8 @@ def _delete_refresh_cookie(response: Response) -> None:
         key=settings.refresh_cookie_name,
         path="/api/auth",
         httponly=True,
-        secure=True,
-        samesite="lax",
+        secure=settings.refresh_cookie_secure,
+        samesite=settings.refresh_cookie_samesite,
     )
 
 

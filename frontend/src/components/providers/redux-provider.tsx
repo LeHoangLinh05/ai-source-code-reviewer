@@ -39,7 +39,6 @@ export function ReduxProvider({ children }: ReduxProviderProps) {
 
         store.dispatch(
           setCredentials({
-            accessToken: response.data.access_token,
             user: response.data.user,
           }),
         );

@@ -73,10 +73,9 @@ class TokenPairResponse(BaseModel):
     user: UserResponse
 
 
-class AccessTokenResponse(BaseModel):
-    """Public auth response returned when refresh token is stored in a cookie."""
+class AuthSessionResponse(BaseModel):
+    """Public auth response returned when tokens are stored in cookies."""
 
-    access_token: str
     user: UserResponse
 
 

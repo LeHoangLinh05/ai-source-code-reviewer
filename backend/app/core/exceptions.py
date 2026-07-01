@@ -28,6 +28,13 @@ class AuthorizationError(AppError):
     detail = "Permission denied"
 
 
+class BadRequestError(AppError):
+    """Raised when a request payload or query parameter is invalid."""
+
+    status_code = status.HTTP_400_BAD_REQUEST
+    detail = "Invalid request"
+
+
 class ConflictError(AppError):
     """Raised when a requested resource already exists."""
 
@@ -39,6 +46,13 @@ class InactiveUserError(AuthenticationError):
     """Raised when a valid token belongs to a disabled user."""
 
     detail = "User account is inactive"
+
+
+class NotFoundError(AppError):
+    """Raised when a requested resource does not exist."""
+
+    status_code = status.HTTP_404_NOT_FOUND
+    detail = "Resource not found"
 
 
 class ServiceUnavailableError(AppError):

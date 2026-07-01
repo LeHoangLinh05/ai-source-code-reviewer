@@ -12,6 +12,9 @@ from app.core.config import get_settings
 from app.core.exceptions import AppError
 from app.db.redis import close_redis_client
 from app.routers.auth import router as auth_router
+from app.routers.repositories import router as repositories_router
+from app.routers.reports import router as reports_router
+from app.routers.review_jobs import router as review_jobs_router
 
 logger = logging.getLogger(__name__)
 
@@ -74,3 +77,6 @@ async def handle_unexpected_error(
 
 
 app.include_router(auth_router, prefix=settings.api_prefix)
+app.include_router(repositories_router, prefix=settings.api_prefix)
+app.include_router(review_jobs_router, prefix=settings.api_prefix)
+app.include_router(reports_router, prefix=settings.api_prefix)

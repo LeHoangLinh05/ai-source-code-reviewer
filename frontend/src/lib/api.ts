@@ -5,7 +5,7 @@ import axios, {
 } from "axios";
 
 import { store } from "@/store";
-import { clearCredentials, setAccessToken } from "@/store/slices/authSlice";
+import { clearCredentials, setCredentials } from "@/store/slices/authSlice";
 import type { AuthResponse } from "@/types/auth";
 import { clearSessionMarker } from "@/lib/session-marker";
 
@@ -25,16 +25,12 @@ export const api = axios.create({
   },
 });
 
-let refreshRequest: Promise<string> | null = null;
+let refreshRequest: Promise<void> | null = null;
 
 function redirectToLogin() {
   if (typeof window !== "undefined") {
     window.location.replace("/login");
   }
-}
-
-function getAccessToken() {
-  return store.getState().auth.accessToken;
 }
 
 async function refreshAccessToken() {
@@ -47,10 +43,7 @@ async function refreshAccessToken() {
       } as AxiosRequestConfig,
     )
     .then((response) => {
-      const accessToken = response.data.access_token;
-
-      store.dispatch(setAccessToken(accessToken));
-      return accessToken;
+      store.dispatch(setCredentials({ user: response.data.user }));
     })
     .finally(() => {
       refreshRequest = null;
@@ -58,16 +51,6 @@ async function refreshAccessToken() {
 
   return refreshRequest;
 }
-
-api.interceptors.request.use((config) => {
-  const accessToken = getAccessToken();
-
-  if (accessToken) {
-    config.headers.Authorization = `Bearer ${accessToken}`;
-  }
-
-  return config;
-});
 
 api.interceptors.response.use(
   (response) => response,
@@ -86,8 +69,7 @@ api.interceptors.response.use(
     originalRequest._retry = true;
 
     try {
-      const accessToken = await refreshAccessToken();
-      originalRequest.headers.Authorization = `Bearer ${accessToken}`;
+      await refreshAccessToken();
 
       return api(originalRequest);
     } catch (refreshError) {

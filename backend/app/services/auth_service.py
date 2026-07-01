@@ -90,6 +90,9 @@ class AuthService:
         if not user.is_active:
             raise InactiveUserError()
 
+        if self._is_refresh_token_revoked_for_user(decoded_token["issued_at"], user):
+            raise AuthenticationError("Refresh token has been revoked")
+
         return await self._rotate_refresh_token(user, stored_refresh_token)
 
     async def logout(self, access_token: str, refresh_token: str | None = None) -> None:
@@ -113,6 +116,43 @@ class AuthService:
             return
 
         await self._revoke_refresh_token(refresh_token)
+
+    async def logout_all(self, access_token: str, user: User) -> None:
+        """Revoke all refresh tokens and access tokens issued for a user."""
+
+        decoded_access_token = decode_token(access_token, TokenType.ACCESS)
+        if decoded_access_token["subject"] != user.id:
+            raise AuthenticationError("Access token subject mismatch")
+
+        now = datetime.now(UTC)
+
+        try:
+            await self.user_repository.mark_refresh_tokens_revoked(
+                user,
+                revoked_at=now,
+            )
+            await self.refresh_token_repository.revoke_active_for_user(
+                user_id=user.id,
+                revoked_at=now,
+            )
+            await self.user_repository.commit()
+        except Exception:
+            await self.user_repository.rollback()
+            raise
+
+        ttl_seconds = int(
+            (decoded_access_token["expires_at"] - datetime.now(UTC)).total_seconds()
+        )
+        await self.token_blacklist_service.add_to_blacklist(
+            decoded_access_token["token_id"],
+            max(ttl_seconds, 0),
+        )
+        settings = get_settings()
+        await self.token_blacklist_service.invalidate_user_tokens_issued_before(
+            user.id,
+            now,
+            settings.jwt_access_token_expire_minutes * 60,
+        )
 
     async def get_active_user(self, user_id: UUID) -> User:
         """Load an active user for token-authenticated requests."""
@@ -230,3 +270,13 @@ class AuthService:
             raise AuthenticationError("Refresh token has expired")
 
         return stored_refresh_token
+
+    def _is_refresh_token_revoked_for_user(
+        self,
+        issued_at: datetime,
+        user: User,
+    ) -> bool:
+        if user.refresh_tokens_revoked_at is None:
+            return False
+
+        return issued_at < user.refresh_tokens_revoked_at

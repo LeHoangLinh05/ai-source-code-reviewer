@@ -63,6 +63,7 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     jwt_access_token_expire_minutes: int = 15
     jwt_refresh_token_expire_days: int = 7
+    access_cookie_name: str = "accessToken"
     refresh_cookie_name: str = "refreshToken"
     refresh_cookie_secure: bool = False
     refresh_cookie_samesite: Literal["lax", "strict", "none"] = "lax"

@@ -1,5 +1,6 @@
 """Persistence operations for user accounts."""
 
+from datetime import datetime
 from uuid import UUID
 
 from sqlalchemy import select
@@ -44,3 +45,24 @@ class UserRepository:
         await self.session.commit()
         await self.session.refresh(user)
         return user
+
+    async def mark_refresh_tokens_revoked(
+        self,
+        user: User,
+        *,
+        revoked_at: datetime,
+    ) -> None:
+        """Stage the user-wide refresh-token revocation cutoff."""
+
+        user.refresh_tokens_revoked_at = revoked_at
+        await self.session.flush()
+
+    async def commit(self) -> None:
+        """Persist all staged user changes."""
+
+        await self.session.commit()
+
+    async def rollback(self) -> None:
+        """Discard staged user changes after an error."""
+
+        await self.session.rollback()
