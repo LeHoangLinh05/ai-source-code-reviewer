@@ -45,20 +45,29 @@ export function LoginForm() {
   });
 
   async function onSubmit(values: LoginFormValues) {
+    form.clearErrors("root");
+
     try {
       const payload: LoginPayload = values;
-      const response = await api.post<AuthResponse>("/auth/login", payload);
+      const response = await api.post<AuthResponse>("/auth/login", payload, {
+        skipAuthRefresh: true,
+      });
 
       dispatch(
         setCredentials({
-          accessToken: response.data.access_token,
           user: response.data.user,
         }),
       );
       setSessionMarker();
       router.replace(nextPath);
     } catch (error) {
-      toast.error(getApiErrorMessage(error, "Unable to sign in."));
+      const errorMessage = getApiErrorMessage(error, "Unable to sign in.");
+
+      form.setError("root", {
+        message: errorMessage,
+        type: "server",
+      });
+      toast.error(errorMessage);
     }
   }
 
@@ -101,6 +110,11 @@ export function LoginForm() {
             </FormItem>
           )}
         />
+        {form.formState.errors.root?.message ? (
+          <p className="text-sm font-medium text-destructive" role="alert">
+            {form.formState.errors.root.message}
+          </p>
+        ) : null}
         <Button
           className="w-full"
           disabled={form.formState.isSubmitting}
@@ -110,7 +124,7 @@ export function LoginForm() {
         </Button>
         <p className="text-center text-sm text-muted-foreground">
           New to RepoGuard AI?{" "}
-          <Link className="font-medium text-accent hover:underline" href="/register">
+          <Link className="font-medium text-slate-200 hover:underline" href="/register">
             Create an account
           </Link>
         </p>

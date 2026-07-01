@@ -1,0 +1,416 @@
+"use client";
+
+import { ArrowLeft, RefreshCw } from "lucide-react";
+import Link from "next/link";
+import { useParams } from "next/navigation";
+import { useEffect, useMemo, useState } from "react";
+
+import { Button } from "@/components/ui/button";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import { getApiErrorMessage } from "@/lib/api-error";
+import { getReport, getReportIssues } from "@/lib/reports";
+import type { IssueCategory, IssueSeverity, ReviewIssue } from "@/types/issue";
+import type { ReviewReport, TopRiskyFile } from "@/types/report";
+
+const SEVERITY_COLORS: Record<IssueSeverity, string> = {
+  critical: "#e2e8f0",
+  high: "#cbd5e1",
+  medium: "#94a3b8",
+  low: "#64748b",
+  info: "#475569",
+};
+
+const CATEGORY_COLORS: Record<IssueCategory, string> = {
+  bug: "#e2e8f0",
+  maintainability: "#cbd5e1",
+  performance: "#94a3b8",
+  security: "#64748b",
+  style: "#475569",
+};
+
+export default function ReviewReportPage() {
+  const params = useParams<{ id: string }>();
+  const jobId = params.id;
+  const [error, setError] = useState<string | null>(null);
+  const [issues, setIssues] = useState<ReviewIssue[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
+  const [report, setReport] = useState<ReviewReport | null>(null);
+
+  async function loadReport() {
+    setIsLoading(true);
+    setError(null);
+
+    try {
+      const [reportData, issueData] = await Promise.all([
+        getReport(jobId),
+        getReportIssues(jobId, {
+          page: 1,
+          per_page: 100,
+          sort: "-created_at",
+        }),
+      ]);
+      setReport(reportData);
+      setIssues(issueData.issues);
+    } catch (requestError) {
+      setError(getApiErrorMessage(requestError, "Unable to load report."));
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    void loadReport();
+  }, [jobId]);
+
+  const severityData = useMemo(() => {
+    if (!report) {
+      return [];
+    }
+
+    return [
+      { label: "critical", value: report.critical_count },
+      { label: "high", value: report.high_count },
+      { label: "medium", value: report.medium_count },
+      { label: "low", value: report.low_count },
+      { label: "info", value: report.info_count },
+    ] satisfies Array<{ label: IssueSeverity; value: number }>;
+  }, [report]);
+
+  const categoryData = useMemo(() => buildCategoryData(issues), [issues]);
+
+  return (
+    <>
+      <header className="flex flex-col gap-4 border-b border-border pb-5 md:flex-row md:items-end md:justify-between">
+        <div>
+          <Button asChild className="mb-4" size="sm" variant="ghost">
+            <Link href={`/reviews/${jobId}`}>
+              <ArrowLeft aria-hidden="true" />
+              Review Job
+            </Link>
+          </Button>
+          <p className="text-xs font-medium uppercase text-muted-foreground">
+            Security report
+          </p>
+          <h1 className="mt-2 text-2xl font-extrabold tracking-normal">
+            Report Overview
+          </h1>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Scores, issue distribution, and high-risk files.
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Button asChild variant="secondary">
+            <Link href={`/reviews/${jobId}/issues`}>Issues</Link>
+          </Button>
+          <Button disabled={isLoading} onClick={() => void loadReport()}>
+            <RefreshCw aria-hidden="true" />
+            Refresh
+          </Button>
+        </div>
+      </header>
+
+      {isLoading && !report ? <ReportSkeleton /> : null}
+
+      {!isLoading && error ? (
+        <Card>
+          <CardContent className="p-6">
+            <p className="text-sm text-destructive">{error}</p>
+          </CardContent>
+        </Card>
+      ) : null}
+
+      {report ? (
+        <>
+          <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+            <ScoreGauge label="Overall" value={report.overall_score} />
+            <ScoreGauge label="Security" value={report.security_score} />
+            <ScoreGauge
+              label="Maintainability"
+              value={report.maintainability_score}
+            />
+            <ScoreGauge label="Performance" value={report.performance_score} />
+          </section>
+
+          <section className="grid gap-4 lg:grid-cols-[1fr_1.1fr]">
+              <Card>
+                <CardHeader>
+                  <CardTitle>Severity Mix</CardTitle>
+                  <CardDescription>
+                    Distribution across {report.total_issues} seeded findings.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="grid gap-6 sm:grid-cols-[180px_1fr] sm:items-center">
+                  <SeverityPie data={severityData} />
+                  <LegendList
+                    data={severityData.map((item) => ({
+                      color: SEVERITY_COLORS[item.label],
+                      label: item.label,
+                      value: item.value,
+                    }))}
+                  />
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader>
+                  <CardTitle>Category Distribution</CardTitle>
+                  <CardDescription>
+                    Seed issues grouped by review category.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <CategoryBars data={categoryData} />
+                </CardContent>
+              </Card>
+            </section>
+
+            <section className="grid gap-4 lg:grid-cols-[1.2fr_0.8fr]">
+              <Card>
+                <CardHeader>
+                  <CardTitle>Executive Summary</CardTitle>
+                  <CardDescription>
+                    Contract text that the AI pipeline should replace later.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <p className="text-sm leading-6 text-muted-foreground">
+                    {report.executive_summary ?? "No summary available."}
+                  </p>
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader>
+                  <CardTitle>Top Risky Files</CardTitle>
+                  <CardDescription>
+                    Files with the highest issue density.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <TopRiskyFiles files={report.top_risky_files ?? []} />
+                </CardContent>
+              </Card>
+            </section>
+
+            <Card>
+              <CardHeader>
+                <CardTitle>Report Metadata</CardTitle>
+                <CardDescription>
+                  API contract fields persisted in review_reports.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="grid gap-4 sm:grid-cols-3">
+                <Metric label="Files analyzed" value={report.total_files_analyzed} />
+                <Metric label="Total issues" value={report.total_issues} />
+                <Metric
+                  label="AI model"
+                  value={report.ai_model_used ?? "Not available"}
+                />
+              </CardContent>
+            </Card>
+        </>
+      ) : null}
+    </>
+  );
+}
+
+function ScoreGauge({ label, value }: { label: string; value: number | null }) {
+  const score = value ?? 0;
+  const percentage = Math.max(0, Math.min(100, score * 10));
+  const radius = 42;
+  const circumference = 2 * Math.PI * radius;
+  const strokeDashoffset = circumference - (percentage / 100) * circumference;
+  const color = score < 5 ? "#64748b" : score < 8 ? "#94a3b8" : "#e2e8f0";
+
+  return (
+    <Card>
+      <CardContent className="flex items-center gap-4 p-5">
+        <svg className="size-24 -rotate-90" viewBox="0 0 100 100">
+          <circle
+            cx="50"
+            cy="50"
+            fill="none"
+            r={radius}
+            stroke="hsl(var(--muted))"
+            strokeWidth="10"
+          />
+          <circle
+            cx="50"
+            cy="50"
+            fill="none"
+            r={radius}
+            stroke={color}
+            strokeDasharray={circumference}
+            strokeDashoffset={strokeDashoffset}
+            strokeLinecap="round"
+            strokeWidth="10"
+          />
+        </svg>
+        <div>
+          <p className="text-xs font-medium uppercase text-muted-foreground">
+            {label}
+          </p>
+          <p className="mt-1 text-3xl font-black tracking-normal">
+            {score.toFixed(1)}
+          </p>
+          <p className="text-xs text-muted-foreground">/ 10.0</p>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function SeverityPie({
+  data,
+}: {
+  data: Array<{ label: IssueSeverity; value: number }>;
+}) {
+  const total = data.reduce((sum, item) => sum + item.value, 0);
+  let cursor = 0;
+  const gradient = data
+    .filter((item) => item.value > 0)
+    .map((item) => {
+      const start = cursor;
+      const end = cursor + (item.value / Math.max(total, 1)) * 100;
+      cursor = end;
+      return `${SEVERITY_COLORS[item.label]} ${start}% ${end}%`;
+    })
+    .join(", ");
+
+  return (
+    <div
+      className="mx-auto size-44 rounded-full border border-border"
+      style={{
+        background: `conic-gradient(${gradient || "hsl(var(--muted)) 0% 100%"})`,
+      }}
+    />
+  );
+}
+
+function LegendList({
+  data,
+}: {
+  data: Array<{ color: string; label: string; value: number }>;
+}) {
+  return (
+    <div className="grid gap-2">
+      {data.map((item) => (
+        <div className="flex items-center justify-between gap-3" key={item.label}>
+          <span className="flex items-center gap-2 text-sm capitalize text-muted-foreground">
+            <span
+              className="size-3 rounded-sm"
+              style={{ backgroundColor: item.color }}
+            />
+            {item.label}
+          </span>
+          <span className="text-sm font-medium">{item.value}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function CategoryBars({
+  data,
+}: {
+  data: Array<{ label: IssueCategory; value: number }>;
+}) {
+  const maxValue = Math.max(...data.map((item) => item.value), 1);
+
+  return (
+    <div className="grid gap-4">
+      {data.map((item) => (
+        <div className="grid gap-2" key={item.label}>
+          <div className="flex items-center justify-between text-sm">
+            <span className="capitalize text-muted-foreground">{item.label}</span>
+            <span className="font-medium">{item.value}</span>
+          </div>
+          <div className="h-3 overflow-hidden rounded bg-muted">
+            <div
+              className="h-full rounded"
+              style={{
+                backgroundColor: CATEGORY_COLORS[item.label],
+                width: `${(item.value / maxValue) * 100}%`,
+              }}
+            />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function TopRiskyFiles({ files }: { files: TopRiskyFile[] }) {
+  if (files.length === 0) {
+    return (
+      <p className="text-sm text-muted-foreground">No risky files available.</p>
+    );
+  }
+
+  return (
+    <div className="grid gap-3">
+      {files.map((file) => (
+        <div
+          className="rounded-md border border-border bg-background p-3"
+          key={file.path}
+        >
+          <div className="flex items-start justify-between gap-3">
+            <p className="break-all text-sm font-medium">{file.path}</p>
+            <span className="rounded-md bg-muted px-2 py-1 text-xs">
+              {file.issue_count}
+            </span>
+          </div>
+          <p className="mt-2 text-xs capitalize text-muted-foreground">
+            Max severity: {file.max_severity ?? "unknown"}
+          </p>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function Metric({ label, value }: { label: string; value: number | string }) {
+  return (
+    <div className="rounded-md border border-border p-4">
+      <p className="text-sm text-muted-foreground">{label}</p>
+      <p className="mt-2 text-xl font-semibold tracking-normal">{value}</p>
+    </div>
+  );
+}
+
+function ReportSkeleton() {
+  return (
+    <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+      {Array.from({ length: 4 }).map((_, index) => (
+          <Card key={index}>
+          <CardContent className="p-5">
+            <div className="h-24 animate-pulse rounded bg-muted" />
+          </CardContent>
+        </Card>
+      ))}
+    </div>
+  );
+}
+
+function buildCategoryData(issues: ReviewIssue[]) {
+  return [
+    { label: "security", value: countCategory(issues, "security") },
+    { label: "performance", value: countCategory(issues, "performance") },
+    {
+      label: "maintainability",
+      value: countCategory(issues, "maintainability"),
+    },
+    { label: "style", value: countCategory(issues, "style") },
+    { label: "bug", value: countCategory(issues, "bug") },
+  ] satisfies Array<{ label: IssueCategory; value: number }>;
+}
+
+function countCategory(issues: ReviewIssue[], category: IssueCategory) {
+  return issues.filter((issue) => issue.category === category).length;
+}

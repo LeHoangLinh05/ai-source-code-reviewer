@@ -19,7 +19,10 @@ import {
 import { Input } from "@/components/ui/input";
 import { api } from "@/lib/api";
 import { getApiErrorMessage } from "@/lib/api-error";
-import type { RegisterPayload } from "@/types/auth";
+import { setSessionMarker } from "@/lib/session-marker";
+import { useAppDispatch } from "@/store/hooks";
+import { setCredentials } from "@/store/slices/authSlice";
+import type { AuthResponse, RegisterPayload } from "@/types/auth";
 
 const registerSchema = z
   .object({
@@ -35,6 +38,7 @@ const registerSchema = z
 type RegisterFormValues = z.infer<typeof registerSchema>;
 
 export function RegisterForm() {
+  const dispatch = useAppDispatch();
   const router = useRouter();
   const form = useForm<RegisterFormValues>({
     resolver: zodResolver(registerSchema),
@@ -52,9 +56,12 @@ export function RegisterForm() {
         password: values.password,
       };
 
-      await api.post("/auth/register", payload);
-      toast.success("Account created. You can sign in now.");
-      router.replace("/login");
+      const response = await api.post<AuthResponse>("/auth/register", payload);
+
+      dispatch(setCredentials({ user: response.data.user }));
+      setSessionMarker();
+      toast.success("Account created.");
+      router.replace("/dashboard");
     } catch (error) {
       toast.error(getApiErrorMessage(error, "Unable to create account."));
     }
@@ -126,7 +133,7 @@ export function RegisterForm() {
         </Button>
         <p className="text-center text-sm text-muted-foreground">
           Already have an account?{" "}
-          <Link className="font-medium text-accent hover:underline" href="/login">
+          <Link className="font-medium text-slate-200 hover:underline" href="/login">
             Sign in
           </Link>
         </p>

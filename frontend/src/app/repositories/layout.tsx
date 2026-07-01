@@ -3,11 +3,13 @@ import type { ReactNode } from "react";
 import { AuthGuard } from "@/components/auth/auth-guard";
 import { AppShell } from "@/components/layout/app-shell";
 
-type DashboardLayoutProps = {
+type RepositoriesLayoutProps = {
   children: ReactNode;
 };
 
-export default function DashboardLayout({ children }: DashboardLayoutProps) {
+export default function RepositoriesLayout({
+  children,
+}: RepositoriesLayoutProps) {
   return (
     <AuthGuard>
       <AppShell>{children}</AppShell>
