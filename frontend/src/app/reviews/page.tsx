@@ -75,10 +75,10 @@ export default function ReviewsPage() {
           <p className="text-xs font-medium uppercase text-muted-foreground">
             Worker queue
           </p>
-          <h1 className="mt-2 text-2xl font-extrabold tracking-normal">
+          <h1 className="mt-2 text-3xl font-extrabold tracking-normal">
             Reviews
           </h1>
-          <p className="mt-1 text-sm text-muted-foreground">
+          <p className="mt-1 text-[15px] leading-6 text-muted-foreground">
             Review jobs created from connected repositories.
           </p>
         </div>
@@ -138,7 +138,7 @@ function EmptyJobsState() {
       <h2 className="mt-4 text-lg font-semibold tracking-normal">
         No review jobs yet
       </h2>
-      <p className="mt-2 max-w-md text-sm text-muted-foreground">
+      <p className="mt-2 max-w-md text-[15px] leading-6 text-muted-foreground">
         Open a repository and start a review to create the first job.
       </p>
       <Button asChild className="mt-5">
@@ -182,7 +182,7 @@ function JobsTable({
 }: JobsTableProps) {
   return (
     <div className="overflow-x-auto border-t border-border">
-      <table className="w-full min-w-[860px] text-left text-sm">
+      <table className="w-full min-w-[860px] text-left text-[15px]">
         <thead className="bg-muted/50 text-xs uppercase text-muted-foreground">
           <tr>
             <th className="px-6 py-3 font-medium">Repository</th>

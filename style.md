@@ -36,6 +36,7 @@ RepoGuard AI là công cụ kỹ thuật, không phải dashboard marketing. Vì
 *   **Màu semantic là tín hiệu nhỏ:** Nếu cần phân biệt severity, chỉ dùng viền mảnh, dot nhỏ, icon đơn sắc, hoặc chữ đậm hơn trong cùng thang Slate. Không dùng background `rose-500/15`, `emerald-500/15`, `blue-500/15` trên badge/table row.
 *   **Destructive action phải tiết chế:** `Logout all`, delete, revoke token có thể dùng rose rất tối (`rose-950/30`, `border-rose-900/60`) nhưng không dùng nút đỏ rực toàn khối.
 *   **Biểu đồ ưu tiên thang xám:** Gauge, bar, pie chart mặc định dùng Slate ramp. Chỉ dùng màu semantic khi người dùng cần can thiệp khẩn cấp, và khi dùng phải giới hạn ở stroke/marker thay vì mảng nền lớn.
+*   **Ngoại lệ Report Overview:** Riêng trang report được phép dùng màu semantic rõ ràng trong visualization như radial score, severity pie và category bars, vì đây là màn đọc phân bố rủi ro. Màu vẫn không áp dụng tràn lan sang sidebar, table row, status badge hoặc CTA.
 
 ### 2.1 Màu Nền & Màu Nền Chức Năng (Base & Surface Colors)
 
@@ -84,20 +85,29 @@ Phân loại mức độ nghiêm trọng bắt buộc phải đồng bộ, nhưn
 
 ## 3. HỆ THỐNG PHÔNG CHỮ & KIỂU CHỮ (TYPOGRAPHY)
 
-*   **Phông chữ hệ thống (Sans-serif):** Ưu tiên `Geist Sans` hoặc `Inter` để đảm bảo ký tự hiển thị sắc nét ở kích thước nhỏ (12px).
-*   **Phông chữ mã nguồn (Monospace):** Bắt buộc sử dụng `Geist Mono` hoặc `Fira Code` nhằm hỗ trợ kỹ thuật hiển thị liên kết ký tự (font ligatures), giúp dễ dàng đọc các toán tử so sánh hoặc cú pháp đặc thù của code.
+*   **Phông chữ chính (Body & Heading):** Bắt buộc dùng `"Plus Jakarta Sans", sans-serif` cho toàn bộ nội dung, tiêu đề, bảng, nhãn và navigation.
+*   **Phông chữ dự phòng (Fallback):** Nếu `Plus Jakarta Sans` chưa tải được, dùng stack hệ thống: `-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif`.
+*   **Phông chữ mã nguồn (Monospace):** Bắt buộc dùng `Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace` cho code viewer, JSON, log, trace và raw output.
+
+### Nguyên Tắc Trọng Lượng Chữ (Typography Usage)
+
+*   **Headline / Key Metrics:** Dùng cho tiêu đề trang, số liệu lớn, điểm số tổng quan. Kích thước từ `24px` đến `36px`; weight `700` hoặc `800`. Không dùng weight quá mỏng cho dữ liệu quan trọng.
+*   **Card Titles / Subheadings:** Dùng cho tên card, tên biểu đồ, tiêu đề khu vực. Kích thước `16px` đến `18px`; weight `600` hoặc `700`.
+*   **Body / Labels:** Dùng cho mô tả, bảng dữ liệu, input label, metadata. Kích thước mặc định của nội dung chính là `15px`; `14px` chỉ dùng cho nhãn phụ hoặc metadata; `12px` dùng cho chú thích rất nhỏ. Weight `400` hoặc `500`.
+*   **Buttons / Navigation:** Dùng `15px`, weight `500` hoặc `700`; chữ trong vùng có thể bấm phải đậm hơn body text để người dùng nhận ra hành động.
 
 ### Tỷ Lệ Kích Thước Chữ (Type Scale)
 
 | Kích thước | Line Height | CSS/Tailwind Class | Mục đích sử dụng |
 | :--- | :--- | :--- | :--- |
-| **12px (0.75rem)** | 16px | `text-xs font-medium` | Nhãn mức độ nghiêm trọng, thông tin dòng code, metadata của tệp. |
-| **14px (0.875rem)** | 20px | `text-sm` | Khối mô tả lỗi, đề xuất sửa đổi, nội dung dòng code trong Viewer. |
-| **16px (1rem)** | 24px | `text-base` | Nhãn form, giá trị cấu hình, nội dung đoạn văn chính. |
-| **18px (1.125rem)** | 28px | `text-lg font-semibold` | Tiêu đề các phần phụ, tiêu đề card phân tích nhỏ. |
-| **20px (1.25rem)** | 28px | `text-xl font-bold` | Tiêu đề của Drawer chi tiết, tiêu đề các khối chính. |
-| **24px (1.5rem)** | 32px | `text-2xl font-extrabold` | Tiêu đề chính của màn hình Dashboard, Report Overview. |
-| **32px (2rem)** | 36px | `text-3xl font-black` | Điểm số tổng quan (Overall Score), số lượng tổng lỗi nghiêm trọng. |
+| **12px (0.75rem)** | 16px | `text-xs font-normal` hoặc `font-medium` | Metadata, chú thích, nhãn nhỏ, thông tin dòng code. |
+| **14px (0.875rem)** | 20px | `text-sm font-normal` | Metadata phụ, nhãn nhỏ, table header, thông tin ít quan trọng. |
+| **15px (0.9375rem)** | 24px | `text-[15px] font-normal` | Body text chính, nội dung bảng, mô tả lỗi, đề xuất sửa đổi. |
+| **15px (0.9375rem)** | 20px | `text-[15px] font-medium` hoặc `font-semibold` | Button, navigation, label tương tác. |
+| **18px (1.125rem)** | 28px | `text-lg font-semibold` hoặc `font-bold` | Tiêu đề phụ nhỏ, giá trị cấu hình quan trọng. |
+| **20px (1.25rem)** | 28px | `text-xl font-bold` | Card title, subheading, tiêu đề khu vực nhỏ. |
+| **30px (1.875rem)** | 36px | `text-3xl font-extrabold` | Tiêu đề chính của màn hình Dashboard, Report Overview. |
+| **36px (2.25rem)** | 40px | `text-4xl font-extrabold` | Điểm số tổng quan, số liệu metric lớn, số lượng lỗi quan trọng. |
 
 ---
 
@@ -123,8 +133,26 @@ Giao diện ứng dụng sử dụng cấu trúc chia khung cố định nhằm 
 └─────────────┴──────────────────────────────────────────────────────────┘
 ```
 
-*   **Thanh điều hướng bên trái (Sidebar):** Cố định chiều rộng ở `w-64` trên màn hình desktop (`lg` trở lên). Trên màn hình thiết bị di động hoặc máy tính bảng, Sidebar tự động thu gọn thành Drawer trượt (Sheet component của shadcn/ui).
+*   **Thanh điều hướng bên trái (Sidebar):** Chiều rộng mở rộng mặc định là `w-72` trên màn hình desktop (`lg` trở lên), có thể thu gọn về khoảng `w-20`. Trên màn hình thiết bị di động hoặc máy tính bảng, Sidebar tự động thu gọn thành Drawer trượt (Sheet component của shadcn/ui).
+*   **Sidebar có thể thu gọn:** Trên desktop, Sidebar phải có nút collapse/expand rõ ràng. Trạng thái mở rộng dùng `w-72` để đủ chỗ cho nhãn điều hướng; trạng thái thu gọn dùng khoảng `w-20`, chỉ hiển thị icon có `title`/`aria-label`. Text bị ẩn phải vẫn có `sr-only` để hỗ trợ screen reader.
 *   **Vùng nội dung chính (Main Content Scroll):** Thiết lập `overflow-y-auto` độc lập để ngăn cuộn toàn màn hình, đảm bảo thanh điều hướng bên trái và thanh tiêu đề trên cùng luôn cố định khi duyệt danh sách lỗi dài.
+*   **Độ rộng nội dung:** Không bó nội dung ở `max-w-6xl/7xl` trên màn hình desktop lớn. Main container ưu tiên `max-w-[1600px]` với padding ngang `xl:px-10` để tận dụng không gian, đặc biệt cho dashboard, bảng review và report.
+
+### 4.2 Dashboard Operational Overview
+
+Dashboard không được là trang placeholder hoặc chỉ chứa nút điều hướng. Đây là màn vận hành chính của RepoGuard AI, cần trả lời nhanh các câu hỏi: có bao nhiêu repo, review nào đang chạy, mức độ rủi ro hiện tại ra sao, pipeline có nghẽn không, file nào đáng chú ý.
+
+Dashboard bắt buộc gồm các nhóm thông tin:
+
+*   **Metric summary:** Repositories, Active reviews, Completed reviews, Critical issues, Avg. run time.
+*   **Security posture:** Gauge điểm trung bình từ các report gần nhất và severity distribution dạng bar chart.
+*   **Review status distribution:** Biểu đồ trạng thái worker queue theo `PENDING`, `AI_REVIEWING`, `COMPLETED`, `FAILED`, v.v.
+*   **Repository coverage:** Platform mix và tỷ lệ completed reviews đã có report.
+*   **Recent review jobs:** Bảng job mới nhất có link sang review detail.
+*   **Risk hotspots:** Danh sách file rủi ro cao được tổng hợp từ `top_risky_files` trong report.
+*   **Pipeline snapshot:** Số job theo các stage chính để hỗ trợ quan sát realtime/SSE sau này.
+
+Các biểu đồ trên Dashboard được phép dùng màu semantic có kiểm soát cho dữ liệu phân bố rủi ro, nhưng không được dùng màu nền rực cho toàn card, row hoặc sidebar.
 
 ---
 

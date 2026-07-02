@@ -152,10 +152,10 @@ export default function RepositoriesPage() {
           <p className="text-xs font-medium uppercase text-muted-foreground">
             Source inventory
           </p>
-          <h1 className="mt-2 text-2xl font-extrabold tracking-normal">
+          <h1 className="mt-2 text-3xl font-extrabold tracking-normal">
             Repositories
           </h1>
-          <p className="mt-1 text-sm text-muted-foreground">
+          <p className="mt-1 text-[15px] leading-6 text-muted-foreground">
             GitHub and GitLab sources connected to RepoGuard AI.
           </p>
         </div>
@@ -333,7 +333,7 @@ function MetricCard({ label, value }: MetricCardProps) {
         <p className="text-xs font-medium uppercase text-muted-foreground">
           {label}
         </p>
-        <p className="mt-2 text-3xl font-black tracking-normal">{value}</p>
+        <p className="mt-2 text-4xl font-extrabold tracking-normal">{value}</p>
       </CardContent>
     </Card>
   );
@@ -368,7 +368,7 @@ function EmptyRepositoryState({ onAdd }: EmptyRepositoryStateProps) {
       <h2 className="mt-4 text-lg font-semibold tracking-normal">
         No repositories yet
       </h2>
-      <p className="mt-2 max-w-md text-sm text-muted-foreground">
+      <p className="mt-2 max-w-md text-[15px] leading-6 text-muted-foreground">
         Connect a GitHub or GitLab repository to start building review history.
       </p>
       <Button className="mt-5" onClick={onAdd}>
@@ -392,7 +392,7 @@ function RepositoryTable({
 }: RepositoryTableProps) {
   return (
     <div className="overflow-x-auto border-t border-border">
-      <table className="w-full min-w-[760px] text-left text-sm">
+      <table className="w-full min-w-[760px] text-left text-[15px]">
         <thead className="bg-muted/50 text-xs uppercase text-muted-foreground">
           <tr>
             <th className="px-6 py-3 font-medium">Name</th>

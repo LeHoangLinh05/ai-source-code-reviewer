@@ -66,6 +66,7 @@ Developer thường commit code mà chưa được review kỹ — lý do chủ 
 | 8 | Dashboard hiển thị issue list, filter theo severity | P0 |
 | 9 | Realtime progress qua SSE | P0 |
 | 10 | Lưu lịch sử review | P0 |
+| 11 | **Roadmap Compliance Rule Engine** — đối chiếu repo với 79 rule bắt buộc từ lộ trình đào tạo (opt-in qua `rule_profile`), ưu tiên cao nhất trong report — chi tiết mục 6.6 và `AI_flow.md` mục 3 | P0 |
 
 ### 2.2 Advanced Features — Làm để bài nổi bật (tuần 3–4)
 
@@ -78,6 +79,7 @@ Developer thường commit code mà chưa được review kỹ — lý do chủ 
 | 5 | Issue detail với code snippet viewer | Monaco Editor hoặc Prism |
 | 6 | Export report PDF hoặc Markdown | WeasyPrint hoặc markdown-pdf |
 | 7 | RBAC: admin có thể xem tất cả user jobs | FastAPI dependencies |
+| 8 | Rule profile picker + compliance checklist UI (✅/❌ theo tuần) | Chỉ cần 1 dropdown + 1 bảng ở FE |
 
 ### 2.3 Optional — Nếu còn thời gian
 
@@ -528,7 +530,7 @@ CREATE TABLE review_jobs (
     commit_sha      VARCHAR(40),
     error_message   TEXT,
     sandbox_path    TEXT,  -- /tmp/sandbox/{job_id} — xóa sau khi xong
-    options         JSONB,
+    options         JSONB,  -- vd: {"rule_profile": "roadmap_bootcamp_v1" | null} — mục 6.6
     started_at      TIMESTAMP WITH TIME ZONE,
     completed_at    TIMESTAMP WITH TIME ZONE,
     created_at      TIMESTAMP WITH TIME ZONE DEFAULT NOW()
@@ -553,6 +555,8 @@ CREATE TABLE review_reports (
     maintainability_score   FLOAT,
     performance_score       FLOAT,
     overall_score           FLOAT,
+    compliance_score        FLOAT,   -- % rule P0+P1 PASS, NULL nếu rule_profile không dùng (mục 6.6)
+    bonus_score              FLOAT,   -- % rule P2 PASS, NULL nếu rule_profile không dùng
     tech_stack              JSONB,   -- {"languages": ["python"], "frameworks": ["fastapi"]}
     top_risky_files         JSONB,   -- [{"path": "...", "issue_count": 5}]
     executive_summary       TEXT,
@@ -570,11 +574,11 @@ CREATE TABLE review_issues (
     line_start      INT,
     line_end        INT,
     severity        VARCHAR(20) NOT NULL, -- critical | high | medium | low | info
-    category        VARCHAR(50) NOT NULL, -- security | performance | maintainability | style | bug
+    category        VARCHAR(50) NOT NULL, -- security | performance | maintainability | style | bug | requirement
     title           VARCHAR(255) NOT NULL,
     description     TEXT NOT NULL,
     suggestion      TEXT,
-    source          VARCHAR(30) NOT NULL, -- 'ai_review' | 'ruff' | 'bandit' | 'eslint'
+    source          VARCHAR(30) NOT NULL, -- 'ai_review' | 'ruff' | 'bandit' | 'eslint' | 'roadmap_rule'
     confidence      FLOAT,
     raw_output      JSONB,  -- raw output từ tool nếu có
     created_at      TIMESTAMP WITH TIME ZONE DEFAULT NOW()
@@ -696,6 +700,23 @@ CREATE TABLE job_status_history (
   "chunk_text": "import bcrypt\nimport secrets\n..."
 }
 ```
+
+#### Collection: `roadmap_compliance_results`
+```json
+{
+  "_id": "ObjectId",
+  "job_id": "uuid-...",
+  "rule_profile": "roadmap_bootcamp_v1",
+  "checked_at": "ISODate",
+  "compliance_score": 86.5,
+  "bonus_score": 25.0,
+  "results": [
+    { "rule_id": "RC-W5-01", "week": 5, "passed": false, "severity": "critical" },
+    { "rule_id": "RC-W1-01", "week": 1, "passed": true, "severity": null }
+  ]
+}
+```
+> Chi tiết đầy đủ 79 rules, rule schema, và 8 check_type: xem `AI_flow.md` mục 3.
 
 ### 5.3 Redis Keys
 
@@ -925,6 +946,38 @@ After reviewing all files, call `generate_final_report` to synthesize.
 | Cross-validate với static tools | Nếu AI flag issue nhưng static tool không có → giảm severity |
 | Line number validation | Backend validate line_start/line_end có tồn tại trong file |
 
+### 6.6 Roadmap Compliance Rule Engine — Lớp check ưu tiên cao nhất
+
+> Tài liệu chi tiết (79 rules, rule schema, 8 check_type, scoring): **`AI_flow.md` mục 3.** Phần này chỉ tóm tắt để giữ Project Plan là bản tổng quan.
+
+Ngoài Static Analysis + AI Review, hệ thống có **lớp check thứ 3** đối chiếu repo với danh sách công nghệ/tính năng bắt buộc theo lộ trình đào tạo (`Lộ_trình_đào_tạo_Python_NextJS_AI_agent.xlsx`):
+
+```text
+Đặc điểm:
+- Chạy TRƯỚC static analysis, KHÔNG dùng AI (deterministic, confidence = 1.0)
+- Opt-in theo job qua review_jobs.options.rule_profile — mặc định TẮT, không ép mọi
+  repo phải theo lộ trình này. Chỉ bật khi review bài nộp bootcamp.
+- Opt-in THEO TUẦN qua weeks_included — bài nộp Tuần 1 chỉ bị check theo checklist
+  Tuần 1 + General, KHÔNG bị đòi hỏi WebSocket/RAG của các tuần chưa học tới.
+  Review final project (Tuần 8) → weeks_included = null (áp dụng toàn bộ).
+- 79 rules chia theo Tuần 1–7 + General, mỗi rule có priority P0/P1/P2
+- 16/79 rule có needs_ai_verification=true — rule engine chỉ xác nhận "có tồn tại"
+  (VD: có gọi hàm cache/sync không), còn "có làm ĐÚNG" (VD: sync có xử lý incremental
+  theo timestamp không) được giao cho AI Agent đọc code cụ thể và tự quyết — xem cơ
+  chế provisional_pass ở AI_flow.md mục 3.2b
+- Rule FAIL (không phải provisional_pass) → review_issues với category='requirement',
+  source='roadmap_rule', severity tương ứng priority (P0→critical), confidence=1.0
+- Rule P0 FAIL luôn đứng đầu top_priorities trong report — không thể bị AI
+  hạ severity hay bỏ qua (khác issue do AI tự tìm)
+- review_reports có thêm compliance_score (% P0+P1 pass, tính cả provisional_pass)
+  và bonus_score (% P2 pass)
+
+Ví dụ: lộ trình Tuần 5 yêu cầu Realtime (WebSocket/SSE). Nếu review 1 bài nộp
+không có implementation nào cho phần này → issue category=requirement,
+title="Repo phải triển khai WebSocket hoặc SSE, broadcast được nhiều user",
+severity=critical, source=roadmap_rule.
+```
+
 ---
 
 ## 7. RAG DESIGN
@@ -1130,16 +1183,23 @@ class BanditParser:
 
 ```
 Flow:
+0. (Nếu rule_profile != null) Chạy Roadmap Compliance Rule Engine TRƯỚC TIÊN
+   → ghi thẳng review_issues (category=requirement), KHÔNG qua AI — xem mục 6.6
 1. Chạy static tools → lưu MongoDB raw_static_analysis_outputs
 2. Parse → NormalizedIssue list
-3. Trước khi gọi AI, inject static issues vào context:
+3. Trước khi gọi AI, inject static issues + roadmap_compliance_summary vào context:
    "These issues were already detected by static tools: [...]"
+   "Roadmap compliance: 71/79 PASS/PROVISIONAL, thiếu (P0): RC-W5-01 ..."
 4. AI được yêu cầu:
    a. Validate static issues (giữ/bỏ/nâng severity nếu thấy cần)
    b. Tìm thêm issues mà static tools không thể detect (logic bugs, architecture)
-5. Merge: deduplicate theo (file_path, line_start, rule_id)
-6. Source field ghi rõ 'bandit' vs 'ai_review' để user biết nguồn
+   c. KHÔNG re-report issue roadmap đã liệt kê (tránh duplicate)
+5. Merge: deduplicate theo (file_path, line_start, rule_id) — issue category='requirement'
+   không bị dedup/hạ severity bởi bất kỳ nguồn nào khác
+6. Source field ghi rõ 'roadmap_rule' vs 'bandit' vs 'ai_review' để user biết nguồn
 ```
+
+> Vị trí chính xác trong pipeline 13 bước và rule schema đầy đủ: `AI_flow.md` mục 3.6.
 
 ---
 
@@ -1453,7 +1513,7 @@ FAILED có thể xảy ra ở bất kỳ bước nào
     "total_lines_analyzed": 8200,
     "total_issues": 23,
     "issues_by_severity": {
-      "critical": 2,
+      "critical": 3,
       "high": 5,
       "medium": 9,
       "low": 6,
@@ -1464,27 +1524,59 @@ FAILED có thể xảy ra ở bất kỳ bước nào
       "bug": 4,
       "performance": 3,
       "maintainability": 8,
-      "style": 1
+      "style": 1,
+      "requirement": 1
     }
   },
   "scores": {
     "security": 6.5,
     "maintainability": 7.2,
     "performance": 8.0,
-    "overall": 7.1
+    "overall": 7.1,
+    "compliance": 86.5,
+    "bonus": 25.0
   },
   "top_risky_files": [
     { "path": "app/auth/utils.py", "issue_count": 8, "max_severity": "critical" },
     { "path": "app/db/session.py", "issue_count": 4, "max_severity": "high" }
   ],
-  "executive_summary": "The project demonstrates a reasonable FastAPI architecture but has 2 critical SQL injection vulnerabilities in the authentication module that must be addressed before deployment. Security score is below acceptable threshold (6.5/10). The codebase shows good separation of concerns but inconsistent error handling across 12 endpoints.",
+  "executive_summary": "The project demonstrates a reasonable FastAPI architecture but has 2 critical SQL injection vulnerabilities in the authentication module that must be addressed before deployment. Roadmap compliance is at 86.5% — notably, no WebSocket/SSE implementation was found for the Realtime module required in Week 5. Security score is below acceptable threshold (6.5/10). The codebase shows good separation of concerns but inconsistent error handling across 12 endpoints.",
   "suggested_fix_priority": [
+    "0. [CRITICAL][ROADMAP] Missing WebSocket/SSE implementation (RC-W5-01, Week 5 — Realtime)",
     "1. [CRITICAL] Fix SQL injection in app/auth/utils.py:42-48",
     "2. [CRITICAL] Remove hardcoded secret key in config.py:15",
     "3. [HIGH] Add input validation in app/api/users.py",
     "4. [HIGH] Fix N+1 query in app/services/report_service.py:88"
   ],
   "issues": [
+    {
+      "id": "uuid-...",
+      "file_path": null,
+      "line_start": null,
+      "line_end": null,
+      "severity": "critical",
+      "category": "requirement",
+      "title": "Repo phải triển khai WebSocket hoặc SSE, broadcast được nhiều user",
+      "description": "Lộ trình Tuần 5 (Realtime Communication) yêu cầu SSE hoặc WebSocket — không tìm thấy pattern liên quan trong codebase.",
+      "suggestion": "Thêm route WebSocket (FastAPI @app.websocket) hoặc SSE endpoint (text/event-stream) cho tính năng realtime.",
+      "source": "roadmap_rule",
+      "confidence": 1.0,
+      "references": []
+    },
+    {
+      "id": "uuid-...",
+      "file_path": "app/services/sync_service.py",
+      "line_start": 12,
+      "line_end": 30,
+      "severity": "medium",
+      "category": "maintainability",
+      "title": "Sync job MySQL→MongoDB ghi đè toàn bộ, không dùng incremental sync",
+      "description": "Phát hiện khi verify roadmap rule RC-W3-09: hàm sync_products_to_mongo() xoá toàn bộ collection rồi insert lại tất cả (DELETE + INSERT ALL) mỗi lần chạy, không lọc theo updated_at/version như yêu cầu — tốn tài nguyên và không đúng tinh thần 'incremental sync' của đề bài.",
+      "suggestion": "Lọc bản ghi có updated_at > last_sync_timestamp trước khi ghi sang MongoDB, thay vì xoá-ghi-lại toàn bộ.",
+      "source": "ai_review",
+      "confidence": 0.85,
+      "references": []
+    },
     {
       "id": "uuid-...",
       "file_path": "app/auth/utils.py",
@@ -1502,6 +1594,10 @@ FAILED có thể xảy ra ở bất kỳ bước nào
   ]
 }
 ```
+
+> Issue thứ 2 minh hoạ cơ chế `needs_ai_verification` (mục 6.6, `AI_flow.md` mục 3.2b): `RC-W3-09` PASS phần tồn tại (có hàm sync) nên KHÔNG tạo issue `category=requirement` — nhưng Agent đọc file trong `verification_queue` và phát hiện logic sai, nên tự tạo 1 issue `category=maintainability, source=ai_review` riêng, không phải rule engine.
+
+> Nếu `rule_profile = null` (job không bật roadmap check): bỏ hẳn `"compliance"`/`"bonus"` khỏi `scores`, bỏ category `"requirement"` khỏi `issues_by_category`, không có issue nào `source="roadmap_rule"`.
 
 ---
 
@@ -1598,9 +1694,13 @@ FAILED có thể xảy ra ở bất kỳ bước nào
   - Relationships + foreign keys + indexes
   - Alembic setup + initial migration
   - Migration cho tất cả tables
+  - Migration riêng (Phase 6, trước khi code Roadmap Rule Engine): `review_issues.category`
+    thêm `'requirement'`, `review_issues.source` thêm `'roadmap_rule'`, `review_reports`
+    thêm cột `compliance_score`, `bonus_score` — xem `AI_flow.md` mục 10
 - **MongoDB:**
   - PyMongo async client setup (Motor)
-  - Collections: `file_analysis_results`, `raw_static_analysis_outputs`, `tool_call_logs`, `chunk_metadata`
+  - Collections: `file_analysis_results`, `raw_static_analysis_outputs`, `tool_call_logs`,
+    `chunk_metadata`, `roadmap_compliance_results`
   - Index creation cho frequently queried fields
   - CRUD helpers cho từng collection
 - **Redis:**
@@ -1733,6 +1833,17 @@ FAILED có thể xảy ra ở bất kỳ bước nào
 > 🎯 **Mục tiêu:** AI review pipeline hoàn chỉnh, RAG hoạt động, debug page, polish & demo.
 
 **Tasks Sprint 1 — AI Core (Ngày 22–25):**
+- **Roadmap Compliance Rule Engine (làm TRƯỚC, không cần AI, ~0.5 ngày):**
+  - `roadmap_rules_v2.yaml` — 79 rules (`AI_flow.md` mục 3.4), 16 rule có
+    `needs_ai_verification=true` (mục 3.2b)
+  - `RoadmapComplianceChecker` — 8 check_type + filter theo `weeks_included`
+    (`AI_flow.md` mục 3.1–3.2)
+  - Alembic revision: thêm `requirement` vào category enum, `roadmap_rule` vào
+    source enum, cột `compliance_score` + `bonus_score` trong `review_reports`
+  - Ghi kết quả vào MongoDB `roadmap_compliance_results` (kèm `verification_queue`)
+    + `review_issues`
+  - Merge `verification_queue` vào danh sách file ưu tiên cho Agent đọc (Sprint 1,
+    cùng lúc code Agent loop — vì Agent cần biết đọc ai_hint từ đâu)
 - Code chunker (Python AST-based, semantic boundary)
 - ChromaDB setup + persistent storage
 - Knowledge base ingestion: OWASP Top 10, Python best practices, Clean Code
@@ -1745,10 +1856,11 @@ FAILED có thể xảy ra ở bất kỳ bước nào
   - Tool 4: `generate_issue` — tạo structured issue
   - Tool 5: `generate_final_report` — tổng hợp report + scores
 - LLM client: Google Gemini 2.0 Flash (free tier) hoặc GPT-4o-mini
-- System prompt design (review rules, confidence threshold)
+- System prompt design (review rules, confidence threshold, inject
+  `roadmap_compliance_summary` để Agent không re-report trùng)
 - Tool call logger → MongoDB `tool_call_logs`
-- Issue deduplication: merge static analysis + AI issues
-- Report score calculation
+- Issue deduplication: merge roadmap rule + static analysis + AI issues
+- Report score calculation (bao gồm `compliance_score`, `bonus_score`)
 - Anti-hallucination: confidence threshold ≥ 0.7, line validation, RAG grounding
 - Hard limit 20 tool calls per session
 
@@ -1777,6 +1889,12 @@ FAILED có thể xảy ra ở bất kỳ bước nào
 - [ ] `review_reports` có scores, `review_issues` có issues với confidence ≥ 0.7
 - [ ] RAG retrieve đúng OWASP content khi review security-related code
 - [ ] AI debug page hiển thị tool calls + RAG results
+- [ ] Roadmap Compliance Rule Engine chạy đúng 79/79 rules, ra `compliance_score` +
+      `bonus_score` chính xác khi `rule_profile="roadmap_bootcamp_v1"`
+- [ ] `weeks_included=[1,2]` chỉ áp 29 rule (Tuần 1+2+GEN), không báo thiếu RAG/WebSocket
+- [ ] Rule `needs_ai_verification=true` PASS existence → provisional_pass, file vào
+      `verification_queue`, Agent đọc và tự quyết (không phải rule engine tự đóng issue)
+- [ ] Khi `rule_profile=null`, không có issue nào category=requirement (regression test)
 - [ ] Export report hoạt động (ít nhất Markdown)
 - [ ] `docker-compose up` → toàn bộ hệ thống chạy
 - [ ] End-to-end demo flow hoạt động smooth
@@ -1846,10 +1964,14 @@ repoguard-ai/
 │   │   │   │   ├── generate_issue.py
 │   │   │   │   └── generate_report.py
 │   │   │   ├── prompts.py
-│   │   │   └── rag/
-│   │   │       ├── vectorstore.py     # ChromaDB wrapper
-│   │   │       ├── ingestion.py
-│   │   │       └── retriever.py
+│   │   │   ├── rag/
+│   │   │   │   ├── vectorstore.py     # ChromaDB wrapper
+│   │   │   │   ├── ingestion.py
+│   │   │   │   └── retriever.py
+│   │   │   └── rules/                 # Roadmap Compliance (AI_flow.md mục 3)
+│   │   │       ├── roadmap_checker.py # RoadmapComplianceChecker, KHÔNG dùng LLM
+│   │   │       ├── roadmap_rules_v2.yaml  # 79 rules chính thức
+│   │   │       └── git_utils.py       # git ls-files (forbidden_tracked_file)
 │   │   ├── workers/
 │   │   │   ├── celery_app.py
 │   │   │   └── review_worker.py       # Main Celery task
@@ -1919,6 +2041,7 @@ repoguard-ai/
 | LLM client | LangChain hoặc direct SDK | Tool calling support |
 | Static analysis - Py | ruff + bandit | Nhanh, JSON output |
 | Static analysis - JS | eslint (via npx) | Standard |
+| Roadmap Compliance | PyYAML | Đọc `roadmap_rules_v2.yaml` (79 rules, mục 6.6) |
 | Frontend | Next.js 15 App Router | Theo lộ trình |
 | CSS | TailwindCSS + shadcn/ui | Đẹp, nhanh |
 | Charts | Recharts | Dễ dùng với React |
@@ -2001,6 +2124,25 @@ repoguard-ai/
 **Trả lời tốt:**  
 "Có, nhưng ít hơn đáng kể. Phần static analysis (ruff + bandit + eslint) vẫn có giá trị — hệ thống aggregate tất cả tools vào một dashboard thay vì developer phải chạy từng tool và tự đọc output. Nhưng giá trị thực sự của hệ thống là AI layer: cross-file reasoning, ngôn ngữ tự nhiên, và gợi ý cụ thể. Thiếu AI thì đây chỉ là wrapper cho linting tools — vẫn useful nhưng không đủ differentiated so với chạy CI pipeline."
 
+### Q11: Vì sao cần Roadmap Compliance Rule Engine — AI review không tự phát hiện được thiếu WebSocket sao?
+
+**Trả lời tốt:**  
+"AI review đọc code đang có và phân tích nó — nó không có động lực nào để tự hỏi 'tính năng X có tồn tại trong repo này không' trừ khi được bảo phải kiểm tra. Đây gọi là bài toán absence detection: phát hiện cái KHÔNG có, khác hẳn phát hiện lỗi trong cái ĐANG có. Rule engine giải quyết việc này bằng checklist tường minh — đối chiếu file/dependency/pattern với 79 yêu cầu rút ra từ lộ trình đào tạo, chạy độc lập với AI nên confidence luôn là 1.0, không phụ thuộc AI có 'nhớ' check hay không. Rule engine này opt-in theo từng job (`rule_profile`) VÀ theo từng tuần (`weeks_included`) — repo nộp bài Tuần 1 chỉ bị soi theo checklist Tuần 1, không bị đòi hỏi RAG của Tuần 7 chưa hề được dạy."
+
+### Q12: 79 rules đó lấy từ đâu, có subjective không?
+
+**Trả lời tốt:**  
+"Rút trực tiếp từ file lộ trình đào tạo (`Lộ_trình_đào_tạo_Python_NextJS_AI_agent.xlsx`) — không chỉ sheet tổng quan mà cả bảng tiêu chí chấm điểm chi tiết từng buổi học, để rule bám đúng trọng số thực tế (VD: Redis Cache và Sync MySQL→MongoDB ở Tuần 3 được chấm 20/100 điểm mỗi mục — nặng nhất — nên 2 rule đó tôi để P0 thay vì P1). Mỗi rule map 1-1 với 1 yêu cầu trong đề, cộng thêm một số rule tự suy ra từ best practice liên quan (VD: `.env` không được commit).
+
+Về việc subjective: hệ thống có 2 tầng. 63/79 rule là check thuần existence (có/không file, dependency, pattern) — không subjective. 16/79 rule có thêm cờ `needs_ai_verification` — vì roadmap không chỉ đòi 'có tồn tại' mà còn đòi 'làm ĐÚNG' (VD: sync job không chỉ cần tồn tại mà phải chạy định kỳ + xử lý đúng incremental theo timestamp). Với 16 rule này, rule engine chỉ xác nhận phần tồn tại (deterministic), còn phần đúng/sai được giao lại cho AI Agent đọc code cụ thể và tự quyết — tách rõ ràng 2 loại confidence trong report thay vì giả vờ tất cả đều là bằng chứng tuyệt đối."
+
+### Q13: Rule engine biết được "cache tầng ứng dụng, đồng bộ MySQL→MongoDB, xử lý timestamp/version" không — đây đâu chỉ là có/không?
+
+**Trả lời tốt:**  
+"Không hoàn toàn — và đây chính là lý do có cơ chế `needs_ai_verification`. Rule engine tự nó chỉ trả lời được phần tồn tại: có dùng Redis không (RC-W3-05), có gọi hàm cache/expire không (RC-W3-06), có file/hàm nào chứa chữ 'sync' trong tầng service không (RC-W3-09). Nó KHÔNG tự đọc hiểu được MySQL có thật là nguồn dữ liệu gốc hay không, sync có chạy định kỳ thật hay không, có xử lý incremental theo timestamp hay chỉ ghi đè toàn bộ mỗi lần.
+
+Giải pháp: rule engine tìm ra ứng viên file (deterministic, rẻ, nhanh) rồi bắt buộc AI Agent đọc kỹ đúng file đó kèm 1 câu hint cụ thể cần xác minh gì — thay vì để Agent tự bơi tìm hoặc bỏ sót. Nếu Agent đọc thấy code sync chỉ là `DELETE FROM mongo; INSERT ALL` (ghi đè toàn bộ, không dùng timestamp) thay vì incremental thật, Agent tạo 1 issue riêng (category=maintainability, source=ai_review) giải thích rõ sai ở đâu — issue này khác hẳn issue 'thiếu tính năng' của rule engine, vì đây là nhận định về CHẤT LƯỢNG chứ không phải SỰ TỒN TẠI."
+
 ---
 
 ## 17. TỰ ĐÁNH GIÁ PHẦN KHÓ VÀ CẢNH BÁO
@@ -2024,6 +2166,7 @@ repoguard-ai/
 | JWT auth | Có template sẵn với FastAPI |
 | shadcn/ui components | Copy-paste từ docs, có sẵn Table, Drawer, Chart |
 | Recharts | 20 dòng code ra pie chart ngay |
+| Roadmap Compliance Rule Engine | Chỉ là file/dependency/regex check — không LLM, không tricky logic, làm trong ~0.5 ngày |
 
 ### 📋 Demo Day Checklist
 
