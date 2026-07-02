@@ -17,10 +17,10 @@ export default function SettingsPage() {
           <p className="text-xs font-medium uppercase text-muted-foreground">
             Workspace controls
           </p>
-          <h1 className="mt-2 text-2xl font-extrabold tracking-normal">
+          <h1 className="mt-2 text-3xl font-extrabold tracking-normal">
             Settings
           </h1>
-          <p className="mt-1 text-sm text-muted-foreground">
+          <p className="mt-1 text-[15px] leading-6 text-muted-foreground">
             Manage account session behavior and workspace-level controls.
           </p>
         </div>
@@ -43,7 +43,7 @@ export default function SettingsPage() {
                   </span>
                   <div>
                     <h2 className="text-sm font-semibold">Logout all sessions</h2>
-                    <p className="mt-1 max-w-xl text-sm text-muted-foreground">
+                    <p className="mt-1 max-w-xl text-[15px] leading-6 text-muted-foreground">
                       Revoke server-side sessions on every device. Your current
                       browser will return to login after the request succeeds.
                     </p>

@@ -7,6 +7,8 @@ import {
   LayoutDashboard,
   LogOut,
   Menu,
+  PanelLeftClose,
+  PanelLeftOpen,
   Search,
   Settings,
   ShieldCheck,
@@ -38,11 +40,18 @@ type AppShellProps = {
 
 export function AppShell({ children }: AppShellProps) {
   const pathname = usePathname();
+  const [isDesktopNavCollapsed, setIsDesktopNavCollapsed] = useState(false);
   const [isMobileNavOpen, setIsMobileNavOpen] = useState(false);
 
   return (
     <div className="flex h-screen overflow-hidden bg-background text-foreground">
-      <DesktopSidebar pathname={pathname} />
+      <DesktopSidebar
+        isCollapsed={isDesktopNavCollapsed}
+        onToggleCollapsed={() =>
+          setIsDesktopNavCollapsed((isCollapsed) => !isCollapsed)
+        }
+        pathname={pathname}
+      />
 
       {isMobileNavOpen ? (
         <div className="fixed inset-0 z-50 lg:hidden">
@@ -83,7 +92,7 @@ export function AppShell({ children }: AppShellProps) {
             />
             <input
               aria-label="Search repositories, jobs, or files"
-              className="h-9 w-full max-w-xl rounded-md border border-input bg-background pl-9 pr-3 text-sm text-foreground placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-500 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950"
+              className="h-11 w-full max-w-2xl rounded-md border border-input bg-background pl-10 pr-3 text-[15px] text-foreground placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-500 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950"
               placeholder="Search repositories, jobs, or files"
               type="search"
             />
@@ -97,7 +106,7 @@ export function AppShell({ children }: AppShellProps) {
         </header>
 
         <main className="min-h-0 flex-1 overflow-y-auto">
-          <div className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-4 py-6 sm:px-6 lg:px-8">
+          <div className="mx-auto flex w-full max-w-[1600px] flex-col gap-6 px-4 py-7 text-[15px] sm:px-6 lg:px-8 xl:px-10">
             {children}
           </div>
         </main>
@@ -106,28 +115,77 @@ export function AppShell({ children }: AppShellProps) {
   );
 }
 
-function DesktopSidebar({ pathname }: { pathname: string }) {
+function DesktopSidebar({
+  isCollapsed,
+  onToggleCollapsed,
+  pathname,
+}: {
+  isCollapsed: boolean;
+  onToggleCollapsed: () => void;
+  pathname: string;
+}) {
   return (
-    <aside className="hidden w-64 shrink-0 border-r border-border bg-card lg:flex lg:flex-col">
-      <ShellBrand />
-      <ShellNav pathname={pathname} />
-      <ShellSessionActions />
+    <aside
+      className={cn(
+        "hidden shrink-0 border-r border-border bg-card transition-[width] duration-200 ease-in-out lg:flex lg:flex-col",
+        isCollapsed ? "w-20" : "w-72",
+      )}
+    >
+      <ShellBrand isCollapsed={isCollapsed} />
+      <ShellNav isCollapsed={isCollapsed} pathname={pathname} />
+      <div className="border-t border-border p-3">
+        <Button
+          aria-label={isCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+          className={cn("w-full", isCollapsed ? "px-0" : "justify-start")}
+          onClick={onToggleCollapsed}
+          type="button"
+          variant="ghost"
+        >
+          {isCollapsed ? (
+            <PanelLeftOpen aria-hidden="true" />
+          ) : (
+            <PanelLeftClose aria-hidden="true" />
+          )}
+          <span className={isCollapsed ? "sr-only" : undefined}>
+            Collapse panel
+          </span>
+        </Button>
+      </div>
+      <ShellSessionActions isCollapsed={isCollapsed} />
     </aside>
   );
 }
 
-function ShellBrand({ onClose }: { onClose?: () => void }) {
+function ShellBrand({
+  isCollapsed = false,
+  onClose,
+}: {
+  isCollapsed?: boolean;
+  onClose?: () => void;
+}) {
   return (
-    <div className="flex h-16 items-center justify-between border-b border-border px-4">
-      <Link className="flex min-w-0 items-center gap-3" href="/dashboard">
-        <span className="flex size-9 shrink-0 items-center justify-center rounded-md border border-border bg-background text-slate-200">
+    <div
+      className={cn(
+        "flex h-16 items-center border-b border-border px-4",
+        isCollapsed ? "justify-center" : "justify-between",
+      )}
+    >
+      <Link
+        aria-label="RepoGuard AI dashboard"
+        className={cn(
+          "flex min-w-0 items-center gap-3",
+          isCollapsed && "justify-center",
+        )}
+        href="/dashboard"
+      >
+        <span className="flex size-10 shrink-0 items-center justify-center rounded-md border border-border bg-background text-slate-200">
           <ShieldCheck aria-hidden="true" className="size-5" />
         </span>
-        <span className="min-w-0">
-          <span className="block truncate text-sm font-semibold">
+        <span className={cn("min-w-0", isCollapsed && "hidden")}>
+          <span className="block truncate text-[15px] font-bold">
             RepoGuard AI
           </span>
-          <span className="block truncate text-xs text-muted-foreground">
+          <span className="block truncate text-[13px] text-muted-foreground">
             Source security review
           </span>
         </span>
@@ -148,14 +206,22 @@ function ShellBrand({ onClose }: { onClose?: () => void }) {
 }
 
 function ShellNav({
+  isCollapsed = false,
   onNavigate,
   pathname,
 }: {
+  isCollapsed?: boolean;
   onNavigate?: () => void;
   pathname: string;
 }) {
   return (
-    <nav className="flex flex-1 flex-col gap-1 px-3 py-4" aria-label="Primary">
+    <nav
+      className={cn(
+        "flex flex-1 flex-col gap-1.5 px-3 py-4",
+        isCollapsed && "items-center",
+      )}
+      aria-label="Primary"
+    >
       {NAV_ITEMS.map((item) => {
         const isActive =
           pathname === item.href || pathname.startsWith(`${item.href}/`);
@@ -164,8 +230,10 @@ function ShellNav({
         return (
           <Link
             aria-current={isActive ? "page" : undefined}
+            title={isCollapsed ? item.label : undefined}
             className={cn(
-              "flex h-10 items-center gap-3 rounded-md px-3 text-sm font-medium text-muted-foreground transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-500 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950",
+              "flex h-11 items-center gap-3 rounded-md px-3 text-[15px] font-semibold text-muted-foreground transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-500 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950",
+              isCollapsed && "w-11 justify-center px-0",
               isActive
                 ? "bg-slate-800 text-slate-50"
                 : "hover:bg-slate-800/80 hover:text-foreground",
@@ -175,7 +243,9 @@ function ShellNav({
             onClick={onNavigate}
           >
             <Icon aria-hidden="true" className="size-4" />
-            {item.label}
+            <span className={isCollapsed ? "sr-only" : undefined}>
+              {item.label}
+            </span>
           </Link>
         );
       })}
@@ -183,12 +253,16 @@ function ShellNav({
   );
 }
 
-function ShellSessionActions() {
+function ShellSessionActions({ isCollapsed = false }: { isCollapsed?: boolean }) {
   return (
     <section className="border-t border-border p-3" aria-label="Session">
       <LogoutButton
-        className="w-full justify-start border border-border bg-background text-muted-foreground hover:bg-slate-800/80 hover:text-foreground"
+        className={cn(
+          "w-full border border-border bg-background text-muted-foreground hover:bg-slate-800/80 hover:text-foreground",
+          isCollapsed ? "justify-center px-0" : "justify-start",
+        )}
         icon={LogOut}
+        showLabel={!isCollapsed}
         variant="outline"
       />
     </section>

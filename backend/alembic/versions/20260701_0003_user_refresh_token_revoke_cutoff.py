@@ -21,7 +21,9 @@ def upgrade() -> None:
 
     op.add_column(
         "users",
-        sa.Column("refresh_tokens_revoked_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column(
+            "refresh_tokens_revoked_at", sa.DateTime(timezone=True), nullable=True
+        ),
     )
 
 

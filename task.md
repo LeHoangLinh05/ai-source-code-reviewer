@@ -3,6 +3,7 @@
 > Checklist theo 6 phase, convert từ WBS trong `RepoGuard_AI_Project_Plan.md`.
 > Mỗi task có ID riêng (vd `P1.3`) để tham chiếu nhanh: "làm task P1.3" hoặc "fix P6.5".
 > Bắt đầu: 26/06/2026 · Deadline: 28 ngày · Hôm nay: 30/06/2026 (Ngày 5 — đang ở cuối Phase 1).
+> Note 2026-07-01: Từ thời điểm này chuyển sang làm theo vertical slice (API + FE cho từng module) để luôn có flow E2E sau mỗi bước; checklist phase gốc vẫn giữ để tracking scope, không có nghĩa là bỏ sót phase.
 
 ---
 
@@ -14,9 +15,9 @@
 - [x] **P1.4** Auth: register, login (JWT access + refresh)
 - [x] **P1.5** Auth: logout (blacklist token qua Redis)
 - [x] **P1.6** RBAC: role `user` / `admin` + `get_current_user` dependency
-- [ ] **P1.7** CRUD module `repositories` (thêm/xóa/xem repo URL)
-- [ ] **P1.8** Module `review_jobs` (tạo job, lấy status, cancel)
-- [ ] **P1.9** Module `reports` (query report, issues list filter/pagination)
+- [x] **P1.7** CRUD module `repositories` (thêm/xóa/xem repo URL)
+- [x] **P1.8** Module `review_jobs` (tạo job, lấy status, cancel)
+- [x] **P1.9** Module `reports` (query report, issues list filter/pagination)
 - [ ] **P1.10** Clone service: `git clone --depth 1` + size validation
 - [ ] **P1.11** File filter: bỏ qua binary, node_modules, venv, `__pycache__`
 - [ ] **P1.12** Sandbox cleanup scheduler (TTL 1h)
@@ -30,7 +31,7 @@
 **Done khi:**
 - [x] `/auth/register`, `/auth/login`, `/auth/refresh`, `/auth/logout` hoạt động
 - [x] JWT + RBAC đúng
-- [ ] CRUD `/repositories` hoạt động
+- [x] CRUD `/repositories` hoạt động
 - [ ] `POST /review-jobs` tạo job + enqueue Celery
 - [ ] Worker clone repo, chạy structure + static analysis
 - [ ] Ruff/Bandit parse thành `NormalizedIssue`
@@ -40,20 +41,20 @@
 
 ## PHASE 2 — DevOps & Docker (Ngày 6–7)
 
-- [ ] **P2.1** Dockerfile backend (Python 3.12 slim + ruff, bandit)
-- [ ] **P2.2** Dockerfile frontend (Node 20 alpine, multi-stage)
-- [ ] **P2.3** `docker-compose.yml` dev: postgres, mongodb, redis, backend, worker, frontend, nginx
-- [ ] **P2.4** Nginx config: `/api` → backend, `/` → frontend, `/ws` → backend
-- [ ] **P2.5** Nginx: `proxy_buffering off` cho SSE
-- [ ] **P2.6** `.env.example` đầy đủ biến môi trường
-- [ ] **P2.7** Health check endpoint `/api/health`
-- [ ] **P2.8** Volume mounts cho hot reload dev
+- [x] **P2.1** Dockerfile backend (Python 3.12 slim + ruff, bandit)
+- [x] **P2.2** Dockerfile frontend (Node 20 alpine, multi-stage)
+- [x] **P2.3** `docker-compose.yml` dev: postgres, mongodb, redis, backend, worker, frontend, nginx
+- [x] **P2.4** Nginx config: `/api` → backend, `/` → frontend, `/ws` → backend
+- [x] **P2.5** Nginx: `proxy_buffering off` cho SSE
+- [x] **P2.6** `.env.example` đầy đủ biến môi trường
+- [x] **P2.7** Health check endpoint `/api/health`
+- [x] **P2.8** Volume mounts cho hot reload dev
 
 **Done khi:**
-- [ ] `docker-compose up --build` không lỗi
+- [x] `docker-compose up --build` không lỗi
 - [ ] Backend qua `http://localhost/api/docs`
 - [ ] Frontend qua `http://localhost`
-- [ ] Hot reload hoạt động
+- [x] Hot reload hoạt động
 
 ---
 
@@ -97,16 +98,16 @@
 - [x] **P4.1** Setup Next.js 15 App Router + Tailwind + shadcn/ui
 - [x] **P4.2** Axios instance + interceptor auto-refresh token
 - [x] **P4.3** Redux Toolkit: `authSlice`, `jobSlice`, `filterSlice` + typed hooks
-- [ ] **P4.4** TypeScript types cho mọi API response
+- [ ] **P4.4** TypeScript types cho mọi API response _(Slice 1: repository API types done; Slice 2: review job API types done; Slice 3: report/issue API types done)_
 - [x] **P4.5** `/login`, `/register` + protected route middleware
 - [ ] **P4.6** Dashboard layout: sidebar + navbar responsive
 - [ ] **P4.7** `/dashboard` — overview, stats cards
-- [ ] **P4.8** `/repositories` + `/repositories/[id]`
-- [ ] **P4.9** `/reviews` job list với status badge
-- [ ] **P4.10** `/reviews/[id]` job detail (poll status, chưa cần SSE thật)
-- [ ] **P4.11** `/reviews/[id]/report` — score gauges, pie/bar chart, top risky files
-- [ ] **P4.12** `/reviews/[id]/issues` — table filter/pagination/search
-- [ ] **P4.13** Issue detail drawer: Prism.js code viewer + AI suggestion
+- [x] **P4.8** `/repositories` + `/repositories/[id]`
+- [x] **P4.9** `/reviews` job list với status badge
+- [x] **P4.10** `/reviews/[id]` job detail (poll status, chưa cần SSE thật)
+- [x] **P4.11** `/reviews/[id]/report` — score gauges, pie/bar chart, top risky files
+- [x] **P4.12** `/reviews/[id]/issues` — table filter/pagination/search
+- [x] **P4.13** Issue detail drawer: Prism.js code viewer + AI suggestion
 - [ ] **P4.14** `/settings` — profile, đổi password
 - [ ] **P4.15** Polish: loading/empty states, error boundary, dark mode, responsive
 

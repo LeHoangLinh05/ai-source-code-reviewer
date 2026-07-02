@@ -19,6 +19,7 @@ type LogoutActionButtonProps = {
   errorMessage: string;
   icon: LucideIcon;
   label: string;
+  showLabel?: boolean;
   variant: ButtonProps["variant"];
 };
 
@@ -28,6 +29,7 @@ function LogoutActionButton({
   errorMessage,
   icon: Icon,
   label,
+  showLabel = true,
   variant,
 }: LogoutActionButtonProps) {
   const dispatch = useAppDispatch();
@@ -65,7 +67,7 @@ function LogoutActionButton({
       variant={variant}
     >
       <Icon aria-hidden="true" />
-      {label}
+      <span className={showLabel ? undefined : "sr-only"}>{label}</span>
     </Button>
   );
 }
@@ -73,12 +75,14 @@ function LogoutActionButton({
 type LogoutButtonProps = {
   className?: string;
   icon?: LucideIcon;
+  showLabel?: boolean;
   variant?: ButtonProps["variant"];
 };
 
 export function LogoutButton({
   className,
   icon = LogOut,
+  showLabel = true,
   variant = "secondary",
 }: LogoutButtonProps) {
   return (
@@ -88,12 +92,19 @@ export function LogoutButton({
       errorMessage="Unable to end the server session."
       icon={icon}
       label="Logout"
+      showLabel={showLabel}
       variant={variant}
     />
   );
 }
 
-export function LogoutAllButton({ className }: { className?: string }) {
+export function LogoutAllButton({
+  className,
+  showLabel = true,
+}: {
+  className?: string;
+  showLabel?: boolean;
+}) {
   return (
     <LogoutActionButton
       className={className}
@@ -101,6 +112,7 @@ export function LogoutAllButton({ className }: { className?: string }) {
       errorMessage="Unable to end all sessions."
       icon={ShieldOff}
       label="Logout all"
+      showLabel={showLabel}
       variant="destructive"
     />
   );

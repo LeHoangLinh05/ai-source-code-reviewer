@@ -85,10 +85,10 @@ export default function ReviewJobDetailPage() {
           <p className="text-xs font-medium uppercase text-muted-foreground">
             Review execution
           </p>
-          <h1 className="mt-2 text-2xl font-extrabold tracking-normal">
+          <h1 className="mt-2 text-3xl font-extrabold tracking-normal">
             {currentJob?.repository_name ?? "Review Job"}
           </h1>
-          <p className="mt-1 text-sm text-muted-foreground">
+          <p className="mt-1 text-[15px] leading-6 text-muted-foreground">
             Polling status every 4 seconds until terminal state.
           </p>
         </div>
@@ -185,8 +185,8 @@ function DetailRow({
 }) {
   return (
     <div className="grid gap-2 border-b border-border pb-4 last:border-b-0 last:pb-0 sm:grid-cols-[180px_1fr]">
-      <dt className="text-sm text-muted-foreground">{label}</dt>
-      <dd className="min-w-0 break-words text-sm text-foreground">{value}</dd>
+      <dt className="text-[15px] text-muted-foreground">{label}</dt>
+      <dd className="min-w-0 break-words text-[15px] text-foreground">{value}</dd>
     </div>
   );
 }

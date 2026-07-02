@@ -185,10 +185,10 @@ export default function RepositoryDetailPage() {
           <p className="text-xs font-medium uppercase text-muted-foreground">
             Repository target
           </p>
-          <h1 className="mt-2 text-2xl font-extrabold tracking-normal">
+          <h1 className="mt-2 text-3xl font-extrabold tracking-normal">
             {selectedRepository?.name ?? "Repository Details"}
           </h1>
-          <p className="mt-1 text-sm text-muted-foreground">
+          <p className="mt-1 text-[15px] leading-6 text-muted-foreground">
             Metadata, default branch, and review launch controls.
           </p>
         </div>
@@ -296,8 +296,8 @@ export default function RepositoryDetailPage() {
                 <h2 className="mt-4 text-lg font-semibold tracking-normal">
                   No review history yet
                 </h2>
-                <p className="mt-2 max-w-md text-sm text-muted-foreground">
-                  Review job history will be connected in the review_jobs slice.
+                  <p className="mt-2 max-w-md text-[15px] leading-6 text-muted-foreground">
+                    Review job history will be connected in the review_jobs slice.
                 </p>
               </div>
             </CardContent>
@@ -425,8 +425,8 @@ type DetailRowProps = {
 function DetailRow({ label, value }: DetailRowProps) {
   return (
     <div className="grid gap-2 border-b border-border pb-4 last:border-b-0 last:pb-0 sm:grid-cols-[180px_1fr]">
-      <dt className="text-sm text-muted-foreground">{label}</dt>
-      <dd className="min-w-0 text-sm text-foreground">{value}</dd>
+      <dt className="text-[15px] text-muted-foreground">{label}</dt>
+      <dd className="min-w-0 text-[15px] text-foreground">{value}</dd>
     </div>
   );
 }

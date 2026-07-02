@@ -19,19 +19,19 @@ import type { IssueCategory, IssueSeverity, ReviewIssue } from "@/types/issue";
 import type { ReviewReport, TopRiskyFile } from "@/types/report";
 
 const SEVERITY_COLORS: Record<IssueSeverity, string> = {
-  critical: "#e2e8f0",
-  high: "#cbd5e1",
-  medium: "#94a3b8",
-  low: "#64748b",
-  info: "#475569",
+  critical: "#f43f5e",
+  high: "#fb923c",
+  medium: "#facc15",
+  low: "#60a5fa",
+  info: "#94a3b8",
 };
 
 const CATEGORY_COLORS: Record<IssueCategory, string> = {
-  bug: "#e2e8f0",
-  maintainability: "#cbd5e1",
-  performance: "#94a3b8",
-  security: "#64748b",
-  style: "#475569",
+  bug: "#fb923c",
+  maintainability: "#a78bfa",
+  performance: "#fbbf24",
+  security: "#fb7185",
+  style: "#38bdf8",
 };
 
 export default function ReviewReportPage() {
@@ -97,10 +97,10 @@ export default function ReviewReportPage() {
           <p className="text-xs font-medium uppercase text-muted-foreground">
             Security report
           </p>
-          <h1 className="mt-2 text-2xl font-extrabold tracking-normal">
+          <h1 className="mt-2 text-3xl font-extrabold tracking-normal">
             Report Overview
           </h1>
-          <p className="mt-1 text-sm text-muted-foreground">
+          <p className="mt-1 text-[15px] leading-6 text-muted-foreground">
             Scores, issue distribution, and high-risk files.
           </p>
         </div>
@@ -179,7 +179,7 @@ export default function ReviewReportPage() {
                   </CardDescription>
                 </CardHeader>
                 <CardContent>
-                  <p className="text-sm leading-6 text-muted-foreground">
+                  <p className="text-[15px] leading-6 text-muted-foreground">
                     {report.executive_summary ?? "No summary available."}
                   </p>
                 </CardContent>
@@ -226,7 +226,7 @@ function ScoreGauge({ label, value }: { label: string; value: number | null }) {
   const radius = 42;
   const circumference = 2 * Math.PI * radius;
   const strokeDashoffset = circumference - (percentage / 100) * circumference;
-  const color = score < 5 ? "#64748b" : score < 8 ? "#94a3b8" : "#e2e8f0";
+  const color = score < 5 ? "#f43f5e" : score < 8 ? "#f59e0b" : "#10b981";
 
   return (
     <Card>
@@ -256,7 +256,7 @@ function ScoreGauge({ label, value }: { label: string; value: number | null }) {
           <p className="text-xs font-medium uppercase text-muted-foreground">
             {label}
           </p>
-          <p className="mt-1 text-3xl font-black tracking-normal">
+          <p className="mt-1 text-3xl font-extrabold tracking-normal">
             {score.toFixed(1)}
           </p>
           <p className="text-xs text-muted-foreground">/ 10.0</p>
@@ -349,7 +349,7 @@ function CategoryBars({
 function TopRiskyFiles({ files }: { files: TopRiskyFile[] }) {
   if (files.length === 0) {
     return (
-      <p className="text-sm text-muted-foreground">No risky files available.</p>
+      <p className="text-[15px] text-muted-foreground">No risky files available.</p>
     );
   }
 
@@ -378,7 +378,7 @@ function TopRiskyFiles({ files }: { files: TopRiskyFile[] }) {
 function Metric({ label, value }: { label: string; value: number | string }) {
   return (
     <div className="rounded-md border border-border p-4">
-      <p className="text-sm text-muted-foreground">{label}</p>
+      <p className="text-[15px] text-muted-foreground">{label}</p>
       <p className="mt-2 text-xl font-semibold tracking-normal">{value}</p>
     </div>
   );

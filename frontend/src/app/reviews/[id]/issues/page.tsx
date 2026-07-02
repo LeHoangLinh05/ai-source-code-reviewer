@@ -142,10 +142,10 @@ export default function ReviewIssuesPage() {
           <p className="text-xs font-medium uppercase text-muted-foreground">
             Finding triage
           </p>
-          <h1 className="mt-2 text-2xl font-extrabold tracking-normal">
+          <h1 className="mt-2 text-3xl font-extrabold tracking-normal">
             Issues
           </h1>
-          <p className="mt-1 text-sm text-muted-foreground">
+          <p className="mt-1 text-[15px] leading-6 text-muted-foreground">
             Filter static analyzer and AI findings by severity, source, and file.
           </p>
         </div>
@@ -307,7 +307,7 @@ function IssueTable({
 }) {
   return (
     <div className="overflow-x-auto border-t border-border">
-      <table className="w-full min-w-[980px] text-left text-sm">
+      <table className="w-full min-w-[980px] text-left text-[15px]">
         <thead className="bg-muted/50 text-xs uppercase text-muted-foreground">
           <tr>
             <th className="px-6 py-3 font-medium">Severity</th>
@@ -562,7 +562,9 @@ function DetailSection({
   return (
     <section>
       <h3 className="text-sm font-semibold tracking-normal">{title}</h3>
-      <div className="mt-2 text-sm leading-6 text-muted-foreground">{children}</div>
+      <div className="mt-2 text-[15px] leading-6 text-muted-foreground">
+        {children}
+      </div>
     </section>
   );
 }
