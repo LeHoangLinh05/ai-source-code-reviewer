@@ -1,8 +1,10 @@
 """Create an admin user for local testing and later admin pages.
 
 Usage:
-    python scripts/create_admin.py --email admin@example.com --password "StrongPass123"
     python scripts/create_admin.py
+    python scripts/create_admin.py --email admin@example.com
+
+Set ADMIN_EMAIL and ADMIN_PASSWORD in .env to run non-interactively.
 """
 
 from __future__ import annotations
@@ -13,6 +15,9 @@ from getpass import getpass
 import logging
 from pathlib import Path
 import sys
+
+from pydantic import SecretStr
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 BACKEND_DIR = PROJECT_ROOT / "backend"
@@ -25,6 +30,20 @@ from app.repositories.user_repository import UserRepository  # noqa: E402
 from app.schemas.auth import RegisterRequest  # noqa: E402
 
 logger = logging.getLogger(__name__)
+
+
+class AdminSeedSettings(BaseSettings):
+    """Admin seed credentials loaded from ignored env files."""
+
+    model_config = SettingsConfigDict(
+        env_file=(PROJECT_ROOT / ".env", BACKEND_DIR / ".env"),
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+        extra="ignore",
+    )
+
+    admin_email: str | None = None
+    admin_password: SecretStr | None = None
 
 
 async def create_admin(email: str, password: str) -> None:
@@ -50,15 +69,29 @@ def parse_args() -> argparse.Namespace:
 
     parser = argparse.ArgumentParser(description="Create a RepoGuard admin user.")
     parser.add_argument("--email", help="Admin email address")
-    parser.add_argument("--password", help="Admin password")
     return parser.parse_args()
 
 
-def read_credentials(args: argparse.Namespace) -> tuple[str, str]:
-    """Read credentials from flags or interactive prompts."""
+def get_admin_password(settings: AdminSeedSettings) -> str | None:
+    """Return the configured admin password when it is non-empty."""
 
-    email = args.email or input("Admin email: ").strip()
-    password = args.password or getpass("Admin password: ")
+    if settings.admin_password is None:
+        return None
+
+    password = settings.admin_password.get_secret_value()
+    if not password:
+        return None
+
+    return password
+
+
+def read_credentials(args: argparse.Namespace) -> tuple[str, str]:
+    """Read credentials from environment variables, flags, or prompts."""
+
+    settings = AdminSeedSettings()
+    configured_email = settings.admin_email.strip() if settings.admin_email else None
+    email = args.email or configured_email or input("Admin email: ").strip()
+    password = get_admin_password(settings) or getpass("Admin password: ")
     return email, password
 
 

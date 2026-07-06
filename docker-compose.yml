@@ -10,7 +10,7 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:
-      TARGET_URL: ${POSTGRES_URL:-postgresql+asyncpg://repoguard:change-me@host.docker.internal:5432/repoguard_ai}
+      TARGET_URL: ${POSTGRES_URL:?Set POSTGRES_URL in .env}
     healthcheck:
       test:
         [
@@ -55,7 +55,7 @@ services:
       - .env
     environment:
       MONGO_INITDB_ROOT_USERNAME: ${MONGODB_USER:-repoguard}
-      MONGO_INITDB_ROOT_PASSWORD: ${MONGODB_PASSWORD:-change-me}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGODB_PASSWORD:?Set MONGODB_PASSWORD in .env}
       MONGO_INITDB_DATABASE: ${MONGODB_DB:-repoguard_ai}
     ports:
       - "127.0.0.1:${MONGODB_HOST_PORT:-27018}:27017"

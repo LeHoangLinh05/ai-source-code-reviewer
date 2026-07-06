@@ -1,4 +1,14 @@
 .env
+.env.*
+!.env.example
+backend/.env
+backend/.env.*
+!backend/.env.example
+
+/*.md
+!/AGENTS.md
+!/style.md
+
 __pycache__/
 *.py[cod]
 .mypy_cache/
