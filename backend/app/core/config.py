@@ -97,6 +97,8 @@ class Settings(BaseSettings):
     llm_provider: str = "gemini"
     gemini_api_key: SecretStr | None = None
     openai_api_key: SecretStr | None = None
+    rag_chroma_path: str = str(PROJECT_ROOT / ".chroma")
+    rag_embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
 
     @field_validator("debug", mode="before")
     @classmethod
