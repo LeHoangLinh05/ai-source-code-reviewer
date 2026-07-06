@@ -2,8 +2,9 @@
 
 > Checklist theo 6 phase, convert từ WBS trong `RepoGuard_AI_Project_Plan.md`.
 > Mỗi task có ID riêng (vd `P1.3`) để tham chiếu nhanh: "làm task P1.3" hoặc "fix P6.5".
-> Bắt đầu: 26/06/2026 · Deadline: 28 ngày · Hôm nay: 30/06/2026 (Ngày 5 — đang ở cuối Phase 1).
+> Bắt đầu: 26/06/2026 · Deadline: 28 ngày · Hôm nay: 02/07/2026 (Ngày 7 — đang chốt Docker/DB vertical slice).
 > Note 2026-07-01: Từ thời điểm này chuyển sang làm theo vertical slice (API + FE cho từng module) để luôn có flow E2E sau mỗi bước; checklist phase gốc vẫn giữ để tracking scope, không có nghĩa là bỏ sót phase.
+> Note 2026-07-02: Đồng bộ lại theo `RepoGuard_AI_Project_Plan.md` + `AI_flow.md` bản mới: thêm Roadmap Compliance Rule Engine, Evidence-Grounded Agentic Hybrid RAG, 13-step review pipeline, `rule_profile/weeks_included`, `verification_queue`, `compliance_score` và `bonus_score`.
 
 ---
 
@@ -18,23 +19,23 @@
 - [x] **P1.7** CRUD module `repositories` (thêm/xóa/xem repo URL)
 - [x] **P1.8** Module `review_jobs` (tạo job, lấy status, cancel)
 - [x] **P1.9** Module `reports` (query report, issues list filter/pagination)
-- [ ] **P1.10** Clone service: `git clone --depth 1` + size validation
-- [ ] **P1.11** File filter: bỏ qua binary, node_modules, venv, `__pycache__`
+- [x] **P1.10** Clone service: `git clone --depth 1` + size validation
+- [x] **P1.11** File filter: bỏ qua binary, node_modules, venv, `__pycache__`
 - [x] **P1.12** Sandbox cleanup scheduler (TTL 1h)
-- [ ] **P1.13** Structure analyzer: language/framework detect, file tree builder
-- [ ] **P1.14** Static analysis integration: Ruff + Bandit + ESLint parsers
-- [ ] **P1.15** `NormalizedIssue` model
-- [ ] **P1.16** Secret scanner (regex-based)
-- [ ] **P1.17** Celery setup (Redis broker) + worker skeleton
-- [ ] **P1.18** Error handling middleware + custom exceptions
+- [x] **P1.13** Structure analyzer: language/framework detect, file tree builder
+- [x] **P1.14** Static analysis integration: Ruff + Bandit + ESLint parsers
+- [x] **P1.15** `NormalizedIssue` model
+- [x] **P1.16** Secret scanner (regex-based)
+- [x] **P1.17** Celery setup (Redis broker) + worker skeleton
+- [x] **P1.18** Error handling middleware + custom exceptions
 
 **Done khi:**
 - [x] `/auth/register`, `/auth/login`, `/auth/refresh`, `/auth/logout` hoạt động
 - [x] JWT + RBAC đúng
 - [x] CRUD `/repositories` hoạt động
-- [ ] `POST /review-jobs` tạo job + enqueue Celery
-- [ ] Worker clone repo, chạy structure + static analysis
-- [ ] Ruff/Bandit parse thành `NormalizedIssue`
+- [x] `POST /review-jobs` tạo job + enqueue Celery
+- [x] Worker clone repo, chạy structure + static analysis
+- [x] Ruff/Bandit parse thành `NormalizedIssue`
 - [x] `/docs` (Swagger) hoạt động
 
 ---
@@ -52,8 +53,8 @@
 
 **Done khi:**
 - [x] `docker-compose up --build` không lỗi
-- [ ] Backend qua `http://localhost/api/docs`
-- [ ] Frontend qua `http://localhost`
+- [x] Backend qua Nginx `http://localhost:8080/api/docs` hoạt động
+- [x] Frontend qua Nginx `http://localhost:8080` hoạt động
 - [x] Hot reload hoạt động
 
 ---
@@ -67,28 +68,31 @@
 - [x] **P3.4** Alembic setup + initial migration
 
 **MongoDB**
-- [ ] **P3.5** Motor (async PyMongo) client setup
-- [ ] **P3.6** Collections: `file_analysis_results`, `raw_static_analysis_outputs`, `tool_call_logs`, `chunk_metadata`
-- [ ] **P3.7** Index cho field hay query
-- [ ] **P3.8** CRUD helpers theo collection
+- [x] **P3.5** Motor (async PyMongo) client setup
+- [x] **P3.6** Collections: `file_analysis_results`, `raw_static_analysis_outputs`, `tool_call_logs`, `chunk_metadata`, `roadmap_compliance_results`
+- [x] **P3.7** Index cho field hay query
+- [x] **P3.8** CRUD helpers theo collection
 
 **Redis**
 - [x] **P3.9** Redis async client setup
 - [x] **P3.10** Token blacklist service (set + TTL)
-- [ ] **P3.11** Pub/Sub cho job progress
-- [ ] **P3.12** Rate limiting per user (counter + TTL)
+- [x] **P3.11** Pub/Sub cho job progress
+- [x] **P3.12** Rate limiting per user (counter + TTL)
 
 **Kết nối tổng**
-- [ ] **P3.13** DI cho DB trong FastAPI + connection pooling
-- [ ] **P3.14** Startup/shutdown events cho mọi DB connection
-- [ ] **P3.15** `scripts/create_admin.py`
+- [x] **P3.13** DI cho DB trong FastAPI + connection pooling
+- [x] **P3.14** Startup/shutdown events cho mọi DB connection
+- [x] **P3.15** `scripts/create_admin.py`
+- [x] **P3.16** Roadmap contract migration: `review_issues.category=requirement`, `review_issues.source=roadmap_rule`, `review_reports.compliance_score`, `review_reports.bonus_score`
 
 **Done khi:**
-- [ ] `alembic upgrade head` tạo đủ table
+- [x] `alembic upgrade head` tạo đủ table
 - [ ] CRUD trên mọi PostgreSQL model
-- [ ] MongoDB insert/query `file_analysis_results`, `tool_call_logs`
-- [ ] Redis blacklist/cache/pub-sub hoạt động
-- [ ] Celery worker nhận task từ Redis queue
+- [x] MongoDB insert/query `file_analysis_results`, `tool_call_logs`
+- [x] MongoDB schema/index cho `roadmap_compliance_results`
+- [x] Redis blacklist/cache/pub-sub hoạt động
+- [x] Celery worker nhận task từ Redis queue
+- [x] Rate limiting block user khi vượt limit
 - [ ] Data persist khi restart container
 
 ---
@@ -97,7 +101,7 @@
 
 - [x] **P4.1** Setup Next.js 15 App Router + Tailwind + shadcn/ui
 - [x] **P4.2** Axios instance + interceptor auto-refresh token
-- [x] **P4.3** Redux Toolkit: `authSlice`, `jobSlice`, `filterSlice` + typed hooks
+- [x] **P4.3** State management cho `auth`, `job`, `filter` stores — implement bằng Redux Toolkit (`authSlice`, `jobSlice`, `filterSlice`) + typed hooks
 - [ ] **P4.4** TypeScript types cho mọi API response _(Slice 1: repository API types done; Slice 2: review job API types done; Slice 3: report/issue API types done)_
 - [x] **P4.5** `/login`, `/register` + protected route middleware
 - [ ] **P4.6** Dashboard layout: sidebar + navbar responsive
@@ -141,52 +145,80 @@
 
 ---
 
-## PHASE 6 — AI Pipeline: Agent, RAG, Tool Calling (Ngày 22–28)
+## PHASE 6 — AI Pipeline: Evidence-Grounded Agentic Hybrid RAG (Ngày 22–28)
 
-> Đọc `ai_agent.md` trước khi làm phase này.
+> Đọc `ai_agent.md`, `AI_flow.md`, và mục 6/13 trong `RepoGuard_AI_Project_Plan.md` trước khi làm phase này.
+> Quyết định kiến trúc mới: Review Pipeline là trung tâm; RAG chỉ là một lớp grounding. Roadmap Compliance Rule Engine chạy trước static analysis và AI review, opt-in qua `review_jobs.options.rule_profile`.
 
-**Sprint 1 — AI Core (Ngày 22–25)**
-- [ ] **P6.1** Code chunker AST-based (semantic boundary)
-- [ ] **P6.2** ChromaDB setup + persistent storage
-- [ ] **P6.3** Ingest knowledge base: OWASP Top 10, Python best practices, Clean Code
-- [ ] **P6.4** Embedding model `all-MiniLM-L6-v2` local CPU
-- [ ] **P6.5** RAG retriever (`search_coding_standard`)
-- [ ] **P6.6** Tool 1 `analyze_project_structure`
-- [ ] **P6.7** Tool 2 `read_file_chunk`
-- [ ] **P6.8** Tool 3 `search_coding_standard`
-- [ ] **P6.9** Tool 4 `generate_issue`
-- [ ] **P6.10** Tool 5 `generate_final_report`
-- [ ] **P6.11** LLM client: Gemini 2.0 Flash (fallback GPT-4o-mini)
-- [ ] **P6.12** System prompt (review rules, confidence threshold)
-- [ ] **P6.13** Tool call logger → MongoDB `tool_call_logs`
-- [ ] **P6.14** Issue deduplication: merge static + AI issues
-- [ ] **P6.15** Report score calculation
-- [ ] **P6.16** Anti-hallucination: confidence ≥ 0.7, line validation, RAG grounding
-- [ ] **P6.17** Hard limit 20 tool calls/session
+**Sprint 1 — AI Core + Roadmap Compliance (Ngày 22–25)**
+- [ ] **P6.1** `roadmap_rules_v2.yaml`: đủ 79 rules, schema validate, 40 P0 + 26 P1 + 13 P2, 16 rule có `needs_ai_verification=true`
+- [ ] **P6.2** `RoadmapComplianceChecker`: hỗ trợ đủ 8 `check_type` (`required_file`, `required_any_of`, `required_folder`, `forbidden_tracked_file`, `required_dependency`, `required_code_pattern`, `min_file_count`, `required_config_key`)
+- [ ] **P6.3** `rule_profile` contract: mặc định `null`, profile `roadmap_bootcamp_v1`, filter `weeks_included` + luôn áp dụng rule `GEN`
+- [ ] **P6.4** Roadmap output: ghi MongoDB `roadmap_compliance_results` gồm `results`, `verification_queue`, `compliance_score`, `bonus_score`
+- [ ] **P6.5** Roadmap issue writer: rule FAIL ghi thẳng `review_issues` với `category=requirement`, `source=roadmap_rule`, `confidence=1.0`
+- [ ] **P6.6** `needs_ai_verification`: deterministic PASS → `provisional_pass`, đẩy `(rule_id, file_path, ai_hint)` vào `verification_queue`, không tạo issue requirement
+- [ ] **P6.7** Priority override: P0 FAIL đứng đầu report priority, Agent không được hạ severity/xóa issue `roadmap_rule`
+- [ ] **P6.8** Merge `verification_queue` vào danh sách file ưu tiên Agent đọc
+- [ ] **P6.9** Code chunker AST-based cho Python theo semantic boundary class/function
+- [ ] **P6.10** Chunk metadata bắt buộc: `file_path`, `language`, `module`, `risk_area`, `line_start`, `line_end`, `imports`, `function_name`
+- [ ] **P6.11** ChromaDB setup + persistent storage
+- [ ] **P6.12** Knowledge base ingestion: OWASP Top 10, Python best practices, Clean Code
+- [ ] **P6.13** Embedding model `all-MiniLM-L6-v2` local CPU
+- [ ] **P6.14** BM25 keyword search (`rank-bm25`) + HybridRetriever merge vector + keyword results
+- [ ] **P6.15** Tool 1 `analyze_project_structure`
+- [ ] **P6.16** Tool 2 `read_file_chunk`
+- [ ] **P6.17** Tool 3 `search_coding_standard`
+- [ ] **P6.18** Tool 4 `generate_issue`
+- [ ] **P6.19** Tool 5 `generate_final_report`
+- [ ] **P6.20** LLM client direct SDK: Gemini 2.0 Flash (`google-genai`) + fallback OpenAI `gpt-4o-mini`; không dùng LangChain/LangGraph
+- [ ] **P6.21** System prompt cuối: inject static summary + roadmap compliance summary, confidence threshold, no duplicate roadmap issues
+- [ ] **P6.22** Tool call logger → MongoDB `tool_call_logs`
+- [ ] **P6.23** Issue deduplication: merge `roadmap_rule` + static + AI theo `(file_path, line_start, category)` nhưng không hạ `roadmap_rule`
+- [ ] **P6.24** Report score calculation: security, maintainability, performance, overall, `compliance_score`, `bonus_score`
+- [ ] **P6.25** Anti-hallucination 7 lớp: RAG grounding cho security issue, evidence reference, structured output, static cross-check, line validation, confidence ≥ 0.7, hard limit 20 tool calls
 
 **Sprint 2 — Debug Page + Polish (Ngày 26–27)**
-- [ ] **P6.18** `/ai-debug` — tool call timeline viewer
-- [ ] **P6.19** RAG chunk viewer (query → retrieved docs + similarity score)
-- [ ] **P6.20** Export report Markdown/PDF (WeasyPrint)
-- [ ] **P6.21** Admin page: xem job + system health của mọi user
-- [ ] **P6.22** Error handling toàn bộ: timeout, failed job, API error
-- [ ] **P6.23** Loading/empty state polish
-- [ ] **P6.24** Rate limiting per user
-- [ ] **P6.25** README + screenshots + demo script
+- [ ] **P6.26** `/ai-debug` — tool call timeline viewer
+- [ ] **P6.27** RAG chunk viewer: query → retrieved documents + similarity scores
+- [ ] **P6.28** Roadmap compliance UI: profile picker (`Không dùng` / `Bootcamp v1`) + `weeks_included`
+- [ ] **P6.29** Roadmap compliance checklist UI theo tuần: PASS/FAIL/PROVISIONAL + P0/P1/P2
+- [ ] **P6.30** Export report Markdown/PDF (ưu tiên Markdown, PDF nếu kịp)
+- [ ] **P6.31** Admin page: xem job + system health của mọi user
+- [ ] **P6.32** Error handling toàn bộ: timeout, failed job, API error
+- [ ] **P6.33** Loading/empty state polish
+- [ ] **P6.34** README + screenshots + demo script
 
 **Sprint 3 — Final Demo (Ngày 28)**
-- [ ] **P6.26** Docker Compose production build test
-- [ ] **P6.27** E2E test: nhập URL → progress → report → issues → AI debug
-- [ ] **P6.28** Fix critical bug
-- [ ] **P6.29** Demo video/script
-- [ ] **P6.30** Seed sample data cho demo
+- [ ] **P6.35** Docker Compose production build test
+- [ ] **P6.36** E2E test theo 13-step pipeline: nhập URL → clone → structure → optional roadmap check → static analysis → chunk → Agent → report → issues → AI debug
+- [ ] **P6.37** Regression test: `rule_profile=null` không chạy Roadmap Compliance và không sinh issue `category=requirement`
+- [ ] **P6.38** Regression test: `weeks_included=[1,2]` chỉ áp Tuần 1 + Tuần 2 + GEN, không báo thiếu WebSocket/RAG
+- [ ] **P6.39** Regression test: `needs_ai_verification=true` PASS existence → `provisional_pass` + file vào `verification_queue`
+- [ ] **P6.40** Fix critical bugs
+- [ ] **P6.41** Demo video/script
+- [ ] **P6.42** Seed sample data cho demo
+
+**Dependencies cần thêm trước khi code AI module:**
+- [ ] `google-genai`
+- [ ] `openai`
+- [ ] `chromadb`
+- [ ] `sentence-transformers`
+- [ ] `rank-bm25`
+- [ ] `pyyaml`
 
 **Done khi:**
 - [ ] Agent chạy E2E với ≥ 2 repo test
-- [ ] `tool_call_logs` có đủ trace
-- [ ] `review_reports` có score, `review_issues` chỉ chứa confidence ≥ 0.7
-- [ ] RAG retrieve đúng OWASP content khi review security code
-- [ ] `/ai-debug` hiển thị tool calls + RAG result
+- [ ] 13-step review pipeline chạy đúng thứ tự trong `AI_flow.md` mục 7
+- [ ] `tool_call_logs` trong MongoDB có đủ trace
+- [ ] `review_reports` có scores, `compliance_score`, `bonus_score`
+- [ ] `review_issues` chỉ chứa AI issue confidence ≥ 0.7; roadmap issue luôn confidence 1.0
+- [ ] Security issue do AI tạo có RAG reference/evidence hợp lệ
+- [ ] RAG retrieve đúng OWASP content khi review security-related code
+- [ ] `/ai-debug` hiển thị tool calls + RAG results
+- [ ] Roadmap Compliance Rule Engine chạy đúng 79/79 rules khi `rule_profile="roadmap_bootcamp_v1"`
+- [ ] `weeks_included=[1,2]` chỉ áp 29 rule (Tuần 1 + Tuần 2 + GEN), không báo thiếu RAG/WebSocket
+- [ ] Rule `needs_ai_verification=true` PASS existence → `provisional_pass`, file vào `verification_queue`, Agent đọc và tự quyết correctness
+- [ ] Khi `rule_profile=null`, không có issue nào `category=requirement`
 - [ ] Export report hoạt động (≥ Markdown)
 - [ ] `docker-compose up` chạy toàn bộ hệ thống
 - [ ] Demo flow E2E mượt
@@ -198,6 +230,7 @@
 
 - [ ] `docker-compose up` → toàn bộ stack chạy
 - [ ] Demo flow: nhập URL → theo dõi progress → xem report
+- [ ] Roadmap Compliance demo: chọn `roadmap_bootcamp_v1`, chọn `weeks_included`, show PASS/FAIL/PROVISIONAL + `compliance_score`
 - [ ] AI debug page: show tool calls + RAG retrievals
 - [ ] Issue detail: click issue → code snippet + gợi ý
 - [ ] Compare 2 lần review (nếu kịp)

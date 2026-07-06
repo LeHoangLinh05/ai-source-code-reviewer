@@ -1,8 +1,11 @@
+FROM node:20-slim AS node-runtime
+
 FROM python:3.12-slim AS runtime
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1
+    PIP_NO_CACHE_DIR=1 \
+    NODE_PATH=/usr/local/lib/node_modules
 
 WORKDIR /app
 
@@ -10,10 +13,16 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends curl git \
     && rm -rf /var/lib/apt/lists/*
 
+COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node
+COPY --from=node-runtime /usr/local/lib/node_modules /usr/local/lib/node_modules
+RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
+    && ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
+
 COPY requirements.txt .
 RUN python -m pip install --upgrade pip \
     && python -m pip install -r requirements.txt \
-    && python -m pip install ruff bandit
+    && python -m pip install ruff bandit \
+    && npm install -g eslint @eslint/js typescript typescript-eslint
 
 COPY . .
 

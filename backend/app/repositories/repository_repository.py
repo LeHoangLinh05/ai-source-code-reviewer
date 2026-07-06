@@ -1,5 +1,6 @@
 """Persistence operations for tracked source repositories."""
 
+from datetime import datetime
 from uuid import UUID
 
 from sqlalchemy import select
@@ -61,6 +62,18 @@ class RepositoryRepository:
         statement = select(Repository).order_by(Repository.created_at.desc())
         result = await self.session.execute(statement)
         return list(result.scalars().all())
+
+    async def update_last_reviewed_at(
+        self,
+        source_repository: Repository,
+        last_reviewed_at: datetime,
+    ) -> Repository:
+        """Persist the latest successful review timestamp for a repository."""
+
+        source_repository.last_reviewed_at = last_reviewed_at
+        await self.session.commit()
+        await self.session.refresh(source_repository)
+        return source_repository
 
     async def delete(self, source_repository: Repository) -> None:
         """Delete a repository and cascade dependent review data."""

@@ -2,7 +2,7 @@
 
 import { CirclePlay, RefreshCw, Trash2 } from "lucide-react";
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -34,7 +34,7 @@ export default function ReviewsPage() {
   );
   const [cancelingJobId, setCancelingJobId] = useState<string | null>(null);
 
-  async function loadJobs() {
+  const loadJobs = useCallback(async () => {
     dispatch(setJobLoading(true));
 
     try {
@@ -46,11 +46,11 @@ export default function ReviewsPage() {
     } finally {
       dispatch(setJobLoading(false));
     }
-  }
+  }, [dispatch]);
 
   useEffect(() => {
     void loadJobs();
-  }, []);
+  }, [loadJobs]);
 
   async function handleCancelJob(job: ReviewJob) {
     setCancelingJobId(job.id);

@@ -9,8 +9,13 @@ class AppError(Exception):
     status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
     detail = "Internal server error"
 
-    def __init__(self, detail: str | None = None) -> None:
+    def __init__(
+        self,
+        detail: str | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> None:
         self.detail = detail or self.detail
+        self.headers = headers
         super().__init__(self.detail)
 
 
@@ -60,3 +65,10 @@ class ServiceUnavailableError(AppError):
 
     status_code = status.HTTP_503_SERVICE_UNAVAILABLE
     detail = "Required service is unavailable"
+
+
+class RateLimitError(AppError):
+    """Raised when a user exceeds an endpoint-specific request budget."""
+
+    status_code = status.HTTP_429_TOO_MANY_REQUESTS
+    detail = "Rate limit exceeded"

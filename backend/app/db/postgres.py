@@ -2,6 +2,7 @@
 
 from collections.abc import AsyncIterator
 
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -29,3 +30,16 @@ async def get_async_session() -> AsyncIterator[AsyncSession]:
 
     async with AsyncSessionLocal() as session:
         yield session
+
+
+async def ping_postgres() -> None:
+    """Verify PostgreSQL connectivity with a lightweight query."""
+
+    async with engine.connect() as connection:
+        await connection.execute(text("SELECT 1"))
+
+
+async def close_postgres_engine() -> None:
+    """Dispose the PostgreSQL connection pool during application shutdown."""
+
+    await engine.dispose()

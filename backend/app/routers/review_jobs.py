@@ -5,7 +5,11 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query, status
 
-from app.core.dependencies import get_current_user, get_review_job_service
+from app.core.dependencies import (
+    get_current_user,
+    get_review_job_service,
+    rate_limit_review_job_create,
+)
 from app.models.review_job import ReviewJobStatus
 from app.models.user import User
 from app.schemas.review_job import (
@@ -30,6 +34,7 @@ async def create_review_job(
     payload: ReviewJobCreate,
     current_user: Annotated[User, Depends(get_current_user)],
     review_job_service: Annotated[ReviewJobService, Depends(get_review_job_service)],
+    _rate_limit: Annotated[None, Depends(rate_limit_review_job_create)],
 ) -> ReviewJobCreateResponse:
     """Create a pending review job for an owned repository."""
 

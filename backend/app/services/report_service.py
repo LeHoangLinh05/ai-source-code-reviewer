@@ -52,6 +52,8 @@ class ReportService:
                 maintainability_score=report.maintainability_score,
                 performance_score=report.performance_score,
                 overall_score=report.overall_score,
+                compliance_score=report.compliance_score,
+                bonus_score=report.bonus_score,
             ),
         )
 

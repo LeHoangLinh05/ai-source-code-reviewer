@@ -2,9 +2,10 @@
 
 from uuid import UUID
 
-from sqlalchemy import Select, func, select
+from sqlalchemy import Select, delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.schemas.normalized_issue import NormalizedIssue
 from app.models.review_issue import (
     IssueCategory,
     IssueSeverity,
@@ -102,6 +103,46 @@ class ReportRepository:
         )
         result = await self.session.execute(statement)
         return result.scalar_one_or_none()
+
+    async def replace_analysis_results(
+        self,
+        *,
+        report: ReviewReport,
+        issues: list[NormalizedIssue],
+    ) -> ReviewReport:
+        """Replace generated report and issues for one review job."""
+
+        await self.session.execute(
+            delete(ReviewIssue).where(ReviewIssue.job_id == report.job_id)
+        )
+        existing_report = await self.get_report_by_job_id(report.job_id)
+        if existing_report is not None:
+            await self.session.delete(existing_report)
+            await self.session.flush()
+
+        self.session.add(report)
+        self.session.add_all(
+            [
+                ReviewIssue(
+                    job_id=report.job_id,
+                    file_path=issue.file_path,
+                    line_start=issue.line_start,
+                    line_end=issue.line_end,
+                    severity=issue.severity,
+                    category=issue.category,
+                    title=issue.title,
+                    description=issue.description,
+                    suggestion=issue.suggestion,
+                    source=issue.source,
+                    confidence=issue.confidence,
+                    raw_output=issue.raw_output,
+                )
+                for issue in issues
+            ]
+        )
+        await self.session.commit()
+        await self.session.refresh(report)
+        return report
 
     def _issue_filter_statement(
         self,

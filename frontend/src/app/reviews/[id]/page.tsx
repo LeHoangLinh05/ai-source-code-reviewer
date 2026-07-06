@@ -3,7 +3,7 @@
 import { ArrowLeft, RefreshCw } from "lucide-react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { useEffect } from "react";
+import { useCallback, useEffect } from "react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -32,8 +32,9 @@ export default function ReviewJobDetailPage() {
   const jobId = params.id;
   const dispatch = useAppDispatch();
   const { currentJob, error, isLoading } = useAppSelector((state) => state.jobs);
+  const currentJobStatus = currentJob?.status;
 
-  async function loadJob() {
+  const loadJob = useCallback(async () => {
     dispatch(setJobLoading(true));
 
     try {
@@ -47,7 +48,7 @@ export default function ReviewJobDetailPage() {
     } finally {
       dispatch(setJobLoading(false));
     }
-  }
+  }, [dispatch, jobId]);
 
   useEffect(() => {
     void loadJob();
@@ -55,10 +56,10 @@ export default function ReviewJobDetailPage() {
     return () => {
       dispatch(setCurrentJob(null));
     };
-  }, [jobId]);
+  }, [dispatch, loadJob]);
 
   useEffect(() => {
-    if (currentJob && TERMINAL_STATUSES.has(currentJob.status)) {
+    if (currentJobStatus && TERMINAL_STATUSES.has(currentJobStatus)) {
       return;
     }
 
@@ -70,7 +71,7 @@ export default function ReviewJobDetailPage() {
     return () => {
       window.clearInterval(intervalId);
     };
-  }, [currentJob?.status, jobId]);
+  }, [currentJobStatus, loadJob]);
 
   return (
     <>
@@ -130,35 +131,56 @@ function ReviewJobDetail({ job }: { job: ReviewJob }) {
     <>
       <section className="grid gap-4 md:grid-cols-3">
         <InfoCard label="Status" value={job.status.replaceAll("_", " ")} />
-        <InfoCard label="Branch" value={job.branch ?? "main"} />
-        <InfoCard label="Created" value={formatDate(job.created_at)} />
+        <InfoCard
+          label="Reviewed commit"
+          value={formatCommitSha(job.commit_sha)}
+        />
+        <InfoCard
+          label="Duration"
+          value={formatDuration(job.started_at, job.completed_at)}
+        />
       </section>
 
       <Card>
         <CardHeader>
-          <CardTitle>Job Details</CardTitle>
+          <CardTitle>Review Summary</CardTitle>
           <CardDescription>
-            Worker execution will replace the pending stub in a later slice.
+            User-facing details for this repository review.
           </CardDescription>
         </CardHeader>
         <CardContent className="grid gap-5">
-          <DetailRow label="Job ID" value={job.id} />
-          <DetailRow label="Repository" value={job.repository_name ?? job.repository_id} />
-          <DetailRow label="Repository ID" value={job.repository_id} />
-          <DetailRow label="Stream URL" value={job.stream_url} />
-          <DetailRow label="Commit SHA" value={job.commit_sha ?? "Not available"} />
+          <DetailRow
+            label="Repository"
+            value={job.repository_name ?? "Repository unavailable"}
+          />
+          <DetailRow label="Branch" value={job.branch ?? "main"} />
+          <DetailRow
+            label="Reviewed commit"
+            value={
+              job.commit_sha ? (
+                <code className="rounded-md bg-muted px-2 py-1 font-mono text-sm">
+                  {formatCommitSha(job.commit_sha)}
+                </code>
+              ) : (
+                "Not available yet"
+              )
+            }
+          />
           <DetailRow label="Started" value={formatOptionalDate(job.started_at)} />
           <DetailRow label="Completed" value={formatOptionalDate(job.completed_at)} />
           <DetailRow
-            label="Options"
-            value={
-              <pre className="overflow-x-auto rounded-md border border-border bg-background p-3 font-mono text-xs text-muted-foreground">
-                {JSON.stringify(job.options ?? {}, null, 2)}
-              </pre>
-            }
+            label="Static analysis"
+            value={isStaticAnalysisEnabled(job.options) ? "Enabled" : "Disabled"}
           />
+          {job.error_message ? (
+            <DetailRow
+              label="Failure reason"
+              value={<span className="text-destructive">{job.error_message}</span>}
+            />
+          ) : null}
         </CardContent>
       </Card>
+
     </>
   );
 }
@@ -217,4 +239,35 @@ function formatDate(value: string) {
 
 function formatOptionalDate(value: string | null) {
   return value ? formatDate(value) : "Not available";
+}
+
+function formatCommitSha(value: string | null) {
+  return value ? value.slice(0, 7) : "Not available";
+}
+
+function formatDuration(startedAt: string | null, completedAt: string | null) {
+  if (!startedAt) {
+    return "Not started";
+  }
+
+  if (!completedAt) {
+    return "In progress";
+  }
+
+  const durationSeconds = Math.max(
+    0,
+    Math.round((new Date(completedAt).getTime() - new Date(startedAt).getTime()) / 1000),
+  );
+
+  if (durationSeconds < 60) {
+    return `${durationSeconds}s`;
+  }
+
+  const minutes = Math.floor(durationSeconds / 60);
+  const seconds = durationSeconds % 60;
+  return seconds === 0 ? `${minutes}m` : `${minutes}m ${seconds}s`;
+}
+
+function isStaticAnalysisEnabled(options: Record<string, unknown> | null) {
+  return options?.run_static_analysis !== false;
 }

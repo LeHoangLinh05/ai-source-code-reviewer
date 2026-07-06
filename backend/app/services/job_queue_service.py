@@ -3,17 +3,28 @@
 import logging
 from uuid import UUID
 
+from celery.exceptions import CeleryError  # type: ignore[import-untyped]
+from kombu.exceptions import OperationalError  # type: ignore[import-untyped]
+
+from app.core.exceptions import ServiceUnavailableError
+from app.workers.review_worker import process_review_job
+
 logger = logging.getLogger(__name__)
 
 
 class JobQueueService:
-    """Dispatch review jobs to the background queue.
-
-    Celery is introduced in P1.17. Until then, this adapter preserves the
-    call site and logs the intended enqueue operation.
-    """
+    """Dispatch review jobs to the background queue."""
 
     async def enqueue(self, job_id: UUID) -> None:
-        """Log a queued review job until Celery is wired in."""
+        """Send a review job to the Celery worker queue."""
 
-        logger.info("Review job enqueue stub called for job %s", job_id)
+        try:
+            async_result = process_review_job.delay(str(job_id))
+        except (CeleryError, OperationalError) as error:
+            raise ServiceUnavailableError("Review job queue is unavailable") from error
+
+        logger.info(
+            "Review job %s enqueued as Celery task %s",
+            job_id,
+            async_result.id,
+        )

@@ -13,7 +13,7 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useForm } from "react-hook-form";
 import { toast } from "sonner";
 import { z } from "zod";
@@ -37,7 +37,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { getApiErrorMessage } from "@/lib/api-error";
 import { deleteRepository, getRepository } from "@/lib/repositories";
-import { createReviewJob } from "@/lib/review-jobs";
+import { createReviewJob, getReviewJobs } from "@/lib/review-jobs";
 import { useAppDispatch, useAppSelector } from "@/store/hooks";
 import {
   removeRepository,
@@ -47,6 +47,7 @@ import {
   setSelectedRepository,
   upsertRepository,
 } from "@/store/slices/repositorySlice";
+import type { ReviewJob, ReviewJobStatus } from "@/types/review-job";
 
 const startReviewSchema = z.object({
   branch: z.string().trim().min(1, "Branch is required.").max(100),
@@ -54,6 +55,20 @@ const startReviewSchema = z.object({
 });
 
 type StartReviewFormValues = z.infer<typeof startReviewSchema>;
+
+const BRANCH_PRESETS = ["main", "master"] as const;
+const STATUS_STYLES: Record<ReviewJobStatus, string> = {
+  AI_REVIEWING: "border-violet-400/40 bg-violet-500/10 text-violet-200",
+  ANALYZING_STRUCTURE: "border-sky-400/40 bg-sky-500/10 text-sky-200",
+  CHUNKING_CODE: "border-cyan-400/40 bg-cyan-500/10 text-cyan-200",
+  CLONING: "border-blue-400/40 bg-blue-500/10 text-blue-200",
+  COMPLETED: "border-emerald-400/40 bg-emerald-500/10 text-emerald-200",
+  FAILED: "border-rose-400/40 bg-rose-500/10 text-rose-200",
+  GENERATING_REPORT: "border-amber-400/40 bg-amber-500/10 text-amber-200",
+  PENDING: "border-slate-500/50 bg-slate-500/10 text-slate-200",
+  RUNNING_STATIC_ANALYSIS:
+    "border-orange-400/40 bg-orange-500/10 text-orange-200",
+};
 
 export default function RepositoryDetailPage() {
   const params = useParams<{ id: string }>();
@@ -66,6 +81,9 @@ export default function RepositoryDetailPage() {
   const [isDeleting, setIsDeleting] = useState(false);
   const [isStartReviewOpen, setIsStartReviewOpen] = useState(false);
   const [isStartingReview, setIsStartingReview] = useState(false);
+  const [areReviewJobsLoading, setAreReviewJobsLoading] = useState(false);
+  const [reviewJobs, setReviewJobs] = useState<ReviewJob[]>([]);
+  const [reviewJobsError, setReviewJobsError] = useState<string | null>(null);
   const startReviewForm = useForm<StartReviewFormValues>({
     resolver: zodResolver(startReviewSchema),
     defaultValues: {
@@ -78,13 +96,17 @@ export default function RepositoryDetailPage() {
       return null;
     }
 
-    return new Intl.DateTimeFormat("en", {
-      dateStyle: "medium",
-      timeStyle: "short",
-    }).format(new Date(selectedRepository.created_at));
+    return formatDateTime(selectedRepository.created_at);
   }, [selectedRepository?.created_at]);
+  const lastReviewedAt = useMemo(() => {
+    if (selectedRepository?.last_reviewed_at) {
+      return selectedRepository.last_reviewed_at;
+    }
 
-  async function loadRepository() {
+    return reviewJobs.find((job) => job.completed_at !== null)?.completed_at ?? null;
+  }, [reviewJobs, selectedRepository?.last_reviewed_at]);
+
+  const loadRepository = useCallback(async () => {
     dispatch(setRepositoryLoading(true));
 
     try {
@@ -100,15 +122,36 @@ export default function RepositoryDetailPage() {
     } finally {
       dispatch(setRepositoryLoading(false));
     }
-  }
+  }, [dispatch, repositoryId]);
+
+  const loadReviewJobs = useCallback(async () => {
+    setAreReviewJobsLoading(true);
+    setReviewJobsError(null);
+
+    try {
+      setReviewJobs(await getReviewJobs({ repository_id: repositoryId }));
+    } catch (requestError) {
+      setReviewJobsError(
+        getApiErrorMessage(requestError, "Unable to load review history."),
+      );
+    } finally {
+      setAreReviewJobsLoading(false);
+    }
+  }, [repositoryId]);
 
   useEffect(() => {
     void loadRepository();
+    void loadReviewJobs();
 
     return () => {
       dispatch(setSelectedRepository(null));
     };
-  }, [repositoryId]);
+  }, [dispatch, loadRepository, loadReviewJobs]);
+
+  function refreshPageData() {
+    void loadRepository();
+    void loadReviewJobs();
+  }
 
   async function handleDeleteRepository() {
     if (!selectedRepository) {
@@ -194,8 +237,8 @@ export default function RepositoryDetailPage() {
         </div>
         <div className="flex flex-wrap gap-2">
           <Button
-            disabled={isLoading}
-            onClick={() => void loadRepository()}
+            disabled={isLoading || areReviewJobsLoading}
+            onClick={refreshPageData}
             variant="secondary"
           >
             <RefreshCw aria-hidden="true" />
@@ -275,7 +318,11 @@ export default function RepositoryDetailPage() {
               />
               <DetailRow
                 label="Last reviewed"
-                value={selectedRepository.last_reviewed_at ?? "No reviews yet"}
+                value={
+                  lastReviewedAt !== null
+                    ? formatDateTime(lastReviewedAt)
+                    : "No reviews yet"
+                }
               />
             </CardContent>
           </Card>
@@ -288,18 +335,11 @@ export default function RepositoryDetailPage() {
               </CardDescription>
             </CardHeader>
             <CardContent>
-              <div className="flex flex-col items-center rounded-md border border-dashed border-slate-700 bg-background px-6 py-10 text-center">
-                <CalendarClock
-                  aria-hidden="true"
-                  className="size-10 text-muted-foreground"
-                />
-                <h2 className="mt-4 text-lg font-semibold tracking-normal">
-                  No review history yet
-                </h2>
-                  <p className="mt-2 max-w-md text-[15px] leading-6 text-muted-foreground">
-                    Review job history will be connected in the review_jobs slice.
-                </p>
-              </div>
+              <ReviewHistory
+                error={reviewJobsError}
+                isLoading={areReviewJobsLoading}
+                jobs={reviewJobs}
+              />
             </CardContent>
           </Card>
         </>
@@ -341,8 +381,23 @@ export default function RepositoryDetailPage() {
                     render={({ field }) => (
                       <FormItem>
                         <FormLabel>Branch</FormLabel>
+                        <div className="flex flex-wrap gap-2">
+                          {BRANCH_PRESETS.map((branch) => (
+                            <Button
+                              key={branch}
+                              onClick={() => field.onChange(branch)}
+                              size="sm"
+                              type="button"
+                              variant={
+                                field.value === branch ? "secondary" : "outline"
+                              }
+                            >
+                              {branch}
+                            </Button>
+                          ))}
+                        </div>
                         <FormControl>
-                          <Input placeholder="main" {...field} />
+                          <Input placeholder="feature/custom-branch" {...field} />
                         </FormControl>
                         <FormMessage />
                       </FormItem>
@@ -431,6 +486,107 @@ function DetailRow({ label, value }: DetailRowProps) {
   );
 }
 
+type ReviewHistoryProps = {
+  error: string | null;
+  isLoading: boolean;
+  jobs: ReviewJob[];
+};
+
+function ReviewHistory({ error, isLoading, jobs }: ReviewHistoryProps) {
+  if (isLoading) {
+    return <ReviewHistorySkeleton />;
+  }
+
+  if (error !== null) {
+    return <p className="text-sm text-destructive">{error}</p>;
+  }
+
+  if (jobs.length === 0) {
+    return (
+      <div className="flex flex-col items-center rounded-md border border-dashed border-slate-700 bg-background px-6 py-10 text-center">
+        <CalendarClock
+          aria-hidden="true"
+          className="size-10 text-muted-foreground"
+        />
+        <h2 className="mt-4 text-lg font-semibold tracking-normal">
+          No review history yet
+        </h2>
+        <p className="mt-2 max-w-md text-[15px] leading-6 text-muted-foreground">
+          Start a review to track status, branch, and completion time here.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="grid gap-3">
+      {jobs.map((job) => (
+        <div
+          className="grid gap-3 rounded-md border border-border bg-background p-4 md:grid-cols-[1fr_auto] md:items-center"
+          key={job.id}
+        >
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <Link
+                className="min-w-0 truncate text-[15px] font-semibold text-foreground hover:text-slate-300"
+                href={`/reviews/${job.id}`}
+              >
+                Review {job.id.slice(0, 8)}
+              </Link>
+              <span
+                className={`rounded-md border px-2 py-1 text-xs font-medium ${
+                  STATUS_STYLES[job.status]
+                }`}
+              >
+                {job.status.replaceAll("_", " ")}
+              </span>
+            </div>
+            <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-sm text-muted-foreground">
+              <span className="inline-flex items-center gap-1">
+                <GitBranch aria-hidden="true" className="size-3.5" />
+                {job.branch ?? "main"}
+              </span>
+              <span>Created {formatDateTime(job.created_at)}</span>
+              {job.completed_at !== null ? (
+                <span>Completed {formatDateTime(job.completed_at)}</span>
+              ) : null}
+            </div>
+            {job.error_message !== null ? (
+              <p className="mt-2 text-sm text-destructive">{job.error_message}</p>
+            ) : null}
+          </div>
+          <div className="flex flex-wrap gap-2 md:justify-end">
+            <Button asChild size="sm" variant="secondary">
+              <Link href={`/reviews/${job.id}`}>Open</Link>
+            </Button>
+            {job.status === "COMPLETED" ? (
+              <Button asChild size="sm" variant="outline">
+                <Link href={`/reviews/${job.id}/report`}>Report</Link>
+              </Button>
+            ) : null}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function ReviewHistorySkeleton() {
+  return (
+    <div className="grid gap-3">
+      {Array.from({ length: 3 }).map((_, index) => (
+        <div
+          className="rounded-md border border-border bg-background p-4"
+          key={index}
+        >
+          <div className="h-5 w-48 animate-pulse rounded bg-muted" />
+          <div className="mt-3 h-4 w-72 animate-pulse rounded bg-muted" />
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function RepositoryDetailSkeleton() {
   return (
     <div className="grid gap-4">
@@ -453,4 +609,11 @@ function RepositoryDetailSkeleton() {
       </Card>
     </div>
   );
+}
+
+function formatDateTime(value: string) {
+  return new Intl.DateTimeFormat("en", {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(new Date(value));
 }

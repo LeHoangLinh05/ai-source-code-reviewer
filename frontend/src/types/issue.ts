@@ -5,9 +5,16 @@ export type IssueCategory =
   | "performance"
   | "maintainability"
   | "style"
-  | "bug";
+  | "bug"
+  | "requirement";
 
-export type IssueSource = "ai_review" | "ruff" | "bandit" | "eslint";
+export type IssueSource =
+  | "ai_review"
+  | "ruff"
+  | "bandit"
+  | "eslint"
+  | "roadmap_rule"
+  | "secret_scanner";
 
 export type ReviewIssue = {
   id: string;

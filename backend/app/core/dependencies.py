@@ -4,15 +4,30 @@ from typing import Annotated
 
 from fastapi import Cookie, Depends
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from motor.motor_asyncio import AsyncIOMotorDatabase
 from redis.asyncio import Redis
+from redis.exceptions import RedisError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
-from app.core.exceptions import AuthenticationError, AuthorizationError
+from app.core.exceptions import (
+    AuthenticationError,
+    AuthorizationError,
+    RateLimitError,
+    ServiceUnavailableError,
+)
 from app.core.security import TokenType, decode_token
+from app.db.mongodb import get_mongodb_database
 from app.db.postgres import get_async_session
 from app.db.redis import get_redis_client
 from app.models.user import User, UserRole
+from app.repositories.mongodb_repository import (
+    ChunkMetadataRepository,
+    FileAnalysisResultRepository,
+    RawStaticAnalysisOutputRepository,
+    RoadmapComplianceResultRepository,
+    ToolCallLogRepository,
+)
 from app.repositories.refresh_token_repository import RefreshTokenRepository
 from app.repositories.report_repository import ReportRepository
 from app.repositories.repository_repository import RepositoryRepository
@@ -26,12 +41,60 @@ from app.services.repository_service import RepositoryService
 from app.services.token_blacklist import TokenBlacklistService
 
 bearer_scheme = HTTPBearer(auto_error=False)
+REVIEW_JOB_CREATE_RATE_LIMIT = 10
+RATE_LIMIT_WINDOW_SECONDS = 60
 
 
 async def get_redis() -> Redis:
     """Provide Redis to services that need cache or blacklist state."""
 
     return get_redis_client()
+
+
+async def get_mongodb() -> AsyncIOMotorDatabase:
+    """Provide the shared MongoDB database to repositories and services."""
+
+    return get_mongodb_database()
+
+
+async def get_file_analysis_result_repository(
+    database: Annotated[AsyncIOMotorDatabase, Depends(get_mongodb)],
+) -> FileAnalysisResultRepository:
+    """Build the MongoDB repository for file analysis results."""
+
+    return FileAnalysisResultRepository(database)
+
+
+async def get_raw_static_analysis_output_repository(
+    database: Annotated[AsyncIOMotorDatabase, Depends(get_mongodb)],
+) -> RawStaticAnalysisOutputRepository:
+    """Build the MongoDB repository for raw static analyzer outputs."""
+
+    return RawStaticAnalysisOutputRepository(database)
+
+
+async def get_tool_call_log_repository(
+    database: Annotated[AsyncIOMotorDatabase, Depends(get_mongodb)],
+) -> ToolCallLogRepository:
+    """Build the MongoDB repository for AI tool call logs."""
+
+    return ToolCallLogRepository(database)
+
+
+async def get_chunk_metadata_repository(
+    database: Annotated[AsyncIOMotorDatabase, Depends(get_mongodb)],
+) -> ChunkMetadataRepository:
+    """Build the MongoDB repository for code chunk metadata."""
+
+    return ChunkMetadataRepository(database)
+
+
+async def get_roadmap_compliance_result_repository(
+    database: Annotated[AsyncIOMotorDatabase, Depends(get_mongodb)],
+) -> RoadmapComplianceResultRepository:
+    """Build the MongoDB repository for roadmap compliance results."""
+
+    return RoadmapComplianceResultRepository(database)
 
 
 async def get_auth_service(
@@ -135,3 +198,28 @@ async def get_current_admin(
         raise AuthorizationError("Admin role is required")
 
     return current_user
+
+
+async def rate_limit_review_job_create(
+    current_user: Annotated[User, Depends(get_current_user)],
+    redis_client: Annotated[Redis, Depends(get_redis)],
+) -> None:
+    """Limit expensive review-job creation requests per authenticated user."""
+
+    key = f"rate:{current_user.id}:review_jobs:create"
+    try:
+        request_count = await redis_client.incr(key)
+        if request_count == 1:
+            await redis_client.expire(key, RATE_LIMIT_WINDOW_SECONDS)
+        if request_count <= REVIEW_JOB_CREATE_RATE_LIMIT:
+            return
+
+        ttl_seconds = await redis_client.ttl(key)
+    except RedisError as error:
+        raise ServiceUnavailableError("Rate limit store is unavailable") from error
+
+    retry_after_seconds = ttl_seconds if ttl_seconds > 0 else RATE_LIMIT_WINDOW_SECONDS
+    raise RateLimitError(
+        "Too many review job creation requests",
+        headers={"Retry-After": str(retry_after_seconds)},
+    )

@@ -46,6 +46,7 @@ class IssueCategory(StrEnum):
     MAINTAINABILITY = "maintainability"
     STYLE = "style"
     BUG = "bug"
+    REQUIREMENT = "requirement"
 
 
 class IssueSource(StrEnum):
@@ -55,6 +56,8 @@ class IssueSource(StrEnum):
     RUFF = "ruff"
     BANDIT = "bandit"
     ESLINT = "eslint"
+    ROADMAP_RULE = "roadmap_rule"
+    SECRET_SCANNER = "secret_scanner"
 
 
 class ReviewIssue(Base):
@@ -78,7 +81,7 @@ class ReviewIssue(Base):
         ForeignKey("review_jobs.id", ondelete="CASCADE"),
         nullable=False,
     )
-    file_path: Mapped[str] = mapped_column(Text, nullable=False)
+    file_path: Mapped[str | None] = mapped_column(Text)
     line_start: Mapped[int | None] = mapped_column(Integer)
     line_end: Mapped[int | None] = mapped_column(Integer)
     severity: Mapped[IssueSeverity] = mapped_column(

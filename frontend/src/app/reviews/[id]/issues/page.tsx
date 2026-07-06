@@ -3,7 +3,6 @@
 import {
   AlertTriangle,
   ArrowLeft,
-  Check,
   ChevronLeft,
   ChevronRight,
   Copy,
@@ -12,7 +11,7 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 
 import { Button } from "@/components/ui/button";
@@ -58,8 +57,16 @@ const CATEGORIES: IssueCategory[] = [
   "maintainability",
   "style",
   "bug",
+  "requirement",
 ];
-const SOURCES: IssueSource[] = ["ai_review", "ruff", "bandit", "eslint"];
+const SOURCES: IssueSource[] = [
+  "ai_review",
+  "ruff",
+  "bandit",
+  "eslint",
+  "roadmap_rule",
+  "secret_scanner",
+];
 const SORT_OPTIONS: IssueSort[] = ["-created_at", "created_at", "severity", "file_path"];
 
 export default function ReviewIssuesPage() {
@@ -81,7 +88,7 @@ export default function ReviewIssuesPage() {
     return Math.max(1, Math.ceil(issueList.total / issueList.per_page));
   }, [issueList]);
 
-  async function loadIssues() {
+  const loadIssues = useCallback(async () => {
     setIsLoading(true);
     setError(null);
 
@@ -102,10 +109,6 @@ export default function ReviewIssuesPage() {
     } finally {
       setIsLoading(false);
     }
-  }
-
-  useEffect(() => {
-    void loadIssues();
   }, [
     filters.category,
     filters.filePath,
@@ -116,6 +119,10 @@ export default function ReviewIssuesPage() {
     filters.source,
     jobId,
   ]);
+
+  useEffect(() => {
+    void loadIssues();
+  }, [loadIssues]);
 
   async function openIssueDrawer(issue: ReviewIssue) {
     setIsIssueLoading(true);
@@ -226,7 +233,7 @@ export default function ReviewIssuesPage() {
           <CardDescription>
             {issueList
               ? `${issueList.total} issues found`
-              : "Seeded issues will appear here."}
+              : "Issues will appear here after analysis."}
           </CardDescription>
         </CardHeader>
         <CardContent className="p-0">
@@ -335,7 +342,7 @@ function IssueTable({
                 {issue.source}
               </td>
               <td className="max-w-[260px] truncate px-6 py-4">
-                {issue.file_path}
+                {formatIssuePath(issue.file_path)}
               </td>
               <td className="px-6 py-4 font-medium">{issue.title}</td>
               <td className="px-6 py-4 text-muted-foreground">
@@ -430,7 +437,7 @@ function IssueDrawer({
               {issue.title}
             </h2>
             <p className="mt-2 break-all text-sm text-muted-foreground">
-              {issue.file_path}
+              {formatIssuePath(issue.file_path)}
               {issue.line_start ? `:${issue.line_start}` : ""}
             </p>
           </div>
@@ -455,12 +462,6 @@ function IssueDrawer({
           <DetailSection title="Code Context">
             <CodeSnippetViewer issue={issue} />
           </DetailSection>
-          {issue.suggestion ? <FixDiffBox suggestion={issue.suggestion} /> : null}
-          <DetailSection title="Raw Output">
-            <pre className="overflow-x-auto rounded-md border border-border bg-background p-4 font-mono text-xs text-muted-foreground">
-              {JSON.stringify(issue.raw_output ?? {}, null, 2)}
-            </pre>
-          </DetailSection>
         </div>
       </aside>
     </div>
@@ -469,19 +470,30 @@ function IssueDrawer({
 
 function CodeSnippetViewer({ issue }: { issue: ReviewIssue }) {
   const lineStart = issue.line_start ?? 1;
+  const sourceContext = getSourceContext(issue);
+
+  if (sourceContext === null) {
+    return (
+      <div className="rounded-md border border-border bg-background p-4 text-sm text-muted-foreground">
+        Source context is not available for this finding yet.
+      </div>
+    );
+  }
+
+  const { lines, startLine } = sourceContext;
   const lineEnd = issue.line_end ?? lineStart;
-  const lineNumbers = buildLineWindow(lineStart, lineEnd);
+  const displayPath = formatIssuePath(issue.file_path);
 
   return (
     <div className="overflow-hidden rounded-md border border-border bg-background font-mono text-xs">
       <div className="flex items-center justify-between border-b border-border px-3 py-2">
         <span className="truncate text-muted-foreground">
-          {issue.file_path}:{lineStart}
+          {displayPath}:{lineStart}
         </span>
         <Button
           aria-label="Copy issue location"
           onClick={() =>
-            void navigator.clipboard.writeText(`${issue.file_path}:${lineStart}`)
+            void navigator.clipboard.writeText(`${displayPath}:${lineStart}`)
           }
           size="icon"
           type="button"
@@ -491,7 +503,8 @@ function CodeSnippetViewer({ issue }: { issue: ReviewIssue }) {
         </Button>
       </div>
       <div className="overflow-x-auto">
-        {lineNumbers.map((lineNumber) => {
+        {lines.map((line, index) => {
+          const lineNumber = startLine + index;
           const isIssueLine = lineNumber >= lineStart && lineNumber <= lineEnd;
 
           return (
@@ -509,11 +522,7 @@ function CodeSnippetViewer({ issue }: { issue: ReviewIssue }) {
               <span className="select-none text-center text-slate-300">
                 {isIssueLine ? <AlertTriangle className="mx-auto size-3.5" /> : ""}
               </span>
-              <code className="whitespace-pre">
-                {isIssueLine
-                  ? `// ${issue.title}`
-                  : "// Source context pending read_file_chunk"}
-              </code>
+              <code className="whitespace-pre">{line}</code>
             </div>
           );
         })}
@@ -522,34 +531,56 @@ function CodeSnippetViewer({ issue }: { issue: ReviewIssue }) {
   );
 }
 
-function FixDiffBox({ suggestion }: { suggestion: string }) {
-  return (
-    <section>
-      <h3 className="text-sm font-semibold tracking-normal">Fix Diff</h3>
-      <div className="mt-2 grid overflow-hidden rounded-md border border-border font-mono text-xs">
-        <div className="border-l-4 border-l-slate-600 bg-background px-4 py-3 text-slate-300">
-          <span className="text-slate-400">current context</span>
-        </div>
-        <div className="border-l-4 border-l-slate-300 bg-slate-800/40 px-4 py-3 text-slate-100">
-          <span className="mr-2 inline-flex items-center gap-1 text-slate-300">
-            <Check aria-hidden="true" className="size-3" />
-            proposed fix
-          </span>
-          {suggestion}
-        </div>
-      </div>
-    </section>
-  );
+type SourceContext = {
+  lines: string[];
+  startLine: number;
+};
+
+function getSourceContext(issue: ReviewIssue): SourceContext | null {
+  const rawOutput = issue.raw_output;
+  if (rawOutput === null) {
+    return null;
+  }
+
+  const sourceContext = rawOutput.source_context;
+  if (
+    isRecord(sourceContext) &&
+    Array.isArray(sourceContext.lines) &&
+    typeof sourceContext.start_line === "number"
+  ) {
+    return {
+      lines: sourceContext.lines.map((line) => String(line)),
+      startLine: Math.max(1, sourceContext.start_line),
+    };
+  }
+
+  const code =
+    issue.source === "bandit" && typeof rawOutput.code === "string"
+      ? rawOutput.code
+      : null;
+
+  if (!code?.trim()) {
+    return null;
+  }
+
+  return {
+    lines: code.replaceAll("\r\n", "\n").split("\n"),
+    startLine: issue.line_start ?? 1,
+  };
 }
 
-function buildLineWindow(lineStart: number, lineEnd: number) {
-  const firstLine = Math.max(1, lineStart - 2);
-  const lastLine = Math.max(lineEnd + 2, firstLine + 4);
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
 
-  return Array.from(
-    { length: lastLine - firstLine + 1 },
-    (_, index) => firstLine + index,
-  );
+function formatIssuePath(filePath: string | null) {
+  if (!filePath) {
+    return "Unknown file";
+  }
+
+  return filePath
+    .replaceAll("\\", "/")
+    .replace(/^.*\/sandbox\/[^/]+\//, "");
 }
 
 function DetailSection({

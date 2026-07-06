@@ -1,5 +1,6 @@
 """Review job creation, status lookup, cancellation, and queue workflows."""
 
+from datetime import UTC, datetime
 import logging
 from uuid import UUID
 
@@ -15,6 +16,7 @@ from app.schemas.review_job import (
     ReviewJobStatusUpdate,
 )
 from app.services.job_queue_service import JobQueueService
+from app.services.notification_service import publish_job_progress
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +39,7 @@ class ReviewJobService:
         payload: ReviewJobCreate,
         current_user: User,
     ) -> ReviewJobCreateResponse:
-        """Create a pending review job and stub queue enqueue."""
+        """Create a pending review job and enqueue real worker processing."""
 
         source_repository = await self.repository_repository.get_by_id(
             payload.repository_id
@@ -125,7 +127,7 @@ class ReviewJobService:
         payload: ReviewJobStatusUpdate,
         current_user: User,
     ) -> ReviewJobResponse:
-        """Simulate worker status changes until Celery/SSE are available."""
+        """Dev helper for manually adjusting job status in local UI tests."""
 
         review_job = await self._get_authorized_job(job_id, current_user)
         try:
@@ -135,8 +137,21 @@ class ReviewJobService:
                 message=payload.message or f"Status changed to {payload.status.value}",
                 progress=payload.progress,
             )
+            if payload.status == ReviewJobStatus.COMPLETED:
+                completed_at = updated_job.completed_at or datetime.now(UTC)
+                source_repository = await self.repository_repository.get_by_id(
+                    updated_job.repository_id
+                )
+                if source_repository is None:
+                    raise NotFoundError("Repository not found")
+
+                await self.repository_repository.update_last_reviewed_at(
+                    source_repository,
+                    completed_at,
+                )
         except Exception:
             await self.review_job_repository.rollback()
+            await self.repository_repository.rollback()
             raise
 
         logger.info(
@@ -144,6 +159,16 @@ class ReviewJobService:
             job_id,
             payload.status.value,
             current_user.id,
+        )
+        await publish_job_progress(
+            job_id,
+            self._get_progress_event_type(payload.status),
+            {
+                "status": payload.status.value,
+                "progress": payload.progress,
+                "message": payload.message
+                or f"Status changed to {payload.status.value}",
+            },
         )
         return self._to_response(updated_job)
 
@@ -185,3 +210,12 @@ class ReviewJobService:
 
     def _build_stream_url(self, job_id: UUID) -> str:
         return f"/api/review-jobs/{job_id}/stream"
+
+    def _get_progress_event_type(self, status: ReviewJobStatus) -> str:
+        if status == ReviewJobStatus.COMPLETED:
+            return "completed"
+
+        if status == ReviewJobStatus.FAILED:
+            return "failed"
+
+        return "status_change"

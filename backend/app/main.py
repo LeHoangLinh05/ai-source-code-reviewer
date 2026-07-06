@@ -7,10 +7,16 @@ import logging
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from pymongo.errors import PyMongoError
+from redis.exceptions import RedisError
+from sqlalchemy.exc import SQLAlchemyError
 
 from app.core.config import get_settings
 from app.core.exceptions import AppError
+from app.db.mongodb import close_mongodb_client, ensure_mongodb_indexes, ping_mongodb
+from app.db.postgres import close_postgres_engine, ping_postgres
 from app.db.redis import close_redis_client
+from app.db.redis import get_redis_client
 from app.routers.auth import router as auth_router
 from app.routers.health import router as health_router
 from app.routers.repositories import router as repositories_router
@@ -24,8 +30,37 @@ logger = logging.getLogger(__name__)
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     """Manage shared infrastructure clients during app startup/shutdown."""
 
-    yield
-    await close_redis_client()
+    try:
+        await _verify_startup_dependencies()
+        yield
+    finally:
+        await close_mongodb_client()
+        await close_redis_client()
+        await close_postgres_engine()
+
+
+async def _verify_startup_dependencies() -> None:
+    try:
+        await ping_postgres()
+    except SQLAlchemyError:
+        logger.exception("PostgreSQL connection failed during startup")
+        raise
+    logger.info("PostgreSQL connection verified")
+
+    try:
+        await get_redis_client().ping()
+    except RedisError:
+        logger.exception("Redis connection failed during startup")
+        raise
+    logger.info("Redis connection verified")
+
+    try:
+        await ping_mongodb()
+        await ensure_mongodb_indexes()
+    except PyMongoError:
+        logger.exception("MongoDB connection or index setup failed during startup")
+        raise
+    logger.info("MongoDB connection verified and indexes ensured")
 
 
 settings = get_settings()
@@ -52,9 +87,9 @@ app.add_middleware(
 async def handle_app_error(_request: Request, error: AppError) -> JSONResponse:
     """Convert domain errors into stable JSON API responses."""
 
-    headers = None
+    headers = error.headers
     if error.status_code == 401:
-        headers = {"WWW-Authenticate": "Bearer"}
+        headers = {**(headers or {}), "WWW-Authenticate": "Bearer"}
 
     return JSONResponse(
         status_code=error.status_code,

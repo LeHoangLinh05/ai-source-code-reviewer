@@ -3,7 +3,7 @@
 import { ArrowLeft, RefreshCw } from "lucide-react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -30,6 +30,7 @@ const CATEGORY_COLORS: Record<IssueCategory, string> = {
   bug: "#fb923c",
   maintainability: "#a78bfa",
   performance: "#fbbf24",
+  requirement: "#34d399",
   security: "#fb7185",
   style: "#38bdf8",
 };
@@ -42,7 +43,7 @@ export default function ReviewReportPage() {
   const [isLoading, setIsLoading] = useState(false);
   const [report, setReport] = useState<ReviewReport | null>(null);
 
-  async function loadReport() {
+  const loadReport = useCallback(async () => {
     setIsLoading(true);
     setError(null);
 
@@ -62,11 +63,11 @@ export default function ReviewReportPage() {
     } finally {
       setIsLoading(false);
     }
-  }
+  }, [jobId]);
 
   useEffect(() => {
     void loadReport();
-  }, [jobId]);
+  }, [loadReport]);
 
   const severityData = useMemo(() => {
     if (!report) {
@@ -142,7 +143,7 @@ export default function ReviewReportPage() {
                 <CardHeader>
                   <CardTitle>Severity Mix</CardTitle>
                   <CardDescription>
-                    Distribution across {report.total_issues} seeded findings.
+                    Distribution across {report.total_issues} findings.
                   </CardDescription>
                 </CardHeader>
                 <CardContent className="grid gap-6 sm:grid-cols-[180px_1fr] sm:items-center">
@@ -161,7 +162,7 @@ export default function ReviewReportPage() {
                 <CardHeader>
                   <CardTitle>Category Distribution</CardTitle>
                   <CardDescription>
-                    Seed issues grouped by review category.
+                    Issues grouped by review category.
                   </CardDescription>
                 </CardHeader>
                 <CardContent>
@@ -175,7 +176,7 @@ export default function ReviewReportPage() {
                 <CardHeader>
                   <CardTitle>Executive Summary</CardTitle>
                   <CardDescription>
-                    Contract text that the AI pipeline should replace later.
+                    Summary generated from the current analysis pipeline.
                   </CardDescription>
                 </CardHeader>
                 <CardContent>
@@ -406,6 +407,7 @@ function buildCategoryData(issues: ReviewIssue[]) {
       label: "maintainability",
       value: countCategory(issues, "maintainability"),
     },
+    { label: "requirement", value: countCategory(issues, "requirement") },
     { label: "style", value: countCategory(issues, "style") },
     { label: "bug", value: countCategory(issues, "bug") },
   ] satisfies Array<{ label: IssueCategory; value: number }>;

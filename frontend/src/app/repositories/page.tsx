@@ -10,7 +10,7 @@ import {
   X,
 } from "lucide-react";
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
 import { toast } from "sonner";
 import { z } from "zod";
@@ -64,6 +64,8 @@ const repositorySchema = z.object({
 
 type RepositoryFormValues = z.infer<typeof repositorySchema>;
 
+const BRANCH_PRESETS = ["main", "master"] as const;
+
 export default function RepositoriesPage() {
   const dispatch = useAppDispatch();
   const { error, isLoading, isMutating, items } = useAppSelector(
@@ -82,7 +84,7 @@ export default function RepositoriesPage() {
     },
   });
 
-  async function loadRepositories() {
+  const loadRepositories = useCallback(async () => {
     dispatch(setRepositoryLoading(true));
 
     try {
@@ -96,11 +98,11 @@ export default function RepositoriesPage() {
     } finally {
       dispatch(setRepositoryLoading(false));
     }
-  }
+  }, [dispatch]);
 
   useEffect(() => {
     void loadRepositories();
-  }, []);
+  }, [loadRepositories]);
 
   async function handleCreateRepository(values: RepositoryFormValues) {
     dispatch(setRepositoryMutating(true));
@@ -287,8 +289,23 @@ export default function RepositoriesPage() {
                     render={({ field }) => (
                       <FormItem>
                         <FormLabel>Branch</FormLabel>
+                        <div className="flex flex-wrap gap-2">
+                          {BRANCH_PRESETS.map((branch) => (
+                            <Button
+                              key={branch}
+                              onClick={() => field.onChange(branch)}
+                              size="sm"
+                              type="button"
+                              variant={
+                                field.value === branch ? "secondary" : "outline"
+                              }
+                            >
+                              {branch}
+                            </Button>
+                          ))}
+                        </div>
                         <FormControl>
-                          <Input placeholder="main" {...field} />
+                          <Input placeholder="feature/custom-branch" {...field} />
                         </FormControl>
                         <FormMessage />
                       </FormItem>

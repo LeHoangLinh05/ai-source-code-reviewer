@@ -79,6 +79,8 @@ class ReviewReport(Base):
     maintainability_score: Mapped[float | None] = mapped_column(Float)
     performance_score: Mapped[float | None] = mapped_column(Float)
     overall_score: Mapped[float | None] = mapped_column(Float)
+    compliance_score: Mapped[float | None] = mapped_column(Float)
+    bonus_score: Mapped[float | None] = mapped_column(Float)
     tech_stack: Mapped[dict[str, object] | None] = mapped_column(JSONB)
     top_risky_files: Mapped[list[dict[str, object]] | None] = mapped_column(JSONB)
     executive_summary: Mapped[str | None] = mapped_column(Text)

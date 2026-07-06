@@ -1,5 +1,7 @@
 """Infrastructure health checks for the public health endpoint."""
 
+from motor.motor_asyncio import AsyncIOMotorDatabase
+from pymongo.errors import PyMongoError
 from redis.asyncio import Redis
 from redis.exceptions import RedisError
 from sqlalchemy import text
@@ -19,9 +21,11 @@ class HealthService:
         self,
         session: AsyncSession,
         redis_client: Redis,
+        mongodb: AsyncIOMotorDatabase,
     ) -> None:
         self.session = session
         self.redis_client = redis_client
+        self.mongodb = mongodb
 
     async def check(self) -> HealthResponse:
         """Return aggregate application health."""
@@ -29,6 +33,7 @@ class HealthService:
         services = {
             "postgres": await self._check_postgres(),
             "redis": await self._check_redis(),
+            "mongodb": await self._check_mongodb(),
         }
         status = (
             OK_STATUS
@@ -50,6 +55,14 @@ class HealthService:
         try:
             await self.redis_client.ping()
         except RedisError:
+            return HealthServiceStatus(status=ERROR_STATUS)
+
+        return HealthServiceStatus(status=OK_STATUS)
+
+    async def _check_mongodb(self) -> HealthServiceStatus:
+        try:
+            await self.mongodb.command("ping")
+        except PyMongoError:
             return HealthServiceStatus(status=ERROR_STATUS)
 
         return HealthServiceStatus(status=OK_STATUS)
