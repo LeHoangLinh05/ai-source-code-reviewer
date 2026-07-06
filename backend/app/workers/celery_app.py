@@ -39,7 +39,10 @@ celery_app = Celery(
     "repoguard_ai",
     broker=celery_broker_url,
     backend=celery_result_backend,
-    include=["app.workers.review_worker"],
+    include=[
+        "app.workers.review_worker",
+        "app.workers.sandbox_cleanup_worker",
+    ],
 )
 
 celery_app.conf.update(
@@ -58,4 +61,10 @@ celery_app.conf.update(
     accept_content=["json"],
     timezone="UTC",
     enable_utc=True,
+    beat_schedule={
+        "cleanup-expired-sandboxes": {
+            "task": "app.workers.sandbox_cleanup_worker.cleanup_expired_sandboxes",
+            "schedule": 30 * 60,
+        },
+    },
 )

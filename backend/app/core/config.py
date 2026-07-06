@@ -67,6 +67,11 @@ class Settings(BaseSettings):
     redis_health_check_interval_seconds: int = 30
     celery_broker_url: str = "redis://localhost:6379/1"
     celery_result_backend: str = "redis://localhost:6379/2"
+    sandbox_root: str = "/tmp/sandbox"
+    sandbox_ttl_hours: int = 1
+    max_repo_size_mb: int = 500
+    max_source_file_size_bytes: int = 1_048_576
+    analysis_subprocess_timeout_seconds: int = 60
 
     jwt_secret_key: SecretStr = SecretStr("")
     jwt_algorithm: str = "HS256"

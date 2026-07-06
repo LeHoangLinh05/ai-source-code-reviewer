@@ -84,6 +84,7 @@ services:
     command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
     volumes:
       - ./backend:/app
+      - sandbox_data:/tmp/sandbox
     ports:
       - "127.0.0.1:${BACKEND_HOST_PORT:-8000}:8000"
     extra_hosts:
@@ -115,18 +116,47 @@ services:
       [
         "celery",
         "-A",
-        "app.workers.celery_app.celery_app",
+        "app.worker",
         "worker",
         "--loglevel=info",
         "--pool=solo",
       ]
     volumes:
       - ./backend:/app
+      - sandbox_data:/tmp/sandbox
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
       mongodb:
         condition: service_healthy
+      db-healthcheck:
+        condition: service_healthy
+      cache-healthcheck:
+        condition: service_healthy
+    networks:
+      - repoguard-network
+
+  beat:
+    build:
+      context: ./backend
+    container_name: repoguard-beat
+    restart: unless-stopped
+    env_file:
+      - .env
+    command:
+      [
+        "celery",
+        "-A",
+        "app.worker",
+        "beat",
+        "--loglevel=info",
+      ]
+    volumes:
+      - ./backend:/app
+      - sandbox_data:/tmp/sandbox
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
       db-healthcheck:
         condition: service_healthy
       cache-healthcheck:
@@ -181,3 +211,4 @@ networks:
 
 volumes:
   mongodb_data:
+  sandbox_data:

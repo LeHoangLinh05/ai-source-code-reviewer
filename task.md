@@ -20,7 +20,7 @@
 - [x] **P1.9** Module `reports` (query report, issues list filter/pagination)
 - [ ] **P1.10** Clone service: `git clone --depth 1` + size validation
 - [ ] **P1.11** File filter: bỏ qua binary, node_modules, venv, `__pycache__`
-- [ ] **P1.12** Sandbox cleanup scheduler (TTL 1h)
+- [x] **P1.12** Sandbox cleanup scheduler (TTL 1h)
 - [ ] **P1.13** Structure analyzer: language/framework detect, file tree builder
 - [ ] **P1.14** Static analysis integration: Ruff + Bandit + ESLint parsers
 - [ ] **P1.15** `NormalizedIssue` model
