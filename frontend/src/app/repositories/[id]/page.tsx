@@ -57,6 +57,7 @@ const startReviewSchema = z.object({
 type StartReviewFormValues = z.infer<typeof startReviewSchema>;
 
 const BRANCH_PRESETS = ["main", "master"] as const;
+const ROADMAP_RULE_PROFILE_ID = "roadmap_bootcamp_v1";
 const STATUS_STYLES: Record<ReviewJobStatus, string> = {
   AI_REVIEWING: "border-violet-400/40 bg-violet-500/10 text-violet-200",
   ANALYZING_STRUCTURE: "border-sky-400/40 bg-sky-500/10 text-sky-200",
@@ -196,6 +197,11 @@ export default function RepositoryDetailPage() {
       const response = await createReviewJob({
         branch: values.branch,
         options: {
+          rule_profile: {
+            id: ROADMAP_RULE_PROFILE_ID,
+          },
+          review_mode: "smart",
+          smart_review_max_chunks: 180,
           run_static_analysis: values.runStaticAnalysis,
         },
         repository_id: selectedRepository.id,

@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Literal, cast
 
 from langchain_core.tools import tool
+from pydantic import BaseModel, model_validator
 from sqlalchemy import select
 
-from app.ai.tool_runtime import get_ai_tool_runtime
-from app.ai.tools.common import resolve_sandbox_file
+from app.ai.tool_runtime import ensure_ai_job_active, get_ai_tool_runtime
+from app.ai.tools.common import (
+    parse_json_object_text,
+    resolve_sandbox_file,
+    unwrap_react_json_input,
+)
 from app.models.review_issue import (
     IssueCategory,
     IssueSeverity,
@@ -38,13 +43,33 @@ class IssueValidationError(ValueError):
     """Raised when an AI issue violates backend safety gates."""
 
 
-@tool
+class GenerateIssueInput(BaseModel):
+    """Input schema for normalized AI issues."""
+
+    severity: str | None = None
+    category: str | None = None
+    title: str | None = None
+    description: str | None = None
+    confidence: float | None = None
+    file_path: str | None = None
+    line_start: int | None = None
+    line_end: int | None = None
+    suggestion: str | None = None
+    references: list[str] | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def unwrap_react_json(cls, data: object) -> object:
+        return unwrap_react_json_input(data, "severity")
+
+
+@tool(args_schema=GenerateIssueInput)
 async def generate_issue(
-    severity: AllowedIssueSeverity,
-    category: AllowedIssueCategory,
-    title: str,
-    description: str,
-    confidence: float,
+    severity: str | None = None,
+    category: str | None = None,
+    title: str | None = None,
+    description: str | None = None,
+    confidence: float | None = None,
     file_path: str | None = None,
     line_start: int | None = None,
     line_end: int | None = None,
@@ -53,20 +78,56 @@ async def generate_issue(
 ) -> dict[str, object]:
     """Tạo 1 issue có cấu trúc. CHỈ gọi khi confidence >= 0.7. Đây là cách DUY NHẤT để báo issue — không bao giờ trả issue dưới dạng free text."""
 
+    parsed_input = parse_json_object_text(severity)
+    if parsed_input is not None:
+        severity = _optional_str(parsed_input.get("severity")) or severity
+        category = _optional_category(parsed_input.get("category")) or category
+        title = _optional_str(parsed_input.get("title")) or title
+        description = _optional_str(parsed_input.get("description")) or description
+        confidence = _optional_float(parsed_input.get("confidence")) or confidence
+        file_path = _optional_str(parsed_input.get("file_path")) or file_path
+        line_start = _optional_int(parsed_input.get("line_start")) or line_start
+        line_end = _optional_int(parsed_input.get("line_end")) or line_end
+        suggestion = _optional_str(parsed_input.get("suggestion")) or suggestion
+        references = _optional_str_list(parsed_input.get("references")) or references
+
     references = references or []
-    validate_issue_payload(
-        file_path=file_path,
-        line_start=line_start,
-        line_end=line_end,
-        severity=severity,
+    category = _optional_category(category)
+    severity = _optional_severity(severity)
+    rejection_reason = _issue_rejection_reason(
         category=category,
-        title=title,
-        description=description,
-        suggestion=suggestion,
         confidence=confidence,
-        references=references,
+        description=description,
+        severity=severity,
+        title=title,
     )
+    if rejection_reason is not None:
+        return {"status": "rejected", "reason": rejection_reason}
+
+    assert category is not None
+    assert confidence is not None
+    assert description is not None
+    assert severity is not None
+    assert title is not None
+
+    try:
+        validate_issue_payload(
+            file_path=file_path,
+            line_start=line_start,
+            line_end=line_end,
+            severity=severity,
+            category=category,
+            title=title,
+            description=description,
+            suggestion=suggestion,
+            confidence=confidence,
+            references=references,
+        )
+    except IssueValidationError as error:
+        return {"status": "rejected", "reason": str(error)}
+
     runtime = get_ai_tool_runtime()
+    await ensure_ai_job_active()
     existing_issue = await _find_existing_issue(
         file_path=file_path,
         line_start=line_start,
@@ -113,6 +174,87 @@ async def generate_issue(
         "issue_id": str(review_issue.id),
         "source": IssueSource.AI_REVIEW.value,
     }
+
+
+def _optional_category(value: object) -> AllowedIssueCategory | None:
+    allowed_categories = {
+        "security",
+        "bug",
+        "performance",
+        "maintainability",
+        "style",
+    }
+    if isinstance(value, str) and value in allowed_categories:
+        return cast(AllowedIssueCategory, value)
+
+    return None
+
+
+def _optional_severity(value: object) -> AllowedIssueSeverity | None:
+    allowed_severities = {"critical", "high", "medium", "low", "info"}
+    if isinstance(value, str) and value in allowed_severities:
+        return cast(AllowedIssueSeverity, value)
+
+    return None
+
+
+def _issue_rejection_reason(
+    *,
+    category: AllowedIssueCategory | None,
+    confidence: float | None,
+    description: str | None,
+    severity: AllowedIssueSeverity | None,
+    title: str | None,
+) -> str | None:
+    missing_fields: list[str] = []
+    if severity is None:
+        missing_fields.append("severity")
+    if category is None:
+        missing_fields.append("category")
+    if title is None:
+        missing_fields.append("title")
+    if description is None:
+        missing_fields.append("description")
+    if confidence is None:
+        missing_fields.append("confidence")
+
+    if not missing_fields:
+        return None
+
+    return f"AI issue rejected: missing or invalid fields: {', '.join(missing_fields)}"
+
+
+def _optional_float(value: object) -> float | None:
+    if isinstance(value, int | float | str):
+        try:
+            return float(value)
+        except ValueError:
+            return None
+
+    return None
+
+
+def _optional_int(value: object) -> int | None:
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.isdigit():
+        return int(value)
+
+    return None
+
+
+def _optional_str(value: object) -> str | None:
+    if isinstance(value, str) and value:
+        return value
+
+    return None
+
+
+def _optional_str_list(value: object) -> list[str] | None:
+    if not isinstance(value, list):
+        return None
+
+    return [str(item) for item in value]
 
 
 async def _find_existing_issue(

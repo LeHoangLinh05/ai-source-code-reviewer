@@ -8,14 +8,23 @@ from typing import Any
 from uuid import UUID
 
 from langchain_core.tools import tool
+from sqlalchemy import select
 
+from app.ai.review_plan import (
+    build_chunk_review_plan,
+    get_review_mode,
+    get_smart_review_max_chunks,
+)
 from app.ai.tool_runtime import get_ai_tool_runtime
-from app.ai.tools.common import serialize_mongo_document
+from app.ai.tool_runtime import ensure_ai_job_active
+from app.ai.tools.common import parse_job_uuid, serialize_mongo_document
 from app.db.mongodb import (
+    CHUNK_METADATA_COLLECTION,
     FILE_ANALYSIS_RESULTS_COLLECTION,
     RAW_STATIC_ANALYSIS_OUTPUTS_COLLECTION,
     ROADMAP_COMPLIANCE_RESULTS_COLLECTION,
 )
+from app.models.review_job import ReviewJob
 
 HIGH_RISK_AREAS = {"security", "bug"}
 HIGH_RISK_PATH_PARTS = {"auth", "security", "crypto", "middleware"}
@@ -26,7 +35,8 @@ async def analyze_project_structure(job_id: str) -> dict[str, object]:
     """Lấy tổng quan project đang review: ngôn ngữ, framework, danh sách file cần review theo độ ưu tiên, tóm tắt static analysis, và tóm tắt roadmap compliance (nếu job bật rule_profile)."""
 
     runtime = get_ai_tool_runtime()
-    job_uuid = UUID(job_id)
+    await ensure_ai_job_active()
+    job_uuid = parse_job_uuid(job_id)
     database = runtime.mongodb_database
     structure_document = await database[FILE_ANALYSIS_RESULTS_COLLECTION].find_one(
         {"job_id": str(job_uuid)},
@@ -44,20 +54,36 @@ async def analyze_project_structure(job_id: str) -> dict[str, object]:
         {"job_id": str(job_uuid)},
         sort=[("checked_at", -1)],
     )
+    chunk_documents = (
+        await database[CHUNK_METADATA_COLLECTION]
+        .find({"job_id": str(job_uuid)})
+        .to_list(length=None)
+    )
+    job_options = await _load_job_options(job_uuid)
+    review_mode = get_review_mode(job_options)
 
     structure = serialize_mongo_document(structure_document)
     project_structure = _as_dict(structure.get("project_structure"))
     file_tree = _as_list(structure.get("file_tree"))
     verification_queue = _verification_queue(roadmap_document)
     static_issues = _static_issues(static_documents)
+    chunk_counts = _chunk_counts_by_file(chunk_documents)
+    files_to_review = _files_to_review(
+        file_tree=file_tree,
+        static_issues=static_issues,
+        verification_queue=verification_queue,
+        chunk_counts=chunk_counts,
+    )
 
     output: dict[str, object] = {
         "languages": _languages(project_structure),
         "frameworks": _frameworks(project_structure),
-        "files_to_review": _files_to_review(
-            file_tree=file_tree,
-            static_issues=static_issues,
+        "files_to_review": files_to_review,
+        "chunk_review_plan": build_chunk_review_plan(
+            chunk_documents=chunk_documents,
+            review_mode=review_mode,
             verification_queue=verification_queue,
+            max_smart_chunks=get_smart_review_max_chunks(job_options),
         ),
         "static_analysis_summary": _static_analysis_summary(static_documents),
     }
@@ -67,6 +93,15 @@ async def analyze_project_structure(job_id: str) -> dict[str, object]:
         output["roadmap_verification_queue"] = verification_queue
 
     return output
+
+
+async def _load_job_options(job_id: UUID) -> dict[str, object] | None:
+    runtime = get_ai_tool_runtime()
+    result = await runtime.postgres_session.execute(
+        select(ReviewJob.options).where(ReviewJob.id == job_id)
+    )
+    options = result.scalar_one_or_none()
+    return options if isinstance(options, dict) else None
 
 
 def _languages(project_structure: dict[str, object]) -> list[str]:
@@ -137,7 +172,8 @@ def _files_to_review(
     file_tree: list[object],
     static_issues: list[dict[str, Any]],
     verification_queue: list[dict[str, object]],
-) -> list[dict[str, str]]:
+    chunk_counts: dict[str, int],
+) -> list[dict[str, object]]:
     issue_by_file: dict[str, list[dict[str, Any]]] = {}
     for issue in static_issues:
         file_path = issue.get("file_path")
@@ -160,12 +196,40 @@ def _files_to_review(
             "file_path": file_path,
             "priority": _file_priority(file_path, issue_by_file.get(file_path, [])),
             "risk_area": _file_risk_area(file_path, issue_by_file.get(file_path, [])),
+            "total_chunks": chunk_counts.get(file_path, 0),
         }
         for file_path in sorted(file_paths)
     ]
     return sorted(
-        files, key=lambda item: (_priority_rank(item["priority"]), item["file_path"])
+        files,
+        key=lambda item: (
+            _priority_rank(str(item["priority"])),
+            str(item["file_path"]),
+        ),
     )
+
+
+def _chunk_counts_by_file(chunk_documents: list[object]) -> dict[str, int]:
+    chunk_counts: dict[str, int] = {}
+    for document in chunk_documents:
+        if not isinstance(document, dict):
+            continue
+
+        file_path = document.get("file_path")
+        chunk_index = document.get("chunk_index")
+        total_chunks = document.get("total_chunks")
+        if not isinstance(file_path, str):
+            continue
+
+        known_count = chunk_counts.get(file_path, 0)
+        if isinstance(total_chunks, int) and total_chunks > known_count:
+            chunk_counts[file_path] = total_chunks
+            continue
+
+        if isinstance(chunk_index, int) and chunk_index + 1 > known_count:
+            chunk_counts[file_path] = chunk_index + 1
+
+    return chunk_counts
 
 
 def _file_priority(file_path: str, issues: list[dict[str, Any]]) -> str:

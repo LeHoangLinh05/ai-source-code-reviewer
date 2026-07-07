@@ -1301,6 +1301,7 @@ rules:
   target:
     glob:
     - '**/ai/**/*.py'
+    - '**/rag/**/*.py'
     regex: embed|Embeddings
     min_matches: 1
   priority: P0
@@ -1319,6 +1320,7 @@ rules:
   target:
     glob:
     - '**/ai/**/*.py'
+    - '**/rag/**/*.py'
     regex: TextSplitter|chunk
     min_matches: 1
   priority: P0
@@ -1336,8 +1338,8 @@ rules:
   check_type: required_code_pattern
   target:
     glob:
-    - '**/ai/**/*.py'
-    regex: retriev
+    - '**/*.py'
+    regex: retriev|RAG|RetrievedChunk|search_coding_standard
     min_matches: 1
   priority: P0
   severity_if_missing: critical
@@ -1357,6 +1359,7 @@ rules:
   target:
     glob:
     - '**/ai/**/*.py'
+    - '**/rag/**/*.py'
     regex: top_k|similarity_threshold
     min_matches: 1
   priority: P1
@@ -1375,6 +1378,7 @@ rules:
   target:
     glob:
     - '**/ai/**/*.py'
+    - '**/rag/**/*.py'
     regex_all_of:
     - Memory|conversation
     - retriev

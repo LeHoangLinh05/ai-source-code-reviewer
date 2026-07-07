@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from importlib.util import find_spec
 from pathlib import Path
 from typing import Any
 
 from app.core.config import get_settings
 
 COLLECTION_NAME = "coding_standards"
+REQUIRED_RAG_PACKAGES = ("chromadb", "sentence_transformers")
 
 
 @dataclass(slots=True)
@@ -200,6 +202,24 @@ def get_vectorstore() -> ChromaVectorStore:
     """Return the singleton Chroma vector store."""
 
     return ChromaVectorStore()
+
+
+def validate_rag_dependencies() -> None:
+    """Fail fast when mandatory RAG packages are missing."""
+
+    missing_packages = [
+        package_name
+        for package_name in REQUIRED_RAG_PACKAGES
+        if find_spec(package_name) is None
+    ]
+    if not missing_packages:
+        return
+
+    raise RuntimeError(
+        "RAG search is mandatory for AI security review, but required package(s) "
+        f"are missing: {', '.join(missing_packages)}. Install backend requirements "
+        "and rebuild/restart the backend worker before running reviews."
+    )
 
 
 def _clean_metadata(metadata: dict[str, object]) -> dict[str, str | int | float | bool]:

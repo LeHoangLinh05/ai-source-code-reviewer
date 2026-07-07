@@ -34,6 +34,7 @@ from app.repositories.repository_repository import RepositoryRepository
 from app.repositories.review_job_repository import ReviewJobRepository
 from app.repositories.user_repository import UserRepository
 from app.services.auth_service import AuthService
+from app.services.ai_trace_service import AITraceService
 from app.services.job_service import ReviewJobService
 from app.services.job_queue_service import JobQueueService
 from app.services.report_service import ReportService
@@ -134,6 +135,18 @@ async def get_review_job_service(
         review_job_repository,
         repository_repository,
         job_queue_service,
+    )
+
+
+async def get_ai_trace_service(
+    session: Annotated[AsyncSession, Depends(get_async_session)],
+    database: Annotated[AsyncIOMotorDatabase, Depends(get_mongodb)],
+) -> AITraceService:
+    """Build the lightweight AI trace service."""
+
+    return AITraceService(
+        postgres_session=session,
+        mongodb_database=database,
     )
 
 

@@ -6,6 +6,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Query, status
 
 from app.core.dependencies import (
+    get_ai_trace_service,
     get_current_user,
     get_review_job_service,
     rate_limit_review_job_create,
@@ -19,6 +20,8 @@ from app.schemas.review_job import (
     ReviewJobResponse,
     ReviewJobStatusUpdate,
 )
+from app.schemas.ai_trace import AITraceResponse
+from app.services.ai_trace_service import AITraceService
 from app.services.job_service import ReviewJobService
 
 router = APIRouter(prefix="/review-jobs", tags=["review-jobs"])
@@ -74,6 +77,23 @@ async def get_review_job(
     """Return one review job after owner/admin authorization."""
 
     return await review_job_service.get_job(job_id, current_user)
+
+
+@router.get(
+    "/{job_id}/ai-trace",
+    response_model=AITraceResponse,
+    summary="Get AI review execution trace",
+)
+async def get_review_job_ai_trace(
+    job_id: UUID,
+    current_user: Annotated[User, Depends(get_current_user)],
+    review_job_service: Annotated[ReviewJobService, Depends(get_review_job_service)],
+    ai_trace_service: Annotated[AITraceService, Depends(get_ai_trace_service)],
+) -> AITraceResponse:
+    """Return compact AI tool-call trace and issue-source counts for one job."""
+
+    await review_job_service.get_job(job_id, current_user)
+    return await ai_trace_service.get_trace(job_id)
 
 
 @router.delete(

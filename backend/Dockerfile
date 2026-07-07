@@ -2,6 +2,8 @@ FROM node:20-slim AS node-runtime
 
 FROM python:3.12-slim AS runtime
 
+ARG TORCH_CPU_VERSION=2.5.1+cpu
+
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
@@ -20,6 +22,9 @@ RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
 
 COPY requirements.txt .
 RUN python -m pip install --upgrade pip \
+    && python -m pip install \
+        --index-url https://download.pytorch.org/whl/cpu \
+        "torch==${TORCH_CPU_VERSION}" \
     && python -m pip install -r requirements.txt \
     && python -m pip install ruff bandit \
     && npm install -g eslint @eslint/js typescript typescript-eslint

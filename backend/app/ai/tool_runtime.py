@@ -9,7 +9,10 @@ from pathlib import Path
 from uuid import UUID
 
 from motor.motor_asyncio import AsyncIOMotorDatabase
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.models.review_job import ReviewJob
 
 
 @dataclass(slots=True)
@@ -37,6 +40,17 @@ def get_ai_tool_runtime() -> AIToolRuntime:
         raise RuntimeError("AI tool runtime has not been configured")
 
     return runtime
+
+
+async def ensure_ai_job_active() -> None:
+    """Stop tool execution if the backing review job was canceled/deleted."""
+
+    runtime = get_ai_tool_runtime()
+    result = await runtime.postgres_session.execute(
+        select(ReviewJob.id).where(ReviewJob.id == runtime.job_id)
+    )
+    if result.scalar_one_or_none() is None:
+        raise RuntimeError("Review job was canceled")
 
 
 @contextmanager

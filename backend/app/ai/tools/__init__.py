@@ -11,10 +11,11 @@ AI_REVIEW_TOOLS = [
     read_file_chunk,
     search_coding_standard,
     generate_issue,
-    generate_final_report,
 ]
+AI_REPORT_TOOLS = [generate_final_report]
 
 __all__ = [
+    "AI_REPORT_TOOLS",
     "AI_REVIEW_TOOLS",
     "analyze_project_structure",
     "generate_final_report",

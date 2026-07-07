@@ -25,11 +25,74 @@ export type ReviewJob = {
   stream_url: string;
 };
 
+export type AIToolCallTrace = {
+  sequence: number;
+  tool_name: string;
+  called_at: string;
+  duration_ms: number;
+  input: Record<string, unknown>;
+  output: Record<string, unknown>;
+  status: "ok" | "error" | string;
+};
+
+export type AITraceCoverage = {
+  total_reviewable_files: number;
+  total_reviewable_lines: number;
+  review_mode: string;
+  chunked_files: number;
+  total_chunks: number;
+  target_files: number;
+  target_chunks: number;
+  ai_read_files: number;
+  ai_read_chunks: number;
+  ai_read_target_chunks: number;
+  ai_read_file_percent: number;
+  ai_read_chunk_percent: number;
+  static_analyzer_runs: number;
+  static_analyzer_issues: number;
+  roadmap_rules_checked: number;
+  roadmap_verification_items: number;
+  generated_ai_issues: number;
+  generated_report_by_ai: boolean;
+};
+
+export type AITraceStage = {
+  key: string;
+  label: string;
+  status: "pending" | "running" | "completed" | "warning" | "failed" | "skipped" | string;
+  detail: string;
+  progress_percent: number;
+  current: number;
+  total: number;
+};
+
+export type AITrace = {
+  job_id: string;
+  has_ai_started: boolean;
+  tool_call_count: number;
+  latest_tool_name: string | null;
+  latest_tool_status: string | null;
+  issue_counts_by_source: Record<string, number>;
+  ai_issue_count: number;
+  roadmap_issue_count: number;
+  static_issue_count: number;
+  report_model: string | null;
+  report_created_at: string | null;
+  coverage: AITraceCoverage;
+  stages: AITraceStage[];
+  recent_tool_calls: AIToolCallTrace[];
+};
+
 export type CreateReviewJobPayload = {
   repository_id: string;
   branch: string;
   options: {
+    rule_profile: {
+      id: string;
+    };
     run_static_analysis: boolean;
+    review_mode: "smart" | "full_audit";
+    smart_review_max_chunks?: number;
   };
 };
 

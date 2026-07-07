@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 from uuid import UUID
@@ -17,7 +18,7 @@ async def get_job(job_id: str | UUID, session: AsyncSession | None = None) -> Re
     """Load a review job or fail with a clear tool error."""
 
     runtime = get_ai_tool_runtime()
-    job_uuid = UUID(str(job_id))
+    job_uuid = parse_job_uuid(job_id)
     db_session = session or runtime.postgres_session
     result = await db_session.execute(select(ReviewJob).where(ReviewJob.id == job_uuid))
     job = result.scalar_one_or_none()
@@ -25,6 +26,65 @@ async def get_job(job_id: str | UUID, session: AsyncSession | None = None) -> Re
         raise ValueError(f"Review job not found: {job_uuid}")
 
     return job
+
+
+def parse_job_uuid(job_id: str | UUID) -> UUID:
+    """Parse a job UUID from direct or JSON-shaped LangChain tool input."""
+
+    if isinstance(job_id, UUID):
+        return job_id
+
+    raw_job_id = str(job_id).strip()
+    if raw_job_id.startswith("{"):
+        try:
+            parsed = json.loads(raw_job_id)
+        except json.JSONDecodeError:
+            pass
+        else:
+            if isinstance(parsed, dict) and "job_id" in parsed:
+                raw_job_id = str(parsed["job_id"]).strip()
+
+    return UUID(raw_job_id)
+
+
+def unwrap_react_json_input(data: Any, first_field: str) -> Any:
+    """Unwrap JSON strings that text ReAct sometimes maps into the first field."""
+
+    if not isinstance(data, dict):
+        return data
+
+    raw_value = data.get(first_field)
+    if not isinstance(raw_value, str):
+        return data
+
+    parsed = parse_json_object_text(raw_value)
+    if parsed is None:
+        return data
+
+    if set(data) == {first_field}:
+        return parsed
+
+    merged = dict(data)
+    merged.update(parsed)
+    return merged
+
+
+def parse_json_object_text(value: object) -> dict[str, Any] | None:
+    """Return a JSON object when a ReAct action string contains one."""
+
+    if not isinstance(value, str):
+        return None
+
+    raw_text = value.strip()
+    if not raw_text.startswith("{"):
+        return None
+
+    try:
+        parsed, _ = json.JSONDecoder().raw_decode(raw_text)
+    except json.JSONDecodeError:
+        return None
+
+    return parsed if isinstance(parsed, dict) else None
 
 
 def resolve_sandbox_file(file_path: str) -> Path:

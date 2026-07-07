@@ -86,6 +86,30 @@ def test_missing_websocket_creates_one_requirement_issue(tmp_path: Path) -> None
     assert issue.file_path is None
 
 
+def test_rag_retrieval_rule_scans_rag_package_paths(tmp_path: Path) -> None:
+    write_text(tmp_path / "requirements.txt", "chromadb\n")
+    write_text(
+        tmp_path / "app" / "rag" / "pipeline.py",
+        "def answer(question: str) -> str:\n"
+        "    retrieved_chunks = retriever.retrieve(question)\n"
+        "    return llm.invoke({'context': retrieved_chunks, 'question': question})\n",
+    )
+    checker = RoadmapComplianceChecker()
+
+    output = checker.run(
+        tmp_path,
+        {"id": "roadmap_bootcamp_v1", "weeks_included": [7]},
+    )
+
+    assert output is not None
+    result = next(result for result in output.results if result.rule_id == "RC-W7-04")
+    assert result.status == RuleStatus.PROVISIONAL_PASS
+    assert any(
+        item.rule_id == "RC-W7-04" and item.file_path == "app/rag/pipeline.py"
+        for item in output.verification_queue
+    )
+
+
 def test_roadmap_rules_yaml_loads_expected_contract() -> None:
     checker = RoadmapComplianceChecker()
 

@@ -14,8 +14,14 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai.agent import run_ai_review
-from app.ai.rules.roadmap_checker import RoadmapCheckOutput, RoadmapComplianceChecker
-from app.analyzers.code_chunker import chunk_python_file
+from app.ai.rag.vectorstore import validate_rag_dependencies
+from app.ai.review_plan import get_review_mode
+from app.ai.rules.roadmap_checker import (
+    RULE_PROFILE_ID,
+    RoadmapCheckOutput,
+    RoadmapComplianceChecker,
+)
+from app.analyzers.code_chunker import count_tokens, detect_risk_area, chunk_python_file
 from app.analyzers.file_filter import filter_files, to_relative_posix_path
 from app.analyzers.secret_scanner import scan_secrets
 from app.analyzers.static_analysis.bandit_analyzer import run_bandit
@@ -47,7 +53,7 @@ from app.schemas.mongodb import (
 )
 from app.schemas.normalized_issue import NormalizedIssue
 from app.services.notification_service import publish_job_progress
-from app.services.report_generation_service import build_static_report
+from app.services.report_generation_service import AI_REPORT_MODEL, build_static_report
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +62,10 @@ CLONE_TIMEOUT_SECONDS = 120
 
 class ReviewPipelineError(Exception):
     """Expected pipeline failure with a user-facing error message."""
+
+
+class ReviewJobCanceled(Exception):
+    """Raised when a review job was removed while the worker was running."""
 
 
 class ReviewPipelineService:
@@ -92,7 +102,8 @@ class ReviewPipelineService:
         sandbox_path = Path(self.settings.sandbox_root) / str(job_id)
         review_job = await self.review_job_repository.get_by_id(job_id)
         if review_job is None:
-            raise ReviewPipelineError(f"Review job not found: {job_id}")
+            logger.info("Review job %s no longer exists; skipping worker run", job_id)
+            return
 
         try:
             await self.review_job_repository.mark_started(
@@ -102,6 +113,8 @@ class ReviewPipelineService:
             await self._run_pipeline_steps(review_job, sandbox_path)
             elapsed_seconds = time.perf_counter() - started_at
             logger.info("Review job %s completed in %.2fs", job_id, elapsed_seconds)
+        except ReviewJobCanceled:
+            logger.info("Review job %s was canceled during worker execution", job_id)
         except Exception as error:
             await self._handle_failure(job_id, error)
 
@@ -110,6 +123,8 @@ class ReviewPipelineService:
         review_job: ReviewJob,
         sandbox_path: Path,
     ) -> None:
+        await self._ensure_job_active(review_job.id)
+        get_review_mode(review_job.options)
         await self._transition(
             review_job,
             ReviewJobStatus.CLONING,
@@ -117,6 +132,7 @@ class ReviewPipelineService:
             "Cloning repository",
         )
         clone_repository(review_job, sandbox_path)
+        await self._ensure_job_active(review_job.id)
         validate_repo_size(
             sandbox_path,
             max_size_bytes=self.settings.max_repo_size_mb * 1024 * 1024,
@@ -134,10 +150,13 @@ class ReviewPipelineService:
             sandbox_path,
             max_source_file_size_bytes=self.settings.max_source_file_size_bytes,
         )
+        await self._ensure_job_active(review_job.id)
         structure = await self._analyze_structure(
             review_job, sandbox_path, filtered_files
         )
+        await self._ensure_job_active(review_job.id)
         roadmap_output = await self._run_roadmap_compliance(review_job, sandbox_path)
+        await self._ensure_job_active(review_job.id)
         issues = await self._run_static_analysis(
             review_job, sandbox_path, filtered_files
         )
@@ -145,12 +164,14 @@ class ReviewPipelineService:
         if roadmap_output is not None:
             issues.extend(roadmap_output.issues)
         attach_source_context(issues, sandbox_path)
+        await self._ensure_job_active(review_job.id)
         await self._chunk_code(
             review_job,
             sandbox_path,
             filtered_files,
             issues,
         )
+        await self._ensure_job_active(review_job.id)
         await self._persist_pre_agent_report(
             review_job,
             structure,
@@ -158,7 +179,10 @@ class ReviewPipelineService:
             issues,
             roadmap_output,
         )
+        await self._ensure_job_active(review_job.id)
         await self._run_ai_agent(review_job, sandbox_path)
+        await self._ensure_job_active(review_job.id)
+        await self._require_ai_generated_report(review_job.id)
         await self._transition(
             review_job,
             ReviewJobStatus.GENERATING_REPORT,
@@ -263,6 +287,7 @@ class ReviewPipelineService:
         python_files = [
             file_path for file_path in filtered_files if file_path.suffix == ".py"
         ]
+        python_file_set = set(python_files)
         for file_path in python_files:
             for chunk in chunk_python_file(
                 file_path,
@@ -290,6 +315,18 @@ class ReviewPipelineService:
                         chunk_text=chunk.content,
                     )
                 )
+
+        for file_path in filtered_files:
+            if file_path in python_file_set:
+                continue
+
+            plain_metadata = build_plain_file_chunk_metadata(
+                job_id=review_job.id,
+                sandbox_path=sandbox_path,
+                file_path=file_path,
+                issues=issues,
+            )
+            await self.chunk_metadata_repository.insert_one(plain_metadata)
         await self._publish_status(
             review_job,
             ReviewJobStatus.CHUNKING_CODE,
@@ -327,6 +364,7 @@ class ReviewPipelineService:
         )
 
     async def _run_ai_agent(self, review_job: ReviewJob, sandbox_path: Path) -> None:
+        validate_rag_dependencies()
         await self._transition(
             review_job,
             ReviewJobStatus.AI_REVIEWING,
@@ -344,10 +382,27 @@ class ReviewPipelineService:
             mongodb_database=database,
         )
 
+    async def _require_ai_generated_report(self, job_id: UUID) -> None:
+        report = await self.report_repository.get_report_by_job_id(job_id)
+        if report is None:
+            raise ReviewPipelineError("AI review did not create a final report")
+
+        if report.ai_model_used != AI_REPORT_MODEL:
+            raise ReviewPipelineError(
+                "AI review finished without generating the final report; "
+                f"current report model is {report.ai_model_used or 'unknown'}"
+            )
+
     async def _handle_failure(self, job_id: UUID, error: Exception) -> None:
         error_message = build_error_message(error)
         logger.exception("Review job %s failed: %s", job_id, error_message)
         await self.review_job_repository.rollback()
+        if await self.review_job_repository.get_by_id(job_id) is None:
+            logger.info(
+                "Review job %s was removed before failure could persist", job_id
+            )
+            return
+
         await self.review_job_repository.mark_failed_by_id(
             job_id,
             error_message=error_message,
@@ -370,6 +425,7 @@ class ReviewPipelineService:
         progress: int,
         message: str,
     ) -> None:
+        await self._ensure_job_active(review_job.id)
         updated_job = await self.review_job_repository.update_status(
             review_job,
             status=status,
@@ -388,6 +444,10 @@ class ReviewPipelineService:
                 )
 
         await self._publish_status(review_job, status, progress, message)
+
+    async def _ensure_job_active(self, job_id: UUID) -> None:
+        if await self.review_job_repository.get_by_id(job_id) is None:
+            raise ReviewJobCanceled
 
     async def _publish_status(
         self,
@@ -501,15 +561,14 @@ def build_static_analysis_runs(
     ]
 
 
-def get_rule_profile(options: dict[str, object] | None) -> dict[str, object] | None:
-    """Return the optional roadmap rule profile from review job options."""
+def get_rule_profile(options: dict[str, object] | None) -> dict[str, object]:
+    """Return the roadmap rule profile, defaulting to the full roadmap."""
 
     if options is None:
-        return None
-
+        return {"id": RULE_PROFILE_ID}
     rule_profile = options.get("rule_profile")
     if rule_profile is None:
-        return None
+        return {"id": RULE_PROFILE_ID}
     if not isinstance(rule_profile, dict):
         raise ReviewPipelineError("review job rule_profile option must be an object")
 
@@ -600,6 +659,38 @@ def attach_source_context(
             "lines": context_lines,
         }
         issue.raw_output = raw_output
+
+
+def build_plain_file_chunk_metadata(
+    *,
+    job_id: UUID,
+    sandbox_path: Path,
+    file_path: Path,
+    issues: list[NormalizedIssue],
+) -> ChunkMetadataDocument:
+    """Represent a non-Python text source file as one reviewable AI chunk."""
+
+    relative_path = to_relative_posix_path(file_path, sandbox_path)
+    content = file_path.read_text(encoding="utf-8", errors="ignore")
+    line_count = max(1, len(content.splitlines()))
+    module_path = Path(relative_path)
+    language = LANGUAGE_BY_EXTENSION.get(file_path.suffix.lower()) or "text"
+    return ChunkMetadataDocument(
+        job_id=job_id,
+        file_path=relative_path,
+        language=language,
+        chunk_type="file",
+        chunk_index=0,
+        total_chunks=1,
+        line_start=1,
+        line_end=line_count,
+        imports=[],
+        module=module_path.parent.name or "root",
+        risk_area=detect_risk_area(relative_path, []),
+        has_static_issues=any(issue.file_path == relative_path for issue in issues),
+        token_count=count_tokens(content),
+        chunk_text=content,
+    )
 
 
 def build_flat_file_tree_entries(

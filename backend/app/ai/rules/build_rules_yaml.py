@@ -390,6 +390,8 @@ JS_MANIFEST = ["**/package.json"]
 PY_GLOB = ["**/*.py"]
 JS_GLOB = ["**/*.ts", "**/*.tsx", "**/*.js", "**/*.jsx"]
 AI_GLOB = ["**/ai/**/*.py"]
+RAG_GLOB = ["**/rag/**/*.py"]
+AI_RAG_GLOB = [*AI_GLOB, *RAG_GLOB]
 
 TARGETS = {
     "RC-W1-01": {"manifest_glob": list(PY_MANIFEST), "package_any_of": ["fastapi"]},
@@ -600,20 +602,28 @@ TARGETS = {
         "manifest_glob": list(PY_MANIFEST),
         "package_any_of": ["chromadb", "faiss-cpu", "qdrant-client"],
     },
-    "RC-W7-02": {"glob": list(AI_GLOB), "regex": r"embed|Embeddings", "min_matches": 1},
+    "RC-W7-02": {
+        "glob": list(AI_RAG_GLOB),
+        "regex": r"embed|Embeddings",
+        "min_matches": 1,
+    },
     "RC-W7-03": {
-        "glob": list(AI_GLOB),
+        "glob": list(AI_RAG_GLOB),
         "regex": r"TextSplitter|chunk",
         "min_matches": 1,
     },
-    "RC-W7-04": {"glob": list(AI_GLOB), "regex": r"retriev", "min_matches": 1},
+    "RC-W7-04": {
+        "glob": list(PY_GLOB),
+        "regex": r"retriev|RAG|RetrievedChunk|search_coding_standard",
+        "min_matches": 1,
+    },
     "RC-W7-05": {
-        "glob": list(AI_GLOB),
+        "glob": list(AI_RAG_GLOB),
         "regex": r"top_k|similarity_threshold",
         "min_matches": 1,
     },
     "RC-W7-06": {
-        "glob": list(AI_GLOB),
+        "glob": list(AI_RAG_GLOB),
         "regex_all_of": [r"Memory|conversation", r"retriev"],
         "min_matches": 1,
     },

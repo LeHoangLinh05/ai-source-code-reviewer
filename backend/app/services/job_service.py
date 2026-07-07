@@ -113,6 +113,7 @@ class ReviewJobService:
         if review_job.status in {ReviewJobStatus.COMPLETED, ReviewJobStatus.FAILED}:
             raise ConflictError("Completed or failed review jobs cannot be canceled")
 
+        await self.job_queue_service.cancel(job_id)
         try:
             await self.review_job_repository.delete(review_job)
         except Exception:

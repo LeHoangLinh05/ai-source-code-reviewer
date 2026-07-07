@@ -1,5 +1,6 @@
 import { api } from "@/lib/api";
 import type {
+  AITrace,
   CancelReviewJobResponse,
   CreateReviewJobPayload,
   CreateReviewJobResponse,
@@ -22,6 +23,11 @@ export async function getReviewJobs(filters: ReviewJobFilters = {}) {
 
 export async function getReviewJob(jobId: string) {
   const response = await api.get<ReviewJob>(`/review-jobs/${jobId}`);
+  return response.data;
+}
+
+export async function getReviewJobAiTrace(jobId: string) {
+  const response = await api.get<AITrace>(`/review-jobs/${jobId}/ai-trace`);
   return response.data;
 }
 

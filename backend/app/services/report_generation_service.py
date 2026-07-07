@@ -8,6 +8,8 @@ from app.models.review_report import ReviewReport
 from app.schemas.normalized_issue import NormalizedIssue
 
 ROADMAP_REQUIREMENTS_REPORT_PATH = "Repository roadmap requirements"
+STATIC_REPORT_MODEL = "static-pipeline-v1"
+AI_REPORT_MODEL = "langchain-react-agent-v1"
 
 SEVERITY_SCORE_WEIGHTS = {
     IssueSeverity.CRITICAL: 3.0,
@@ -71,7 +73,7 @@ def build_static_report(
         tech_stack=tech_stack,
         top_risky_files=build_top_risky_files(issues),
         executive_summary=build_executive_summary(issues, total_files_analyzed),
-        ai_model_used="static-pipeline-v1",
+        ai_model_used=STATIC_REPORT_MODEL,
     )
 
 
