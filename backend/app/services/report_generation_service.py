@@ -7,6 +7,8 @@ from app.models.review_issue import IssueCategory, IssueSeverity
 from app.models.review_report import ReviewReport
 from app.schemas.normalized_issue import NormalizedIssue
 
+ROADMAP_REQUIREMENTS_REPORT_PATH = "Repository roadmap requirements"
+
 SEVERITY_SCORE_WEIGHTS = {
     IssueSeverity.CRITICAL: 3.0,
     IssueSeverity.HIGH: 2.0,
@@ -30,6 +32,8 @@ def build_static_report(
     total_files_analyzed: int,
     issues: list[NormalizedIssue],
     tech_stack: dict[str, object],
+    compliance_score: float | None = None,
+    bonus_score: float | None = None,
 ) -> ReviewReport:
     """Build a non-AI report until Phase 6 replaces score synthesis."""
 
@@ -62,6 +66,8 @@ def build_static_report(
             [issue for issue in issues if issue.category == IssueCategory.PERFORMANCE]
         ),
         overall_score=calculate_score(issues),
+        compliance_score=compliance_score,
+        bonus_score=bonus_score,
         tech_stack=tech_stack,
         top_risky_files=build_top_risky_files(issues),
         executive_summary=build_executive_summary(issues, total_files_analyzed),
@@ -85,13 +91,15 @@ def build_top_risky_files(
 
     grouped: dict[str, list[NormalizedIssue]] = {}
     for issue in issues:
-        grouped.setdefault(issue.file_path, []).append(issue)
+        file_path = issue.file_path or ROADMAP_REQUIREMENTS_REPORT_PATH
+        grouped.setdefault(file_path, []).append(issue)
 
     ranked_files = sorted(
         grouped.items(),
         key=lambda item: (
-            len(item[1]),
+            any(issue.source.value == "roadmap_rule" for issue in item[1]),
             max(SEVERITY_RANK[issue.severity] for issue in item[1]),
+            len(item[1]),
         ),
         reverse=True,
     )

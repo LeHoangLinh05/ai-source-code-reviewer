@@ -10,7 +10,7 @@ from app.models.review_issue import IssueCategory, IssueSeverity, IssueSource
 class NormalizedIssue(BaseModel):
     """Tool-independent finding shape matching the review_issues table."""
 
-    file_path: str
+    file_path: str | None
     line_start: int | None = Field(default=None, ge=1)
     line_end: int | None = Field(default=None, ge=1)
     severity: IssueSeverity

@@ -7,8 +7,15 @@ from pathlib import Path
 import shutil
 import subprocess
 import time
+from typing import cast
 from uuid import UUID
 
+from motor.motor_asyncio import AsyncIOMotorDatabase
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.ai.agent import run_ai_review
+from app.ai.rules.roadmap_checker import RoadmapCheckOutput, RoadmapComplianceChecker
+from app.analyzers.code_chunker import chunk_python_file
 from app.analyzers.file_filter import filter_files, to_relative_posix_path
 from app.analyzers.secret_scanner import scan_secrets
 from app.analyzers.static_analysis.bandit_analyzer import run_bandit
@@ -23,8 +30,10 @@ from app.analyzers.structure_analyzer import (
 from app.core.config import BACKEND_DIR, Settings
 from app.models.review_job import ReviewJob, ReviewJobStatus
 from app.repositories.mongodb_repository import (
+    ChunkMetadataRepository,
     FileAnalysisResultRepository,
     RawStaticAnalysisOutputRepository,
+    RoadmapComplianceResultRepository,
 )
 from app.repositories.report_repository import ReportRepository
 from app.repositories.repository_repository import RepositoryRepository
@@ -32,6 +41,7 @@ from app.repositories.review_job_repository import ReviewJobRepository
 from app.schemas.mongodb import (
     FileAnalysisResultDocument,
     FileTreeEntry,
+    ChunkMetadataDocument,
     ParsedStaticIssue,
     RawStaticAnalysisOutputDocument,
 )
@@ -60,6 +70,9 @@ class ReviewPipelineService:
         report_repository: ReportRepository,
         file_analysis_repository: FileAnalysisResultRepository,
         raw_static_repository: RawStaticAnalysisOutputRepository,
+        chunk_metadata_repository: ChunkMetadataRepository,
+        roadmap_repository: RoadmapComplianceResultRepository,
+        postgres_session: AsyncSession,
     ) -> None:
         self.settings = settings
         self.review_job_repository = review_job_repository
@@ -67,6 +80,10 @@ class ReviewPipelineService:
         self.report_repository = report_repository
         self.file_analysis_repository = file_analysis_repository
         self.raw_static_repository = raw_static_repository
+        self.chunk_metadata_repository = chunk_metadata_repository
+        self.roadmap_repository = roadmap_repository
+        self.postgres_session = postgres_session
+        self.roadmap_checker = RoadmapComplianceChecker()
 
     async def run(self, job_id: UUID) -> None:
         """Run the full real-repo review pipeline for one job."""
@@ -120,12 +137,34 @@ class ReviewPipelineService:
         structure = await self._analyze_structure(
             review_job, sandbox_path, filtered_files
         )
+        roadmap_output = await self._run_roadmap_compliance(review_job, sandbox_path)
         issues = await self._run_static_analysis(
             review_job, sandbox_path, filtered_files
         )
         issues.extend(scan_secrets(sandbox_path, filtered_files))
+        if roadmap_output is not None:
+            issues.extend(roadmap_output.issues)
         attach_source_context(issues, sandbox_path)
-        await self._generate_report(review_job, structure, filtered_files, issues)
+        await self._chunk_code(
+            review_job,
+            sandbox_path,
+            filtered_files,
+            issues,
+        )
+        await self._persist_pre_agent_report(
+            review_job,
+            structure,
+            filtered_files,
+            issues,
+            roadmap_output,
+        )
+        await self._run_ai_agent(review_job, sandbox_path)
+        await self._transition(
+            review_job,
+            ReviewJobStatus.GENERATING_REPORT,
+            95,
+            "Final report generated",
+        )
 
         await self._transition(
             review_job,
@@ -164,6 +203,20 @@ class ReviewPipelineService:
         )
         return structure
 
+    async def _run_roadmap_compliance(
+        self,
+        review_job: ReviewJob,
+        sandbox_path: Path,
+    ) -> RoadmapCheckOutput | None:
+        rule_profile = get_rule_profile(review_job.options)
+        return await self.roadmap_checker.run_and_persist(
+            job_id=review_job.id,
+            sandbox_path=sandbox_path,
+            rule_profile=rule_profile,
+            postgres_session=self.postgres_session,
+            roadmap_repository=self.roadmap_repository,
+        )
+
     async def _run_static_analysis(
         self,
         review_job: ReviewJob,
@@ -194,20 +247,64 @@ class ReviewPipelineService:
         )
         return [issue for analysis_run in runs for issue in analysis_run.issues]
 
-    async def _generate_report(
+    async def _chunk_code(
         self,
         review_job: ReviewJob,
-        structure: StructureAnalysisResult,
+        sandbox_path: Path,
         filtered_files: list[Path],
         issues: list[NormalizedIssue],
     ) -> None:
         await self._transition(
             review_job,
-            ReviewJobStatus.GENERATING_REPORT,
-            90,
-            "Generating report",
+            ReviewJobStatus.CHUNKING_CODE,
+            80,
+            "Chunking source files",
         )
-        # TODO(Phase 6): replace this static calculator with AI + merged issue scoring.
+        python_files = [
+            file_path for file_path in filtered_files if file_path.suffix == ".py"
+        ]
+        for file_path in python_files:
+            for chunk in chunk_python_file(
+                file_path,
+                project_root=sandbox_path,
+                static_issues=issues,
+            ):
+                metadata = chunk.metadata
+                await self.chunk_metadata_repository.insert_one(
+                    ChunkMetadataDocument(
+                        job_id=review_job.id,
+                        file_path=metadata.file_path,
+                        language=metadata.language,
+                        chunk_type=metadata.chunk_type,
+                        chunk_index=metadata.chunk_index,
+                        total_chunks=metadata.total_chunks,
+                        function_name=metadata.function_name,
+                        class_name=metadata.class_name,
+                        line_start=metadata.line_start,
+                        line_end=metadata.line_end,
+                        imports=metadata.imports,
+                        module=metadata.module,
+                        risk_area=metadata.risk_area,
+                        has_static_issues=metadata.has_static_issues,
+                        token_count=metadata.token_count,
+                        chunk_text=chunk.content,
+                    )
+                )
+        await self._publish_status(
+            review_job,
+            ReviewJobStatus.CHUNKING_CODE,
+            84,
+            "Source chunks ready",
+        )
+
+    async def _persist_pre_agent_report(
+        self,
+        review_job: ReviewJob,
+        structure: StructureAnalysisResult,
+        filtered_files: list[Path],
+        issues: list[NormalizedIssue],
+        roadmap_output: RoadmapCheckOutput | None,
+    ) -> None:
         report = build_static_report(
             job_id=review_job.id,
             total_files_analyzed=len(filtered_files),
@@ -217,10 +314,34 @@ class ReviewPipelineService:
                 "frameworks": structure.project_structure.get("frameworks", []),
                 "tools": ["ruff", "bandit", "eslint", "secret_scanner"],
             },
+            compliance_score=roadmap_output.compliance_score
+            if roadmap_output is not None
+            else None,
+            bonus_score=roadmap_output.bonus_score
+            if roadmap_output is not None
+            else None,
         )
         await self.report_repository.replace_analysis_results(
             report=report,
             issues=issues,
+        )
+
+    async def _run_ai_agent(self, review_job: ReviewJob, sandbox_path: Path) -> None:
+        await self._transition(
+            review_job,
+            ReviewJobStatus.AI_REVIEWING,
+            88,
+            "Running AI review agent",
+        )
+        database = cast(
+            AsyncIOMotorDatabase,
+            self.file_analysis_repository.collection.database,
+        )
+        await run_ai_review(
+            job_id=review_job.id,
+            sandbox_path=sandbox_path,
+            postgres_session=self.postgres_session,
+            mongodb_database=database,
         )
 
     async def _handle_failure(self, job_id: UUID, error: Exception) -> None:
@@ -380,6 +501,21 @@ def build_static_analysis_runs(
     ]
 
 
+def get_rule_profile(options: dict[str, object] | None) -> dict[str, object] | None:
+    """Return the optional roadmap rule profile from review job options."""
+
+    if options is None:
+        return None
+
+    rule_profile = options.get("rule_profile")
+    if rule_profile is None:
+        return None
+    if not isinstance(rule_profile, dict):
+        raise ReviewPipelineError("review job rule_profile option must be an object")
+
+    return rule_profile
+
+
 def build_raw_static_document(
     job_id: UUID,
     analysis_run: StaticAnalysisRun,
@@ -397,7 +533,7 @@ def build_raw_static_document(
         duration_ms=analysis_run.duration_ms,
         parsed_issues=[
             ParsedStaticIssue(
-                file_path=issue.file_path,
+                file_path=issue.file_path or "",
                 line_start=issue.line_start,
                 rule_id=get_rule_id(issue.raw_output),
                 message=issue.description,

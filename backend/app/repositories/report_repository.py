@@ -2,7 +2,7 @@
 
 from uuid import UUID
 
-from sqlalchemy import Select, delete, func, select
+from sqlalchemy import Select, case, delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.schemas.normalized_issue import NormalizedIssue
@@ -74,6 +74,13 @@ class ReportRepository:
 
         sort_column = getattr(ReviewIssue, sort_field)
         order_by = sort_column.desc() if is_descending else sort_column.asc()
+        # Roadmap compliance findings are a data-contract priority override:
+        # later Agent/static/dedup merge layers must never lower severity or delete
+        # source=roadmap_rule issues, and report sorting keeps them before all
+        # AI/static findings even when the user sorts by report priority/severity.
+        roadmap_priority = case(
+            (ReviewIssue.source == IssueSource.ROADMAP_RULE, 0), else_=1
+        )
         statement = (
             self._issue_filter_statement(
                 job_id=job_id,
@@ -82,7 +89,7 @@ class ReportRepository:
                 source=source,
                 file_path=file_path,
             )
-            .order_by(order_by, ReviewIssue.created_at.desc())
+            .order_by(roadmap_priority.asc(), order_by, ReviewIssue.created_at.desc())
             .offset((page - 1) * per_page)
             .limit(per_page)
         )

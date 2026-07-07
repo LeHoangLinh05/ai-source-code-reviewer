@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from hashlib import sha1
 from pathlib import Path
@@ -25,6 +25,7 @@ class RAGDocument:
     language: str
     doc_type: str
     category: str
+    extra_metadata: dict[str, object] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -126,6 +127,7 @@ class RAGIngestionPipeline:
                     "doc_type": document.doc_type,
                     "category": document.category,
                     "ingested_at": ingested_at,
+                    **document.extra_metadata,
                 }
                 chunks.append(
                     IngestedChunk(

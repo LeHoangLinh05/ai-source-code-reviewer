@@ -52,7 +52,7 @@ class HybridRetriever:
         """Search coding standards using vector and keyword retrieval."""
 
         requested_top_k = min(max(top_k, 1), self.MAX_TOP_K)
-        where = {"language": language} if language else None
+        where: dict[str, object] | None = {"language": language} if language else None
         vector_results = self.vectorstore.query(
             query=query,
             n_results=requested_top_k * 2,
@@ -89,26 +89,26 @@ class HybridRetriever:
                 final_score=0.0,
             )
 
-        for result in bm25_results:
-            result_id = result.id
+        for bm25_result in bm25_results:
+            result_id = bm25_result.id
             if result_id not in merged:
-                metadata = result.metadata
+                metadata = bm25_result.metadata
                 merged[result_id] = RetrievedChunk(
                     id=result_id,
                     source=str(metadata.get("source", "")),
-                    content=result.content,
+                    content=bm25_result.content,
                     metadata=metadata,
                     vector_score=0.0,
                     bm25_score=0.0,
                     final_score=0.0,
                 )
 
-            merged[result_id].bm25_score = result.score
+            merged[result_id].bm25_score = bm25_result.score
 
-        for result in merged.values():
-            result.final_score = (
-                self.VECTOR_WEIGHT * result.vector_score
-                + self.BM25_WEIGHT * result.bm25_score
+        for retrieved_chunk in merged.values():
+            retrieved_chunk.final_score = (
+                self.VECTOR_WEIGHT * retrieved_chunk.vector_score
+                + self.BM25_WEIGHT * retrieved_chunk.bm25_score
             )
 
         return sorted(

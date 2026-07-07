@@ -1,0 +1,77 @@
+sources:
+  - source: OWASP Top 10 2021
+    version: "2021"
+    path: raw/owasp/2021/docs/en
+    glob: "*.md"
+    language: python
+    doc_type: standard
+    category: security
+    repository: https://github.com/OWASP/Top10
+    source_url: https://github.com/OWASP/Top10/tree/master/2021/docs/en
+    raw_base_url: https://raw.githubusercontent.com/OWASP/Top10/master/2021/docs/en
+    license: Creative Commons Attribution-ShareAlike 4.0 International
+
+  - source: OWASP Top 10 2025
+    version: "2025"
+    path: raw/owasp/2025/docs/en
+    glob: "*.md"
+    language: python
+    doc_type: standard
+    category: security
+    repository: https://github.com/OWASP/Top10
+    source_url: https://github.com/OWASP/Top10/tree/master/2025/docs/en
+    raw_base_url: https://raw.githubusercontent.com/OWASP/Top10/master/2025/docs/en
+    license: Creative Commons Attribution-ShareAlike 4.0 International
+
+  - source: OWASP Cheat Sheet Series
+    path: raw/owasp/CheatSheetSeries/cheatsheets
+    glob: "**/*.md"
+    language: python
+    doc_type: standard
+    category: security
+    repository: https://github.com/OWASP/CheatSheetSeries
+    source_url: https://github.com/OWASP/CheatSheetSeries/tree/master/cheatsheets
+    raw_base_url: https://raw.githubusercontent.com/OWASP/CheatSheetSeries/master/cheatsheets
+    license: Creative Commons Attribution-ShareAlike 4.0 International
+
+  - source: Python PEPs
+    path: raw/python/peps/peps
+    glob: "pep-*.rst"
+    language: python
+    doc_type: guideline
+    category: maintainability
+    repository: https://github.com/python/peps
+    source_url: https://github.com/python/peps/tree/main/peps
+    raw_base_url: https://raw.githubusercontent.com/python/peps/main/peps
+
+  - source: Google Python Style Guide
+    path: raw/google/styleguide
+    glob: "pyguide.md"
+    language: python
+    doc_type: guideline
+    category: maintainability
+    repository: https://github.com/google/styleguide
+    source_url: https://github.com/google/styleguide/blob/gh-pages/pyguide.md
+    raw_base_url: https://raw.githubusercontent.com/google/styleguide/gh-pages
+
+  - source: FastAPI Tutorial
+    path: raw/fastapi/fastapi/docs/en/docs/tutorial
+    glob: "**/*.md"
+    language: python
+    doc_type: guideline
+    category: maintainability
+    repository: https://github.com/fastapi/fastapi
+    source_url: https://github.com/fastapi/fastapi/tree/master/docs/en/docs/tutorial
+    raw_base_url: https://raw.githubusercontent.com/fastapi/fastapi/master/docs/en/docs/tutorial
+    license: MIT
+
+  - source: FastAPI Advanced User Guide
+    path: raw/fastapi/fastapi/docs/en/docs/advanced
+    glob: "**/*.md"
+    language: python
+    doc_type: guideline
+    category: maintainability
+    repository: https://github.com/fastapi/fastapi
+    source_url: https://github.com/fastapi/fastapi/tree/master/docs/en/docs/advanced
+    raw_base_url: https://raw.githubusercontent.com/fastapi/fastapi/master/docs/en/docs/advanced
+    license: MIT

@@ -537,11 +537,12 @@ rules:
   week: 2
   skill_group: DevOps & Docker
   requirement: README có link demo triển khai (Render/Railway/EC2)
-  check_type: required_config_key
+  check_type: required_code_pattern
   target:
-    file_glob:
+    glob:
     - '**/README.md'
-    key_pattern: https?://
+    regex: https?://
+    min_matches: 1
   priority: P2
   severity_if_missing: low
   category: requirement
@@ -866,6 +867,9 @@ rules:
     glob:
     - '**/middleware.ts'
     - '**/middleware.js'
+    - '**/*auth*guard*.tsx'
+    regex: middleware|NextResponse\.redirect|redirect\(
+    min_matches: 1
   priority: P0
   severity_if_missing: critical
   category: requirement

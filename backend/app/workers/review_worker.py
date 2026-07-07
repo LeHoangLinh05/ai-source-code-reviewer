@@ -9,8 +9,10 @@ from app.db.mongodb import close_mongodb_client, get_mongodb_database
 from app.db.postgres import AsyncSessionLocal, close_postgres_engine
 from app.db.redis import close_redis_client
 from app.repositories.mongodb_repository import (
+    ChunkMetadataRepository,
     FileAnalysisResultRepository,
     RawStaticAnalysisOutputRepository,
+    RoadmapComplianceResultRepository,
 )
 from app.repositories.report_repository import ReportRepository
 from app.repositories.repository_repository import RepositoryRepository
@@ -50,6 +52,9 @@ async def process_review_job_async(job_id: UUID) -> None:
                 report_repository=ReportRepository(session),
                 file_analysis_repository=FileAnalysisResultRepository(database),
                 raw_static_repository=RawStaticAnalysisOutputRepository(database),
+                chunk_metadata_repository=ChunkMetadataRepository(database),
+                roadmap_repository=RoadmapComplianceResultRepository(database),
+                postgres_session=session,
             )
             await pipeline_service.run(job_id)
     finally:

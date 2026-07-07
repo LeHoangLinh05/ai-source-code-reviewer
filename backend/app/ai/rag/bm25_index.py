@@ -115,7 +115,7 @@ class BM25Index:
         tokenized_documents: list[list[str]],
     ) -> _BM25Backend | None:
         try:
-            from rank_bm25 import BM25Okapi
+            from rank_bm25 import BM25Okapi  # type: ignore[import-untyped]
         except ImportError:
             return None
 

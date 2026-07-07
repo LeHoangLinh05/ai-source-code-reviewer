@@ -1,123 +1,40 @@
-"""Seed the coding standards RAG knowledge base."""
+"""Seed the coding standards RAG knowledge base from local source documents."""
 
 from __future__ import annotations
 
 import argparse
 from pathlib import Path
 import sys
+from typing import Any
+
+import yaml  # type: ignore[import-untyped]
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 BACKEND_DIR = PROJECT_ROOT / "backend"
+DEFAULT_MANIFEST_PATH = PROJECT_ROOT / "docs" / "rag_sources" / "sources.yaml"
 sys.path.insert(0, str(BACKEND_DIR))
 
 from app.ai.rag.ingestion import RAGDocument, RAGIngestionPipeline  # noqa: E402
 from app.ai.rag.retriever import HybridRetriever  # noqa: E402
 
 
-OWASP_TOP_10_2021 = """
-# OWASP Top 10 2021
-
-OWASP A01:2021 Broken Access Control: enforce authorization checks on every
-request, deny by default, and avoid relying only on hidden UI controls.
-
-OWASP A02:2021 Cryptographic Failures: protect sensitive data in transit and at
-rest, use modern hashing for passwords, and avoid weak or custom cryptography.
-
-OWASP A03:2021 Injection: SQL injection happens when untrusted input is
-concatenated into SQL, NoSQL, OS commands, or interpreters. In Python, avoid
-f-strings, string concatenation, or %-formatting to build SQL statements with
-user input. Use SQLAlchemy bind parameters, ORM filters, or parameterized
-queries. Validate input and use least-privilege database accounts.
-
-OWASP A04:2021 Insecure Design: model threats early, document trust boundaries,
-and design controls before implementation.
-
-OWASP A05:2021 Security Misconfiguration: run with secure defaults, disable
-debug mode in production, and restrict CORS origins.
-
-OWASP A07:2021 Identification and Authentication Failures: validate JWT
-signatures and expiry, rotate refresh tokens, hash passwords with bcrypt,
-argon2, or passlib, and do not hardcode token payloads.
-"""
-
-PYTHON_BEST_PRACTICES = """
-# Python Best Practices: PEP 8 and PEP 20
-
-Write readable Python with descriptive names, small functions, clear imports,
-and explicit error handling. PEP 8 recommends consistent formatting, import
-ordering, line length discipline, and naming conventions. PEP 20 emphasizes
-that explicit is better than implicit, simple is better than complex, and
-readability counts.
-
-Prefer type hints for public functions and service or repository methods.
-Use dataclasses with slots for pure data structures. Avoid broad exceptions,
-hidden side effects, mutable default arguments, and clever code that is hard to
-maintain.
-"""
-
-SECURITY_CHECKLIST = """
-# Security Checklist
-
-Never commit hardcoded secrets, API keys, JWT signing keys, database passwords,
-OAuth tokens, private keys, or cloud credentials. Read secrets from environment
-variables or a secret manager. Mask secrets in logs and avoid returning them in
-API responses.
-
-For authentication, hash passwords with bcrypt, argon2, or passlib. Validate
-JWT signature, issuer, audience, and expiration before trusting claims. Rotate
-refresh tokens and revoke them on logout.
-
-For injection prevention, use parameterized queries and safe ORM APIs. Never
-concatenate user input into SQL, shell commands, LDAP filters, template code, or
-NoSQL query objects.
-
-For file handling, validate paths, reject traversal, limit file size, and do
-not deserialize untrusted pickle payloads.
-"""
-
-FASTAPI_BEST_PRACTICES = """
-# FastAPI Best Practices
-
-Keep routes thin. Put business logic in services and persistence logic in
-repositories. Validate external input with Pydantic v2 schemas for request
-bodies, query parameters, headers, and file metadata.
-
-Use APIRouter for domain modules. Inject dependencies such as database sessions,
-repositories, and services instead of constructing them inside route handlers.
-Raise HTTPException or custom application exceptions with meaningful status
-codes. Do not log passwords, tokens, or personal data.
-"""
-
-CLEAN_CODE_PRINCIPLES = """
-# Clean Code Principles
-
-Optimize for correctness, readability, maintainability, simplicity, and then
-performance. Functions should have one responsibility, short parameter lists,
-early returns, and limited nesting. Remove dead code, commented-out code,
-unused variables, and duplicated logic.
-
-Apply SOLID and composition over inheritance where they reduce real complexity.
-Avoid creating factories, interfaces, or utility classes for a single
-implementation. Introduce abstractions only after repeated patterns justify
-them.
-"""
-
-README_PLACEHOLDER = """
-# Repository README Placeholder
-
-When a repository is cloned, ingest its README or CONTRIBUTING guide as
-project-specific context. This chunk should describe local setup, architecture,
-coding rules, test commands, and any project-specific conventions that the AI
-review agent should respect.
-"""
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--manifest",
+        type=Path,
+        default=DEFAULT_MANIFEST_PATH,
+        help="Path to the RAG sources YAML manifest.",
+    )
     parser.add_argument(
         "--reset",
         action="store_true",
         help="Delete the existing coding_standards collection before seeding.",
+    )
+    parser.add_argument(
+        "--skip-smoke",
+        action="store_true",
+        help="Skip example retrieval queries after ingestion.",
     )
     args = parser.parse_args()
 
@@ -125,12 +42,20 @@ def main() -> None:
     if args.reset:
         pipeline.reset()
 
-    documents = build_seed_documents()
+    documents = load_documents_from_manifest(args.manifest)
     chunks = pipeline.ingest_documents(documents)
-    print(f"Ingested {len(chunks)} chunks from {len(documents)} sources.")
+    print(f"Ingested {len(chunks)} chunks from {len(documents)} source documents.")
+
+    if args.skip_smoke:
+        return
 
     retriever = HybridRetriever(bm25_index=pipeline.bm25_index)
-    for query in ("SQL injection prevention Python", "hardcoded secret"):
+    for query in (
+        "SQL injection prevention parameterized queries",
+        "A07 authentication failures session credential stuffing",
+        "Python naming conventions PEP 8",
+        "FastAPI dependency injection APIRouter",
+    ):
         results = retriever.search(query, language="python", top_k=3)
         print(f"\nQuery: {query}")
         for result in results:
@@ -140,61 +65,100 @@ def main() -> None:
             )
 
 
-def build_seed_documents() -> list[RAGDocument]:
-    repo_readme = _load_repo_readme()
-    return [
-        RAGDocument(
-            source="OWASP Top 10 2021",
-            content=OWASP_TOP_10_2021,
-            language="python",
-            doc_type="standard",
-            category="security",
-        ),
-        RAGDocument(
-            source="Python Best Practices PEP 8/PEP 20",
-            content=PYTHON_BEST_PRACTICES,
-            language="python",
-            doc_type="guideline",
-            category="maintainability",
-        ),
-        RAGDocument(
-            source="Security Checklist",
-            content=SECURITY_CHECKLIST,
-            language="python",
-            doc_type="checklist",
-            category="security",
-        ),
-        RAGDocument(
-            source="FastAPI Best Practices",
-            content=FASTAPI_BEST_PRACTICES,
-            language="python",
-            doc_type="guideline",
-            category="maintainability",
-        ),
-        RAGDocument(
-            source="Clean Code Principles",
-            content=CLEAN_CODE_PRINCIPLES,
-            language="python",
-            doc_type="guideline",
-            category="maintainability",
-        ),
-        RAGDocument(
-            source="Repo README",
-            content=repo_readme,
-            language="python",
-            doc_type="project_doc",
-            category="general",
-        ),
-    ]
+def load_documents_from_manifest(manifest_path: Path) -> list[RAGDocument]:
+    """Load all RAG source documents declared in a YAML manifest."""
+
+    manifest = _load_manifest(manifest_path)
+    documents: list[RAGDocument] = []
+    for source_config in manifest.get("sources", []):
+        documents.extend(_load_source_documents(source_config, manifest_path.parent))
+
+    return documents
 
 
-def _load_repo_readme() -> str:
-    for readme_name in ("README.md", "README.rst", "README.txt"):
-        readme_path = PROJECT_ROOT / readme_name
-        if readme_path.is_file():
-            return readme_path.read_text(encoding="utf-8", errors="ignore")
+def _load_manifest(manifest_path: Path) -> dict[str, Any]:
+    if not manifest_path.is_file():
+        raise FileNotFoundError(f"RAG sources manifest not found: {manifest_path}")
 
-    return README_PLACEHOLDER
+    manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8")) or {}
+    if not isinstance(manifest, dict):
+        raise ValueError("RAG sources manifest must be a YAML mapping")
+
+    return manifest
+
+
+def _load_source_documents(
+    source_config: dict[str, Any],
+    manifest_dir: Path,
+) -> list[RAGDocument]:
+    required_fields = ("source", "path", "language", "doc_type", "category")
+    missing_fields = [field for field in required_fields if field not in source_config]
+    if missing_fields:
+        raise ValueError(
+            f"RAG source is missing required fields: {', '.join(missing_fields)}"
+        )
+
+    source_root = (manifest_dir / str(source_config["path"])).resolve()
+    file_pattern = str(source_config.get("glob", "*.md"))
+    if not source_root.is_dir():
+        raise FileNotFoundError(f"RAG source directory not found: {source_root}")
+
+    source_files = sorted(
+        path for path in source_root.glob(file_pattern) if path.is_file()
+    )
+    if not source_files:
+        raise ValueError(
+            f"RAG source has no matching files: {source_root}/{file_pattern}"
+        )
+
+    documents: list[RAGDocument] = []
+    for source_file in source_files:
+        source_name = _document_source_name(str(source_config["source"]), source_file)
+        documents.append(
+            RAGDocument(
+                source=source_name,
+                content=source_file.read_text(encoding="utf-8", errors="ignore"),
+                language=str(source_config["language"]),
+                doc_type=str(source_config["doc_type"]),
+                category=str(source_config["category"]),
+                extra_metadata=_document_metadata(
+                    source_config,
+                    source_file=source_file,
+                    source_root=source_root,
+                ),
+            )
+        )
+
+    return documents
+
+
+def _document_source_name(source: str, source_file: Path) -> str:
+    title = source_file.stem.replace("_", " ").replace("-", " ")
+    return f"{source} - {title}"
+
+
+def _document_metadata(
+    source_config: dict[str, Any],
+    *,
+    source_file: Path,
+    source_root: Path,
+) -> dict[str, object]:
+    metadata: dict[str, object] = {
+        "source_path": source_file.relative_to(PROJECT_ROOT).as_posix(),
+        "source_file": source_file.name,
+    }
+
+    for key in ("version", "source_url", "repository", "license"):
+        value = source_config.get(key)
+        if value is not None:
+            metadata[key] = value
+
+    raw_base_url = source_config.get("raw_base_url")
+    if raw_base_url:
+        relative_source_path = source_file.relative_to(source_root).as_posix()
+        metadata["raw_url"] = f"{raw_base_url.rstrip('/')}/{relative_source_path}"
+
+    return metadata
 
 
 if __name__ == "__main__":

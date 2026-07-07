@@ -1,0 +1,265 @@
+"""AI tool for reading project structure and roadmap context."""
+
+from __future__ import annotations
+
+from collections import Counter
+from datetime import UTC, datetime
+from typing import Any
+from uuid import UUID
+
+from langchain_core.tools import tool
+
+from app.ai.tool_runtime import get_ai_tool_runtime
+from app.ai.tools.common import serialize_mongo_document
+from app.db.mongodb import (
+    FILE_ANALYSIS_RESULTS_COLLECTION,
+    RAW_STATIC_ANALYSIS_OUTPUTS_COLLECTION,
+    ROADMAP_COMPLIANCE_RESULTS_COLLECTION,
+)
+
+HIGH_RISK_AREAS = {"security", "bug"}
+HIGH_RISK_PATH_PARTS = {"auth", "security", "crypto", "middleware"}
+
+
+@tool
+async def analyze_project_structure(job_id: str) -> dict[str, object]:
+    """Lấy tổng quan project đang review: ngôn ngữ, framework, danh sách file cần review theo độ ưu tiên, tóm tắt static analysis, và tóm tắt roadmap compliance (nếu job bật rule_profile)."""
+
+    runtime = get_ai_tool_runtime()
+    job_uuid = UUID(job_id)
+    database = runtime.mongodb_database
+    structure_document = await database[FILE_ANALYSIS_RESULTS_COLLECTION].find_one(
+        {"job_id": str(job_uuid)},
+        sort=[("analyzed_at", -1)],
+    )
+    if structure_document is None:
+        raise ValueError(f"Structure analysis result not found for job: {job_uuid}")
+
+    static_documents = (
+        await database[RAW_STATIC_ANALYSIS_OUTPUTS_COLLECTION]
+        .find({"job_id": str(job_uuid)})
+        .to_list(length=None)
+    )
+    roadmap_document = await database[ROADMAP_COMPLIANCE_RESULTS_COLLECTION].find_one(
+        {"job_id": str(job_uuid)},
+        sort=[("checked_at", -1)],
+    )
+
+    structure = serialize_mongo_document(structure_document)
+    project_structure = _as_dict(structure.get("project_structure"))
+    file_tree = _as_list(structure.get("file_tree"))
+    verification_queue = _verification_queue(roadmap_document)
+    static_issues = _static_issues(static_documents)
+
+    output: dict[str, object] = {
+        "languages": _languages(project_structure),
+        "frameworks": _frameworks(project_structure),
+        "files_to_review": _files_to_review(
+            file_tree=file_tree,
+            static_issues=static_issues,
+            verification_queue=verification_queue,
+        ),
+        "static_analysis_summary": _static_analysis_summary(static_documents),
+    }
+
+    if roadmap_document is not None:
+        output["roadmap_compliance_summary"] = _roadmap_summary(roadmap_document)
+        output["roadmap_verification_queue"] = verification_queue
+
+    return output
+
+
+def _languages(project_structure: dict[str, object]) -> list[str]:
+    languages = project_structure.get("languages")
+    if isinstance(languages, dict):
+        return [str(language) for language in languages]
+    if isinstance(languages, list):
+        return [str(language) for language in languages]
+
+    primary_language = project_structure.get("primary_language")
+    return [str(primary_language)] if primary_language else []
+
+
+def _frameworks(project_structure: dict[str, object]) -> list[str]:
+    frameworks = project_structure.get("frameworks", [])
+    if not isinstance(frameworks, list):
+        return []
+
+    return [str(framework) for framework in frameworks]
+
+
+def _static_issues(static_documents: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    issues: list[dict[str, Any]] = []
+    for document in static_documents:
+        tool_name = str(document.get("tool", "static"))
+        for issue in _as_list(document.get("parsed_issues")):
+            if not isinstance(issue, dict):
+                continue
+            normalized_issue = dict(issue)
+            normalized_issue["source"] = tool_name
+            issues.append(normalized_issue)
+
+    return issues
+
+
+def _static_analysis_summary(static_documents: list[dict[str, Any]]) -> str:
+    if not static_documents:
+        return "No static analysis results found."
+
+    severity_counts: Counter[str] = Counter()
+    tool_counts: Counter[str] = Counter()
+    issue_count = 0
+    for document in static_documents:
+        tool_name = str(document.get("tool", "static"))
+        parsed_issues = _as_list(document.get("parsed_issues"))
+        issue_count += len(parsed_issues)
+        tool_counts[tool_name] += len(parsed_issues)
+        for issue in parsed_issues:
+            if isinstance(issue, dict):
+                severity_counts[str(issue.get("severity", "unknown"))] += 1
+
+    tool_summary = ", ".join(
+        f"{tool_name}: {count}" for tool_name, count in sorted(tool_counts.items())
+    )
+    severity_summary = ", ".join(
+        f"{severity}: {count}" for severity, count in sorted(severity_counts.items())
+    )
+    if severity_summary:
+        return (
+            f"{issue_count} issues found ({severity_summary}); by tool: {tool_summary}."
+        )
+
+    return f"{issue_count} issues found; by tool: {tool_summary}."
+
+
+def _files_to_review(
+    *,
+    file_tree: list[object],
+    static_issues: list[dict[str, Any]],
+    verification_queue: list[dict[str, object]],
+) -> list[dict[str, str]]:
+    issue_by_file: dict[str, list[dict[str, Any]]] = {}
+    for issue in static_issues:
+        file_path = issue.get("file_path")
+        if not file_path:
+            continue
+        issue_by_file.setdefault(str(file_path), []).append(issue)
+
+    file_paths = {
+        str(entry["path"])
+        for entry in file_tree
+        if isinstance(entry, dict) and entry.get("should_review") is True
+    }
+    file_paths.update(issue_by_file)
+    file_paths.update(
+        str(item["file_path"]) for item in verification_queue if item.get("file_path")
+    )
+
+    files = [
+        {
+            "file_path": file_path,
+            "priority": _file_priority(file_path, issue_by_file.get(file_path, [])),
+            "risk_area": _file_risk_area(file_path, issue_by_file.get(file_path, [])),
+        }
+        for file_path in sorted(file_paths)
+    ]
+    return sorted(
+        files, key=lambda item: (_priority_rank(item["priority"]), item["file_path"])
+    )
+
+
+def _file_priority(file_path: str, issues: list[dict[str, Any]]) -> str:
+    severities = {str(issue.get("severity")) for issue in issues}
+    categories = {str(issue.get("category")) for issue in issues}
+    if severities & {"critical", "high"} or categories & HIGH_RISK_AREAS:
+        return "high"
+
+    path_parts = {part.lower() for part in file_path.replace("\\", "/").split("/")}
+    if path_parts & HIGH_RISK_PATH_PARTS:
+        return "high"
+
+    if issues:
+        return "medium"
+
+    return "low"
+
+
+def _file_risk_area(file_path: str, issues: list[dict[str, Any]]) -> str:
+    categories = {str(issue.get("category")) for issue in issues}
+    if "security" in categories:
+        return "security"
+    if "performance" in categories:
+        return "performance"
+    if "bug" in categories:
+        return "bug"
+
+    path_parts = {part.lower() for part in file_path.replace("\\", "/").split("/")}
+    if path_parts & HIGH_RISK_PATH_PARTS:
+        return "security"
+
+    return "maintainability" if issues else "general"
+
+
+def _priority_rank(priority: str) -> int:
+    return {"high": 0, "medium": 1, "low": 2}.get(priority, 3)
+
+
+def _roadmap_summary(roadmap_document: dict[str, Any]) -> str:
+    results = [
+        result
+        for result in _as_list(roadmap_document.get("results"))
+        if isinstance(result, dict)
+    ]
+    status_counts = Counter(str(result.get("status", "unknown")) for result in results)
+    passed_count = status_counts["pass"] + status_counts["provisional_pass"]
+    failed_rules = [
+        f"{result.get('rule_id')} ({result.get('severity')})"
+        for result in results
+        if result.get("status") == "fail"
+    ]
+    checked_at = roadmap_document.get("checked_at")
+    if isinstance(checked_at, datetime):
+        checked_at_text = checked_at.astimezone(UTC).isoformat()
+    else:
+        checked_at_text = str(checked_at)
+
+    summary = (
+        f"{passed_count}/{len(results)} PASS/PROVISIONAL. "
+        f"FAIL: {', '.join(failed_rules) if failed_rules else 'none'}. "
+        f"compliance_score={roadmap_document.get('compliance_score')}, "
+        f"bonus_score={roadmap_document.get('bonus_score')}. "
+        f"checked_at={checked_at_text}."
+    )
+    if _verification_queue(roadmap_document):
+        summary += f" AI verification queue: {len(_verification_queue(roadmap_document))} item(s)."
+
+    return summary
+
+
+def _verification_queue(
+    roadmap_document: dict[str, Any] | None,
+) -> list[dict[str, object]]:
+    if roadmap_document is None:
+        return []
+
+    queue: list[dict[str, object]] = []
+    for item in _as_list(roadmap_document.get("verification_queue")):
+        if not isinstance(item, dict):
+            continue
+        queue.append(
+            {
+                "rule_id": str(item.get("rule_id", "")),
+                "file_path": str(item.get("file_path", "")),
+                "ai_hint": str(item.get("ai_hint", "")),
+            }
+        )
+
+    return queue
+
+
+def _as_dict(value: object) -> dict[str, object]:
+    return value if isinstance(value, dict) else {}
+
+
+def _as_list(value: object) -> list[object]:
+    return value if isinstance(value, list) else []
