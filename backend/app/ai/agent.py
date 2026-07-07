@@ -10,18 +10,18 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
-from langchain_classic.agents import AgentExecutor, create_react_agent
-from langchain_core.callbacks import AsyncCallbackHandler
-from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.prompts import PromptTemplate
+try:
+    from langchain_core.callbacks import AsyncCallbackHandler
+except ImportError:
+    class AsyncCallbackHandler:  # type: ignore[no-redef]
+        """Fallback base class when LangChain is not installed at app startup."""
+
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.ai.llm_config import run_with_llm_fallback
 from app.ai.prompts import REVIEW_SYSTEM_PROMPT
 from app.ai.tool_runtime import AIToolRuntime, ai_tool_runtime
-from app.ai.tools import AI_REVIEW_TOOLS
 from app.repositories.mongodb_repository import ToolCallLogRepository
 from app.schemas.mongodb import ToolCallLogDocument
 
@@ -49,14 +49,26 @@ Thought:{agent_scratchpad}
 """
 
 
-def build_react_prompt() -> PromptTemplate:
+def build_react_prompt() -> Any:
     """Build the ReAct prompt around the exact system prompt contract."""
+
+    from langchain_core.prompts import PromptTemplate
 
     return PromptTemplate.from_template(REVIEW_SYSTEM_PROMPT + REACT_PROMPT_SUFFIX)
 
 
-def create_review_agent_executor(llm: BaseChatModel) -> AgentExecutor:
+def create_review_agent_executor(llm: Any) -> Any:
     """Create the LangChain ReAct executor with the hard iteration limit."""
+
+    try:
+        from langchain.agents import (  # type: ignore[attr-defined]
+            AgentExecutor,
+            create_react_agent,
+        )
+    except ImportError:
+        from langchain_classic.agents import AgentExecutor, create_react_agent
+
+    from app.ai.tools import AI_REVIEW_TOOLS
 
     agent = create_react_agent(
         llm=llm,
@@ -90,8 +102,11 @@ async def run_ai_review(
         mongodb_database=mongodb_database,
     )
 
-    async def run_with_model(llm: BaseChatModel) -> dict[str, Any]:
+    from app.ai.llm_config import run_with_llm_fallback
+
+    async def run_with_model(llm: Any) -> dict[str, Any]:
         executor = create_review_agent_executor(llm)
+
         callback = MongoToolCallLogger(
             job_id=job_id,
             session_id=session_id,
