@@ -13,15 +13,15 @@ export type IssueSource =
   | "ruff"
   | "bandit"
   | "eslint"
-  | "roadmap_rule"
+  | "KB"
   | "secret_scanner";
 
 export type ReviewIssue = {
   id: string;
   job_id: string;
   file_path: string;
-  line_start: number | null;
-  line_end: number | null;
+  line_start: number;
+  line_end: number;
   severity: IssueSeverity;
   category: IssueCategory;
   title: string;

@@ -14,36 +14,54 @@ def test_read_chunk_coverage_counts_only_successful_unique_chunks() -> None:
     files_read, chunks_read, target_chunks_read = _read_chunk_coverage(
         [
             {
+                "tool_name": "read_file_chunk",
                 "output": {
                     "status": "ok",
                     "file_path": "app/main.py",
                     "chunk_index": 0,
-                }
+                },
             },
             {
+                "tool_name": "read_file_chunk",
                 "output": {
                     "status": "rejected",
                     "file_path": "app/main.py",
                     "chunk_index": 1,
-                }
+                },
             },
             {
+                "tool_name": "read_file_chunk",
                 "output": {
                     "status": "ok",
                     "file_path": "app/main.py",
                     "chunk_index": 0,
-                }
+                },
+            },
+            {
+                "tool_name": "search_code_semantic",
+                "output": {
+                    "status": "ok",
+                    "results": [
+                        {
+                            "status": "ok",
+                            "file_path": "app/main.py",
+                            "chunk_index": 1,
+                            "line_start": 10,
+                            "line_end": 20,
+                        }
+                    ],
+                },
             },
         ],
         target_chunk_keys={("app/main.py", 0), ("app/main.py", 1)},
     )
 
     assert files_read == 1
-    assert chunks_read == 1
-    assert target_chunks_read == 1
+    assert chunks_read == 2
+    assert target_chunks_read == 2
 
 
-def test_ai_report_with_incomplete_chunk_coverage_is_warning() -> None:
+def test_ai_report_without_full_chunk_coverage_is_completed() -> None:
     coverage = AITraceCoverage(
         total_reviewable_files=3,
         total_reviewable_lines=30,
@@ -60,7 +78,6 @@ def test_ai_report_with_incomplete_chunk_coverage_is_warning() -> None:
         static_analyzer_runs=3,
         static_analyzer_issues=0,
         roadmap_rules_checked=79,
-        roadmap_verification_items=0,
         generated_ai_issues=0,
         generated_report_by_ai=False,
     )
@@ -72,8 +89,8 @@ def test_ai_report_with_incomplete_chunk_coverage_is_warning() -> None:
             coverage=coverage,
             report_model=AI_REPORT_MODEL,
         )
-        == "warning"
+        == "completed"
     )
     assert _report_stage_status(
         ReviewJobStatus.COMPLETED, coverage, AI_REPORT_MODEL
-    ) == ("warning")
+    ) == ("completed")

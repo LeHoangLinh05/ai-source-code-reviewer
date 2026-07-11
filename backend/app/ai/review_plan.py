@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 from collections import defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -11,9 +10,9 @@ from pathlib import PurePosixPath
 REVIEW_MODE_SMART = "smart"
 REVIEW_MODE_FULL_AUDIT = "full_audit"
 VALID_REVIEW_MODES = {REVIEW_MODE_SMART, REVIEW_MODE_FULL_AUDIT}
-DEFAULT_SMART_REVIEW_MAX_CHUNKS = 180
+DEFAULT_SMART_REVIEW_MAX_CHUNKS = 160
 SMART_MIN_BREADTH_FILES = 12
-SMART_ROADMAP_CONTEXT_CHUNKS_PER_ITEM = 4
+SMART_SOFT_CHUNKS_PER_FILE = 6
 
 SMART_RISK_AREAS = {"security", "api", "database", "config"}
 SMART_PATH_PARTS = {
@@ -51,41 +50,6 @@ SMART_CONFIG_FILENAMES = {
     "requirements.txt",
     "tsconfig.json",
 }
-ROADMAP_VERIFICATION_TERMS_BY_RULE_ID = {
-    "RC-W1-10": {"login", "password", "verify", "refresh_token", "access_token", "jwt"},
-    "RC-W1-11": {"refresh", "refresh_token", "revoke", "token", "jwt", "expiry"},
-    "RC-W1-13": {"logout", "blacklist", "revoke", "refresh_token", "token"},
-    "RC-W1-17": {"register", "password", "hash", "bcrypt", "passlib", "argon2"},
-    "RC-W3-06": {"cache", "ttl", "expire", "setex", "products", "redis"},
-    "RC-W3-07": {"cache", "delete", "invalidate", "product", "redis"},
-    "RC-W3-09": {"sync", "celery", "beat", "scheduler", "cron", "mysql", "mongo"},
-    "RC-W4-05": {"middleware", "guard", "protected", "login", "redirect", "auth"},
-    "RC-W5-01": {"websocket", "sse", "broadcast", "client", "connection"},
-    "RC-W5-02": {"connectionmanager", "connections", "clients", "room", "manager"},
-    "RC-W5-03": {"websocket", "token", "jwt", "connect", "close", "auth"},
-    "RC-W5-04": {"publish", "subscribe", "redis", "channel", "broadcast"},
-    "RC-W6-02": {"memory", "conversation", "buffer", "summary", "session"},
-    "RC-W6-04": {"reset", "clear", "session", "context", "memory"},
-    "RC-W7-04": {"retrieve", "retriever", "rag", "llm", "prompt", "context"},
-    "RC-W7-06": {"memory", "rag", "retriever", "context", "conversation"},
-}
-ROADMAP_VERIFICATION_STOP_WORDS = {
-    "true",
-    "false",
-    "khong",
-    "không",
-    "nhung",
-    "nhưng",
-    "that",
-    "thật",
-    "duoc",
-    "được",
-    "trong",
-    "khong",
-    "không",
-    "phai",
-    "phải",
-}
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,15 +72,6 @@ class ChunkInfo:
     @property
     def key(self) -> tuple[str, int]:
         return self.file_path, self.chunk_index
-
-
-@dataclass(frozen=True, slots=True)
-class RoadmapVerification:
-    """One roadmap rule that needs AI correctness verification."""
-
-    rule_id: str
-    file_path: str
-    ai_hint: str
 
 
 def get_review_mode(options: dict[str, object] | None) -> str:
@@ -148,26 +103,23 @@ def get_smart_review_max_chunks(options: dict[str, object] | None) -> int:
     if not isinstance(value, int):
         return DEFAULT_SMART_REVIEW_MAX_CHUNKS
 
-    return max(20, min(500, value))
+    return max(120, min(240, value))
 
 
 def build_chunk_review_plan(
     *,
     chunk_documents: Sequence[object],
     review_mode: str,
-    verification_queue: Sequence[dict[str, object]],
     max_smart_chunks: int = DEFAULT_SMART_REVIEW_MAX_CHUNKS,
 ) -> dict[str, object]:
     """Build the chunk checklist the AI agent must complete."""
 
     chunks = _chunk_infos(chunk_documents)
-    verification_items = _verification_items(verification_queue)
     if review_mode == REVIEW_MODE_FULL_AUDIT:
         selected_reasons = {chunk.key: "full_audit" for chunk in chunks}
     else:
         selected_reasons = _select_smart_chunks(
             chunks=chunks,
-            verification_items=verification_items,
             max_chunks=max_smart_chunks,
         )
 
@@ -175,7 +127,6 @@ def build_chunk_review_plan(
         chunks=chunks,
         review_mode=review_mode,
         selected_reasons=selected_reasons,
-        verification_items=verification_items,
     )
 
 
@@ -252,49 +203,16 @@ def _chunk_infos(chunk_documents: Sequence[object]) -> list[ChunkInfo]:
     return sorted(chunks, key=lambda chunk: (chunk.file_path, chunk.chunk_index))
 
 
-def _verification_items(
-    queue: Sequence[dict[str, object]],
-) -> list[RoadmapVerification]:
-    items: list[RoadmapVerification] = []
-    for item in queue:
-        rule_id = item.get("rule_id")
-        file_path = item.get("file_path")
-        ai_hint = item.get("ai_hint")
-        if not isinstance(rule_id, str) or not rule_id:
-            continue
-        items.append(
-            RoadmapVerification(
-                rule_id=rule_id,
-                file_path=file_path if isinstance(file_path, str) else "",
-                ai_hint=ai_hint if isinstance(ai_hint, str) else "",
-            )
-        )
-
-    return items
-
-
 def _select_smart_chunks(
     *,
     chunks: list[ChunkInfo],
-    verification_items: list[RoadmapVerification],
     max_chunks: int,
 ) -> dict[tuple[str, int], str]:
+    if len(chunks) <= max_chunks:
+        return {chunk.key: "small_repo_full_smart_audit" for chunk in chunks}
+
     hard_required: dict[tuple[str, int], str] = {}
     soft_candidates: list[tuple[int, ChunkInfo, str]] = []
-    chunks_by_file: dict[str, list[ChunkInfo]] = defaultdict(list)
-    for chunk in chunks:
-        chunks_by_file[chunk.file_path].append(chunk)
-
-    for item in verification_items:
-        for chunk in chunks_by_file.get(item.file_path, []):
-            hard_required[chunk.key] = "roadmap_verification"
-
-    for chunk in _roadmap_context_chunks(
-        chunks=chunks,
-        verification_items=verification_items,
-        direct_keys=set(hard_required),
-    ):
-        hard_required.setdefault(chunk.key, "roadmap_context")
 
     for chunk in chunks:
         reason = _smart_selection_reason(chunk)
@@ -307,11 +225,18 @@ def _select_smart_chunks(
 
     selected = dict(hard_required)
     remaining_budget = max(0, max_chunks - len(selected))
+    soft_chunks_per_file: dict[str, int] = defaultdict(int)
     for _, chunk, reason in sorted(
         soft_candidates,
         key=lambda item: (item[0], item[1].file_path, item[1].chunk_index),
-    )[:remaining_budget]:
+    ):
+        if remaining_budget <= 0:
+            break
+        if soft_chunks_per_file[chunk.file_path] >= SMART_SOFT_CHUNKS_PER_FILE:
+            continue
         selected.setdefault(chunk.key, reason)
+        soft_chunks_per_file[chunk.file_path] += 1
+        remaining_budget -= 1
 
     _add_breadth_fallback(
         selected=selected,
@@ -370,7 +295,6 @@ def _build_plan_payload(
     chunks: list[ChunkInfo],
     review_mode: str,
     selected_reasons: dict[tuple[str, int], str],
-    verification_items: list[RoadmapVerification],
 ) -> dict[str, object]:
     chunks_by_file: dict[str, list[ChunkInfo]] = defaultdict(list)
     selected_by_file: dict[str, list[ChunkInfo]] = defaultdict(list)
@@ -385,13 +309,23 @@ def _build_plan_payload(
 
     files: list[dict[str, object]] = []
     target_chunk_count = 0
-    for file_path, selected_chunks in sorted(selected_by_file.items()):
+    for file_path, selected_chunks in sorted(
+        selected_by_file.items(),
+        key=lambda item: _file_plan_rank(
+            file_path=item[0],
+            selected_chunks=item[1],
+            selected_reasons=selected_reasons,
+        ),
+    ):
         all_file_chunks = chunks_by_file[file_path]
         required_chunk_indexes = [
             chunk.chunk_index
             for chunk in sorted(
                 selected_chunks,
-                key=lambda item: item.chunk_index,
+                key=lambda item: (
+                    _chunk_plan_rank(item, selected_reasons),
+                    item.chunk_index,
+                ),
             )
         ]
         target_chunk_count += len(required_chunk_indexes)
@@ -401,12 +335,6 @@ def _build_plan_payload(
                 "total_chunks": max(chunk.total_chunks for chunk in all_file_chunks),
                 "required_chunk_indexes": required_chunk_indexes,
                 "selection_reasons": sorted(reasons_by_file[file_path]),
-                "roadmap_verifications": _roadmap_verifications_for_file(
-                    file_path=file_path,
-                    selected_chunks=selected_chunks,
-                    selected_reasons=selected_reasons,
-                    verification_items=verification_items,
-                ),
                 "risk_area": selected_chunks[0].risk_area,
                 "language": selected_chunks[0].language,
             }
@@ -416,11 +344,43 @@ def _build_plan_payload(
         "mode": review_mode,
         "total_chunked_files": len(chunks_by_file),
         "total_available_chunks": len(chunks),
-        "roadmap_verification_items": len(verification_items),
         "target_files": len(files),
         "target_chunks": target_chunk_count,
         "files": files,
     }
+
+
+def _file_plan_rank(
+    *,
+    file_path: str,
+    selected_chunks: list[ChunkInfo],
+    selected_reasons: dict[tuple[str, int], str],
+) -> tuple[int, str]:
+    if any(
+        selected_reasons.get(chunk.key) == "static_issue" for chunk in selected_chunks
+    ):
+        return 0, file_path
+    return 1, file_path
+
+
+def _chunk_plan_rank(
+    chunk: ChunkInfo,
+    selected_reasons: dict[tuple[str, int], str],
+) -> int:
+    reason = selected_reasons.get(chunk.key, "")
+    if reason == "static_issue":
+        return 0
+    return _chunk_review_rank(chunk)
+
+
+def _chunk_review_rank(chunk: ChunkInfo) -> int:
+    if chunk.has_static_issues:
+        return 0
+    if chunk.chunk_type == "function":
+        return 1
+    if chunk.chunk_type == "class":
+        return 2
+    return 3
 
 
 def _selection_rank(reason: str) -> int:
@@ -447,117 +407,6 @@ def _fallback_rank(chunk: ChunkInfo) -> int:
     if _is_config_file(chunk.file_path):
         return 2
     return 3
-
-
-def _roadmap_context_chunks(
-    *,
-    chunks: list[ChunkInfo],
-    verification_items: list[RoadmapVerification],
-    direct_keys: set[tuple[str, int]],
-) -> list[ChunkInfo]:
-    selected: dict[tuple[str, int], ChunkInfo] = {}
-    for item in verification_items:
-        terms = _verification_terms(item)
-        if not terms:
-            continue
-
-        candidates: list[tuple[int, ChunkInfo]] = []
-        for chunk in chunks:
-            if chunk.key in direct_keys or chunk.file_path == item.file_path:
-                continue
-            score = _verification_context_score(chunk, terms)
-            if score > 0:
-                candidates.append((score, chunk))
-
-        for _score, chunk in sorted(
-            candidates,
-            key=lambda item: (-item[0], item[1].file_path, item[1].chunk_index),
-        )[:SMART_ROADMAP_CONTEXT_CHUNKS_PER_ITEM]:
-            selected.setdefault(chunk.key, chunk)
-
-    return sorted(
-        selected.values(), key=lambda chunk: (chunk.file_path, chunk.chunk_index)
-    )
-
-
-def _roadmap_verifications_for_file(
-    *,
-    file_path: str,
-    selected_chunks: list[ChunkInfo],
-    selected_reasons: dict[tuple[str, int], str],
-    verification_items: list[RoadmapVerification],
-) -> list[dict[str, object]]:
-    verifications: list[dict[str, object]] = []
-    has_context_chunk = any(
-        selected_reasons.get(chunk.key) == "roadmap_context"
-        for chunk in selected_chunks
-    )
-    for item in verification_items:
-        if item.file_path == file_path:
-            verifications.append(
-                {
-                    "rule_id": item.rule_id,
-                    "ai_hint": item.ai_hint,
-                    "match_type": "direct",
-                }
-            )
-            continue
-        if not has_context_chunk:
-            continue
-        terms = _verification_terms(item)
-        if any(
-            _verification_context_score(chunk, terms) > 0 for chunk in selected_chunks
-        ):
-            verifications.append(
-                {
-                    "rule_id": item.rule_id,
-                    "ai_hint": item.ai_hint,
-                    "match_type": "related_context",
-                }
-            )
-
-    return verifications
-
-
-def _verification_context_score(chunk: ChunkInfo, terms: set[str]) -> int:
-    if not terms:
-        return 0
-
-    path_text = " ".join(
-        [
-            chunk.file_path,
-            chunk.module,
-            chunk.function_name,
-            chunk.class_name,
-            chunk.risk_area,
-        ]
-    ).lower()
-    score = 0
-    for term in terms:
-        normalized_term = term.lower()
-        if normalized_term in path_text:
-            score += 8
-        elif normalized_term in chunk.search_text:
-            score += 3
-
-    if chunk.risk_area in SMART_RISK_AREAS:
-        score += 1
-    return score
-
-
-def _verification_terms(item: RoadmapVerification) -> set[str]:
-    terms = set(ROADMAP_VERIFICATION_TERMS_BY_RULE_ID.get(item.rule_id, set()))
-    terms.update(_tokenize_verification_text(item.ai_hint))
-    terms.update(_tokenize_verification_text(item.file_path))
-    return {
-        term.lower()
-        for term in terms
-        if len(term) >= 4 and term.lower() not in ROADMAP_VERIFICATION_STOP_WORDS
-    }
-
-
-def _tokenize_verification_text(value: str) -> set[str]:
-    return set(re.findall(r"[A-Za-z0-9_]+", value.lower()))
 
 
 def _path_parts(file_path: str) -> set[str]:

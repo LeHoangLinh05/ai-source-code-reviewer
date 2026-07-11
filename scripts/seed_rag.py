@@ -1,4 +1,4 @@
-"""Seed the coding standards RAG knowledge base from local source documents."""
+"""Seed the unified RAG knowledge base from local source documents."""
 
 from __future__ import annotations
 
@@ -16,6 +16,7 @@ sys.path.insert(0, str(BACKEND_DIR))
 
 from app.ai.rag.ingestion import RAGDocument, RAGIngestionPipeline  # noqa: E402
 from app.ai.rag.retriever import HybridRetriever  # noqa: E402
+from app.ai.roadmap.knowledge import load_roadmap_documents  # noqa: E402
 
 
 def main() -> None:
@@ -29,7 +30,7 @@ def main() -> None:
     parser.add_argument(
         "--reset",
         action="store_true",
-        help="Delete the existing coding_standards collection before seeding.",
+        help="Delete the existing knowledge_base collection before seeding.",
     )
     parser.add_argument(
         "--skip-smoke",
@@ -43,6 +44,7 @@ def main() -> None:
         pipeline.reset()
 
     documents = load_documents_from_manifest(args.manifest)
+    documents.extend(load_roadmap_documents())
     chunks = pipeline.ingest_documents(documents)
     print(f"Ingested {len(chunks)} chunks from {len(documents)} source documents.")
 

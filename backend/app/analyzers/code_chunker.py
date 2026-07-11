@@ -108,7 +108,10 @@ def chunk_python_source(
             for line_start, line_end in _line_windows(len(lines))
         ]
 
-    expanded_candidates = _enforce_token_limit(candidates, lines)
+    expanded_candidates = _drop_empty_candidates(
+        _enforce_token_limit(candidates, lines),
+        lines,
+    )
     chunks = [
         _build_chunk(
             candidate,
@@ -195,7 +198,9 @@ def _build_ast_candidates(source: str, line_count: int) -> list[_ChunkCandidate]
             covered_ranges.append((function_start, function_end))
 
     candidates.extend(_module_candidates(line_count, covered_ranges))
-    return sorted(candidates, key=lambda candidate: (candidate.line_start, candidate.line_end))
+    return sorted(
+        candidates, key=lambda candidate: (candidate.line_start, candidate.line_end)
+    )
 
 
 def _function_candidates(
@@ -275,6 +280,17 @@ def _enforce_token_limit(
             )
 
     return expanded_candidates
+
+
+def _drop_empty_candidates(
+    candidates: list[_ChunkCandidate],
+    lines: list[str],
+) -> list[_ChunkCandidate]:
+    return [
+        candidate
+        for candidate in candidates
+        if _slice_lines(lines, candidate.line_start, candidate.line_end).strip()
+    ]
 
 
 def _build_chunk(

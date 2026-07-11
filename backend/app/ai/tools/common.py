@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import re
 from typing import Any
 from uuid import UUID
 
@@ -12,6 +13,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai.tool_runtime import get_ai_tool_runtime
 from app.models.review_job import ReviewJob
+
+EMPTY_AGENT_JOB_ID_INPUTS = {"", "{}", "none", "null"}
 
 
 async def get_job(job_id: str | UUID, session: AsyncSession | None = None) -> ReviewJob:
@@ -47,6 +50,28 @@ def parse_job_uuid(job_id: str | UUID) -> UUID:
     return UUID(raw_job_id)
 
 
+def parse_job_uuid_or_current(job_id: str | UUID | None) -> UUID:
+    """Parse a job UUID, falling back to the current tool runtime for empty input."""
+
+    runtime = get_ai_tool_runtime()
+    if job_id is None:
+        return runtime.job_id
+    if isinstance(job_id, UUID):
+        return job_id
+
+    raw_job_id = str(job_id).strip()
+    if raw_job_id.lower() in EMPTY_AGENT_JOB_ID_INPUTS:
+        return runtime.job_id
+    if raw_job_id.startswith("{"):
+        parsed = parse_json_object_text(raw_job_id)
+        if parsed is not None:
+            parsed_job_id = parsed.get("job_id")
+            if parsed_job_id is None or str(parsed_job_id).strip() == "":
+                return runtime.job_id
+
+    return parse_job_uuid(raw_job_id)
+
+
 def unwrap_react_json_input(data: Any, first_field: str) -> Any:
     """Unwrap JSON strings that text ReAct sometimes maps into the first field."""
 
@@ -76,15 +101,44 @@ def parse_json_object_text(value: object) -> dict[str, Any] | None:
         return None
 
     raw_text = value.strip()
-    if not raw_text.startswith("{"):
-        return None
+    candidates = [_strip_json_markdown_fence(raw_text)]
+    candidates.extend(
+        match.group(1).strip()
+        for match in re.finditer(r"```(?:json)?\s*(.*?)```", raw_text, re.DOTALL)
+    )
+    object_start = raw_text.find("{")
+    if object_start >= 0:
+        candidates.append(raw_text[object_start:])
 
-    try:
-        parsed, _ = json.JSONDecoder().raw_decode(raw_text)
-    except json.JSONDecodeError:
-        return None
+    for candidate in candidates:
+        if not candidate.startswith("{"):
+            continue
+        try:
+            parsed, _ = json.JSONDecoder().raw_decode(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict):
+            return parsed
 
-    return parsed if isinstance(parsed, dict) else None
+    return None
+
+
+def _strip_json_markdown_fence(raw_text: str) -> str:
+    if not raw_text.startswith("```"):
+        return raw_text
+
+    lines = raw_text.splitlines()
+    if len(lines) < 2:
+        return raw_text
+
+    opening_fence = lines[0].strip().lower()
+    if opening_fence not in {"```", "```json"}:
+        return raw_text
+
+    if lines[-1].strip() == "```":
+        return "\n".join(lines[1:-1]).strip()
+
+    return "\n".join(lines[1:]).strip()
 
 
 def resolve_sandbox_file(file_path: str) -> Path:

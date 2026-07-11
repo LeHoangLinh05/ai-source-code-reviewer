@@ -7,7 +7,6 @@ from app.models.review_issue import IssueCategory, IssueSeverity
 from app.models.review_report import ReviewReport
 from app.schemas.normalized_issue import NormalizedIssue
 
-ROADMAP_REQUIREMENTS_REPORT_PATH = "Repository roadmap requirements"
 STATIC_REPORT_MODEL = "static-pipeline-v1"
 AI_REPORT_MODEL = "langchain-react-agent-v1"
 
@@ -34,8 +33,6 @@ def build_static_report(
     total_files_analyzed: int,
     issues: list[NormalizedIssue],
     tech_stack: dict[str, object],
-    compliance_score: float | None = None,
-    bonus_score: float | None = None,
 ) -> ReviewReport:
     """Build a non-AI report until Phase 6 replaces score synthesis."""
 
@@ -68,8 +65,6 @@ def build_static_report(
             [issue for issue in issues if issue.category == IssueCategory.PERFORMANCE]
         ),
         overall_score=calculate_score(issues),
-        compliance_score=compliance_score,
-        bonus_score=bonus_score,
         tech_stack=tech_stack,
         top_risky_files=build_top_risky_files(issues),
         executive_summary=build_executive_summary(issues, total_files_analyzed),
@@ -93,17 +88,16 @@ def build_top_risky_files(
 
     grouped: dict[str, list[NormalizedIssue]] = {}
     for issue in issues:
-        file_path = issue.file_path or ROADMAP_REQUIREMENTS_REPORT_PATH
+        file_path = issue.file_path or "Unknown file"
         grouped.setdefault(file_path, []).append(issue)
 
     ranked_files = sorted(
         grouped.items(),
         key=lambda item: (
-            any(issue.source.value == "roadmap_rule" for issue in item[1]),
-            max(SEVERITY_RANK[issue.severity] for issue in item[1]),
-            len(item[1]),
+            min(_report_priority(issue) for issue in item[1]),
+            -max(SEVERITY_RANK[issue.severity] for issue in item[1]),
+            -len(item[1]),
         ),
-        reverse=True,
     )
     return [
         {
@@ -116,6 +110,22 @@ def build_top_risky_files(
         }
         for file_path, file_issues in ranked_files[:limit]
     ]
+
+
+def _report_priority(issue: NormalizedIssue) -> int:
+    if (issue.raw_output or {}).get("priority") == "P0":
+        return 0
+    if issue.category == IssueCategory.SECURITY:
+        return 1
+    if issue.category == IssueCategory.BUG:
+        return 2
+    if issue.category == IssueCategory.PERFORMANCE:
+        return 3
+    if issue.category == IssueCategory.MAINTAINABILITY:
+        return 4
+    if issue.category == IssueCategory.REQUIREMENT:
+        return 5
+    return 6
 
 
 def build_executive_summary(

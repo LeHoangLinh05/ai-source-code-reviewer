@@ -26,8 +26,6 @@ class ReportResponse(BaseModel):
     maintainability_score: float | None
     performance_score: float | None
     overall_score: float | None
-    compliance_score: float | None
-    bonus_score: float | None
     tech_stack: dict[str, object] | None
     top_risky_files: list[dict[str, object]] | None
     executive_summary: str | None
@@ -42,8 +40,6 @@ class ReportScores(BaseModel):
     maintainability_score: float | None
     performance_score: float | None
     overall_score: float | None
-    compliance_score: float | None
-    bonus_score: float | None
 
 
 class ReportSummaryResponse(BaseModel):
@@ -61,9 +57,9 @@ class IssueResponse(BaseModel):
 
     id: UUID
     job_id: UUID
-    file_path: str | None
-    line_start: int | None
-    line_end: int | None
+    file_path: str
+    line_start: int
+    line_end: int
     severity: IssueSeverity
     category: IssueCategory
     title: str

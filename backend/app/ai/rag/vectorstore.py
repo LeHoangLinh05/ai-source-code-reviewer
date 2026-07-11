@@ -1,4 +1,4 @@
-"""ChromaDB vector store wrapper for persisted coding standard embeddings."""
+"""ChromaDB vector store wrapper for persisted knowledge-base embeddings."""
 
 from __future__ import annotations
 
@@ -9,7 +9,10 @@ from typing import Any
 
 from app.core.config import get_settings
 
-COLLECTION_NAME = "coding_standards"
+COLLECTION_NAME = "knowledge_base"
+KNOWLEDGE_EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+KNOWLEDGE_EMBEDDING_MODEL_VERSION = "all-MiniLM-L6-v2"
+KNOWLEDGE_EMBEDDING_DIMENSION = 384
 REQUIRED_RAG_PACKAGES = ("chromadb", "sentence_transformers")
 
 
@@ -77,12 +80,17 @@ class ChromaVectorStore:
         settings = get_settings()
         self.persist_path = Path(persist_path or settings.rag_chroma_path)
         self.embedding_model_name = embedding_model_name or settings.rag_embedding_model
+        if self.embedding_model_name != KNOWLEDGE_EMBEDDING_MODEL:
+            raise ValueError(
+                "knowledge_base must use sentence-transformers/all-MiniLM-L6-v2"
+            )
         self.persist_path.mkdir(parents=True, exist_ok=True)
         self._client = self._build_client(self.persist_path)
         self._collection = self._client.get_or_create_collection(
             name=COLLECTION_NAME,
-            metadata={"hnsw:space": "cosine"},
+            metadata=self._collection_metadata(),
         )
+        self._validate_collection_model()
         self._embedder = _SentenceTransformerEmbedder(self.embedding_model_name)
         self._initialized = True
 
@@ -178,13 +186,34 @@ class ChromaVectorStore:
         ]
 
     def reset_collection(self) -> None:
-        """Delete and recreate the coding standards collection."""
+        """Delete and recreate the unified knowledge-base collection."""
 
         self._client.delete_collection(COLLECTION_NAME)
         self._collection = self._client.get_or_create_collection(
             name=COLLECTION_NAME,
-            metadata={"hnsw:space": "cosine"},
+            metadata=self._collection_metadata(),
         )
+
+    def _collection_metadata(self) -> dict[str, str | int]:
+        return {
+            "hnsw:space": "cosine",
+            "embedding_model": self.embedding_model_name,
+            "embedding_model_version": KNOWLEDGE_EMBEDDING_MODEL_VERSION,
+            "embedding_dimension": KNOWLEDGE_EMBEDDING_DIMENSION,
+        }
+
+    def _validate_collection_model(self) -> None:
+        metadata = self._collection.metadata or {}
+        expected_metadata = {
+            "embedding_model": self.embedding_model_name,
+            "embedding_model_version": KNOWLEDGE_EMBEDDING_MODEL_VERSION,
+            "embedding_dimension": KNOWLEDGE_EMBEDDING_DIMENSION,
+        }
+        if any(metadata.get(key) != value for key, value in expected_metadata.items()):
+            raise RuntimeError(
+                "knowledge_base has incompatible embedding model metadata; "
+                "rebuild the collection before ingesting or searching"
+            )
 
     def _build_client(self, persist_path: Path) -> Any:
         try:

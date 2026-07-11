@@ -17,26 +17,33 @@ from app.ai.review_plan import (
     get_review_mode,
     get_smart_review_max_chunks,
 )
+from app.ai.source_evidence import SOURCE_TOOL_NAMES, source_chunk_keys
 from app.ai.tool_runtime import ensure_ai_job_active, get_ai_tool_runtime
 from app.ai.tools.common import (
     parse_json_object_text,
-    parse_job_uuid,
+    parse_job_uuid_or_current,
     unwrap_react_json_input,
 )
 from app.db.mongodb import (
     CHUNK_METADATA_COLLECTION,
     FILE_ANALYSIS_RESULTS_COLLECTION,
-    ROADMAP_COMPLIANCE_RESULTS_COLLECTION,
     TOOL_CALL_LOGS_COLLECTION,
 )
-from app.models.review_issue import IssueSeverity, IssueSource, ReviewIssue
+from app.models.review_issue import (
+    IssueCategory,
+    IssueSeverity,
+    ReviewIssue,
+)
 from app.models.review_job import ReviewJob
 from app.models.review_report import ReviewReport
 from app.schemas.normalized_issue import NormalizedIssue
 from app.services.report_generation_service import (
     AI_REPORT_MODEL,
     build_top_risky_files,
+    calculate_score,
 )
+
+TechStackInput = dict[str, object] | list[str]
 
 
 class GenerateFinalReportInput(BaseModel):
@@ -49,11 +56,12 @@ class GenerateFinalReportInput(BaseModel):
     performance_score: float | None = None
     overall_score: float | None = None
     top_priorities: list[str] | None = None
-    tech_stack: dict[str, object] | None = None
+    tech_stack: TechStackInput | None = None
 
     @model_validator(mode="before")
     @classmethod
     def unwrap_react_json(cls, data: object) -> object:
+        data = unwrap_react_json_input(data, "input")
         return unwrap_react_json_input(data, "job_id")
 
 
@@ -66,7 +74,7 @@ async def generate_final_report(
     overall_score: float | None = None,
     job_id: str | None = None,
     top_priorities: list[str] | None = None,
-    tech_stack: dict[str, object] | None = None,
+    tech_stack: TechStackInput | None = None,
 ) -> dict[str, object]:
     """Tổng hợp toàn bộ issue đã tạo trong session thành report cuối. BẮT BUỘC truyền executive_summary, security_score, maintainability_score, performance_score, overall_score; không gọi với Action Input rỗng {}."""
 
@@ -93,7 +101,34 @@ async def generate_final_report(
         if parsed_overall_score is not None:
             overall_score = parsed_overall_score
         top_priorities = _optional_str_list(parsed_input.get("top_priorities"))
-        tech_stack = _optional_dict(parsed_input.get("tech_stack")) or tech_stack
+        tech_stack = _optional_tech_stack(parsed_input.get("tech_stack")) or tech_stack
+
+    runtime = get_ai_tool_runtime()
+    await ensure_ai_job_active()
+    job_uuid = parse_job_uuid_or_current(job_id)
+    existing_report = await _load_existing_report(job_uuid)
+    issues = await _load_issues(job_uuid)
+    normalized_issues = [_to_normalized_issue(issue) for issue in issues]
+    total_files_analyzed = await _total_files_analyzed(job_uuid, existing_report)
+    if _needs_report_fallback(
+        executive_summary=executive_summary,
+        maintainability_score=maintainability_score,
+        overall_score=overall_score,
+        performance_score=performance_score,
+        security_score=security_score,
+    ):
+        fallback_scores = _fallback_report_scores(normalized_issues)
+        security_score = security_score or fallback_scores["security_score"]
+        maintainability_score = (
+            maintainability_score or fallback_scores["maintainability_score"]
+        )
+        performance_score = performance_score or fallback_scores["performance_score"]
+        overall_score = overall_score or fallback_scores["overall_score"]
+        if _is_placeholder_summary(executive_summary):
+            executive_summary = _fallback_executive_summary(
+                issues=normalized_issues,
+                total_files_analyzed=total_files_analyzed,
+            )
 
     rejection_reason = _report_rejection_reason(
         executive_summary=executive_summary,
@@ -111,37 +146,10 @@ async def generate_final_report(
     assert performance_score is not None
     assert security_score is not None
 
-    runtime = get_ai_tool_runtime()
-    await ensure_ai_job_active()
-    job_uuid = parse_job_uuid(job_id or runtime.job_id)
-    reviewed_chunks, total_chunks, missing_chunks = await _load_chunk_review_coverage(
-        job_uuid
-    )
-    if reviewed_chunks < total_chunks:
-        return {
-            "status": "rejected",
-            "reason": (
-                "AI final report rejected: chunk review coverage is incomplete "
-                f"({reviewed_chunks}/{total_chunks} chunks read). Continue calling "
-                "read_file_chunk for the chunk_review_plan target chunks before "
-                "trying again."
-            ),
-            "reviewed_chunks": reviewed_chunks,
-            "total_chunks": total_chunks,
-            "missing_chunks_preview": missing_chunks,
-        }
-
-    issues = await _load_issues(job_uuid)
-    normalized_issues = [_to_normalized_issue(issue) for issue in issues]
     severity_counts = Counter(issue.severity for issue in normalized_issues)
-    existing_report = await _load_existing_report(job_uuid)
-    compliance_score, bonus_score = await _preserved_roadmap_scores(
-        job_uuid=job_uuid,
-        existing_report=existing_report,
-    )
     report = ReviewReport(
         job_id=job_uuid,
-        total_files_analyzed=await _total_files_analyzed(job_uuid, existing_report),
+        total_files_analyzed=total_files_analyzed,
         total_issues=len(issues),
         critical_count=severity_counts[IssueSeverity.CRITICAL],
         high_count=severity_counts[IssueSeverity.HIGH],
@@ -152,9 +160,7 @@ async def generate_final_report(
         maintainability_score=_clamp_score(maintainability_score),
         performance_score=_clamp_score(performance_score),
         overall_score=_clamp_score(overall_score),
-        compliance_score=compliance_score,
-        bonus_score=bonus_score,
-        tech_stack=tech_stack or {},
+        tech_stack=_normalize_tech_stack(tech_stack),
         top_risky_files=_prioritized_files(normalized_issues, top_priorities),
         executive_summary=executive_summary,
         ai_model_used=AI_REPORT_MODEL,
@@ -170,6 +176,9 @@ async def generate_final_report(
 
 async def _load_chunk_review_coverage(
     job_id: UUID,
+    *,
+    missing_limit: int | None = 25,
+    tool_names: set[str] | None = None,
 ) -> tuple[int, int, list[dict[str, object]]]:
     runtime = get_ai_tool_runtime()
     job_filter = {"job_id": str(job_id)}
@@ -180,26 +189,28 @@ async def _load_chunk_review_coverage(
     )
     job_options = await _load_job_options(job_id)
     review_mode = get_review_mode(job_options)
-    roadmap_document = await runtime.mongodb_database[
-        ROADMAP_COMPLIANCE_RESULTS_COLLECTION
-    ].find_one(job_filter, sort=[("checked_at", -1)])
     review_plan = build_chunk_review_plan(
         chunk_documents=chunk_documents,
         review_mode=review_mode,
-        verification_queue=_verification_queue(roadmap_document),
         max_smart_chunks=get_smart_review_max_chunks(job_options),
     )
     expected_chunks = expected_chunk_keys_from_plan(review_plan)
     if not expected_chunks:
         return 0, 0, []
 
+    read_tool_names = tool_names or set(SOURCE_TOOL_NAMES)
     tool_documents = (
         await runtime.mongodb_database[TOOL_CALL_LOGS_COLLECTION]
-        .find({**job_filter, "tool_name": "read_file_chunk"})
+        .find({**job_filter, "tool_name": {"$in": sorted(read_tool_names)}})
         .to_list(length=None)
     )
     reviewed_chunks = _reviewed_chunk_keys(tool_documents)
-    missing_chunks = sorted(expected_chunks - reviewed_chunks)[:25]
+    missing_chunk_keys = sorted(expected_chunks - reviewed_chunks)
+    missing_chunks = (
+        missing_chunk_keys
+        if missing_limit is None
+        else missing_chunk_keys[:missing_limit]
+    )
     return (
         len(reviewed_chunks & expected_chunks),
         len(expected_chunks),
@@ -219,31 +230,6 @@ async def _load_job_options(job_id: UUID) -> dict[str, object] | None:
     return options if isinstance(options, dict) else None
 
 
-def _verification_queue(
-    roadmap_document: dict[str, Any] | None,
-) -> list[dict[str, object]]:
-    if roadmap_document is None:
-        return []
-
-    queue: list[dict[str, object]] = []
-    raw_queue = roadmap_document.get("verification_queue", [])
-    if not isinstance(raw_queue, list):
-        return queue
-
-    for item in raw_queue:
-        if not isinstance(item, dict):
-            continue
-        queue.append(
-            {
-                "rule_id": str(item.get("rule_id", "")),
-                "file_path": str(item.get("file_path", "")),
-                "ai_hint": str(item.get("ai_hint", "")),
-            }
-        )
-
-    return queue
-
-
 def _expected_chunk_keys(documents: list[object]) -> set[tuple[str, int]]:
     return all_chunk_keys(documents)
 
@@ -253,20 +239,7 @@ def _count_reviewed_chunks(documents: list[object]) -> int:
 
 
 def _reviewed_chunk_keys(documents: list[object]) -> set[tuple[str, int]]:
-    reviewed_chunks: set[tuple[str, int]] = set()
-    for document in documents:
-        if not isinstance(document, dict):
-            continue
-        output = document.get("output", {})
-        if not isinstance(output, dict) or output.get("status") != "ok":
-            continue
-
-        file_path = output.get("file_path")
-        chunk_index = output.get("chunk_index")
-        if isinstance(file_path, str) and isinstance(chunk_index, int):
-            reviewed_chunks.add((file_path, chunk_index))
-
-    return reviewed_chunks
+    return source_chunk_keys(documents)
 
 
 async def _load_issues(job_id: UUID) -> list[ReviewIssue]:
@@ -283,29 +256,6 @@ async def _load_existing_report(job_id: UUID) -> ReviewReport | None:
         select(ReviewReport).where(ReviewReport.job_id == job_id)
     )
     return result.scalar_one_or_none()
-
-
-async def _preserved_roadmap_scores(
-    *,
-    job_uuid: UUID,
-    existing_report: ReviewReport | None,
-) -> tuple[float | None, float | None]:
-    if existing_report is not None and (
-        existing_report.compliance_score is not None
-        or existing_report.bonus_score is not None
-    ):
-        return existing_report.compliance_score, existing_report.bonus_score
-
-    runtime = get_ai_tool_runtime()
-    roadmap_document = await runtime.mongodb_database[
-        ROADMAP_COMPLIANCE_RESULTS_COLLECTION
-    ].find_one({"job_id": str(job_uuid)}, sort=[("checked_at", -1)])
-    if roadmap_document is None:
-        return None, None
-
-    return _optional_float(roadmap_document.get("compliance_score")), _optional_float(
-        roadmap_document.get("bonus_score")
-    )
 
 
 async def _total_files_analyzed(
@@ -347,8 +297,8 @@ def _prioritized_files(
 
 def _to_normalized_issue(issue: ReviewIssue) -> NormalizedIssue:
     raw_output: dict[str, Any] = dict(issue.raw_output or {})
-    if issue.source == IssueSource.ROADMAP_RULE:
-        raw_output["priority_override"] = "roadmap_rule_first"
+    if raw_output.get("priority") == "P0":
+        raw_output["priority_override"] = "kb_p0_first"
 
     return NormalizedIssue(
         file_path=issue.file_path,
@@ -398,6 +348,92 @@ def _report_rejection_reason(
     )
 
 
+def _needs_report_fallback(
+    *,
+    executive_summary: str | None,
+    maintainability_score: float | None,
+    overall_score: float | None,
+    performance_score: float | None,
+    security_score: float | None,
+) -> bool:
+    return (
+        _is_placeholder_summary(executive_summary)
+        or security_score is None
+        or maintainability_score is None
+        or performance_score is None
+        or overall_score is None
+    )
+
+
+def _fallback_report_scores(issues: list[NormalizedIssue]) -> dict[str, float]:
+    return {
+        "security_score": calculate_score(
+            [issue for issue in issues if issue.category == IssueCategory.SECURITY]
+        ),
+        "maintainability_score": calculate_score(
+            [
+                issue
+                for issue in issues
+                if issue.category
+                in {
+                    IssueCategory.BUG,
+                    IssueCategory.MAINTAINABILITY,
+                    IssueCategory.STYLE,
+                }
+            ]
+        ),
+        "performance_score": calculate_score(
+            [issue for issue in issues if issue.category == IssueCategory.PERFORMANCE]
+        ),
+        "overall_score": calculate_score(issues),
+    }
+
+
+def _is_placeholder_summary(executive_summary: str | None) -> bool:
+    if executive_summary is None or not executive_summary.strip():
+        return True
+
+    normalized_summary = executive_summary.lower()
+    placeholder_markers = (
+        "(as above)",
+        "(as prepared above)",
+        "as above",
+        "as prepared above",
+        "successfully generated",
+        "final report has been",
+    )
+    return any(marker in normalized_summary for marker in placeholder_markers)
+
+
+def _fallback_executive_summary(
+    *,
+    issues: list[NormalizedIssue],
+    total_files_analyzed: int,
+) -> str:
+    if not issues:
+        return (
+            f"AI semantic review completed across {total_files_analyzed} "
+            "files and did not persist any confirmed issues."
+        )
+
+    severity_counts = Counter(issue.severity for issue in issues)
+    category_counts = Counter(issue.category for issue in issues)
+    return (
+        f"AI semantic review completed across {total_files_analyzed} files "
+        f"and persisted {len(issues)} confirmed issues: "
+        f"{severity_counts[IssueSeverity.CRITICAL]} critical, "
+        f"{severity_counts[IssueSeverity.HIGH]} high, "
+        f"{severity_counts[IssueSeverity.MEDIUM]} medium, "
+        f"{severity_counts[IssueSeverity.LOW]} low, and "
+        f"{severity_counts[IssueSeverity.INFO]} informational. "
+        f"Main categories: security={category_counts[IssueCategory.SECURITY]}, "
+        f"bug={category_counts[IssueCategory.BUG]}, "
+        f"performance={category_counts[IssueCategory.PERFORMANCE]}, "
+        f"maintainability={category_counts[IssueCategory.MAINTAINABILITY]}, "
+        f"style={category_counts[IssueCategory.STYLE]}."
+    )
+
+
 def _optional_float(value: object) -> float | None:
     if value is None:
         return None
@@ -424,8 +460,19 @@ def _optional_str_list(value: object) -> list[str] | None:
     return [str(item) for item in value]
 
 
-def _optional_dict(value: object) -> dict[str, object] | None:
+def _optional_tech_stack(value: object) -> TechStackInput | None:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, list):
+        return [str(item) for item in value if str(item).strip()]
+
+    return None
+
+
+def _normalize_tech_stack(value: TechStackInput | None) -> dict[str, object]:
+    if value is None:
+        return {}
     if isinstance(value, dict):
         return value
 
-    return None
+    return {"technologies": value}

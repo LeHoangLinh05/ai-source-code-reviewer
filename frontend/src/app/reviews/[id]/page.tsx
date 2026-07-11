@@ -9,7 +9,6 @@ import {
   Circle,
   FileCode2,
   GitBranch,
-  ListChecks,
   RefreshCw,
   SearchCheck,
   Trash2,
@@ -338,13 +337,9 @@ function AITracePanel({
           </div>
         ) : null}
 
-        <section className="grid gap-3 md:grid-cols-4">
+        <section className="grid gap-3 md:grid-cols-3">
           <TraceMetric label="Tool calls" value={trace?.tool_call_count ?? 0} />
           <TraceMetric label="AI issues" value={trace?.ai_issue_count ?? 0} />
-          <TraceMetric
-            label="Roadmap issues"
-            value={trace?.roadmap_issue_count ?? 0}
-          />
           <TraceMetric label="Static issues" value={trace?.static_issue_count ?? 0} />
         </section>
 
@@ -357,8 +352,11 @@ function AITracePanel({
 
         {trace?.recent_tool_calls.length ? (
           <ol className="grid gap-3">
-            {trace.recent_tool_calls.map((toolCall) => (
-              <ToolCallRow key={`${toolCall.sequence}-${toolCall.tool_name}`} call={toolCall} />
+            {trace.recent_tool_calls.map((toolCall, index) => (
+              <ToolCallRow
+                key={`${toolCall.sequence}-${toolCall.tool_name}-${toolCall.called_at}-${index}`}
+                call={toolCall}
+              />
             ))}
           </ol>
         ) : (
@@ -501,9 +499,6 @@ function getStageIcon(stage: AITraceStage) {
   }
   if (stage.key === "structure" || stage.key === "chunks") {
     return FileCode2;
-  }
-  if (stage.key === "roadmap") {
-    return ListChecks;
   }
   if (stage.key === "static") {
     return SearchCheck;

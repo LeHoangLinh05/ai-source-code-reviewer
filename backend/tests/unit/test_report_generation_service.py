@@ -4,7 +4,11 @@ from uuid import uuid4
 
 from app.models.review_issue import IssueCategory, IssueSeverity, IssueSource
 from app.schemas.normalized_issue import NormalizedIssue
-from app.services.report_generation_service import build_static_report, calculate_score
+from app.services.report_generation_service import (
+    build_static_report,
+    build_top_risky_files,
+    calculate_score,
+)
 
 
 def test_calculate_score_uses_weighted_severity_penalties() -> None:
@@ -39,6 +43,35 @@ def test_build_static_report_counts_scores_and_risky_files() -> None:
     assert report.security_score == 7.0
     assert report.top_risky_files is not None
     assert report.top_risky_files[0]["path"] == "a.py"
+
+
+def test_top_risky_files_prioritize_p0_then_categories() -> None:
+    issues = [
+        _issue(IssueSeverity.HIGH, IssueCategory.MAINTAINABILITY, "maint.py"),
+        _issue(IssueSeverity.HIGH, IssueCategory.PERFORMANCE, "perf.py"),
+        _issue(IssueSeverity.HIGH, IssueCategory.BUG, "bug.py"),
+        _issue(IssueSeverity.HIGH, IssueCategory.SECURITY, "security.py"),
+        NormalizedIssue(
+            file_path="requirements.py",
+            line_start=1,
+            line_end=1,
+            severity=IssueSeverity.CRITICAL,
+            category=IssueCategory.REQUIREMENT,
+            title="Missing required behavior",
+            description="Missing required behavior",
+            source=IssueSource.KB,
+            confidence=0.9,
+            raw_output={"priority": "P0"},
+        ),
+    ]
+
+    assert [item["path"] for item in build_top_risky_files(issues)] == [
+        "requirements.py",
+        "security.py",
+        "bug.py",
+        "perf.py",
+        "maint.py",
+    ]
 
 
 def _issue(

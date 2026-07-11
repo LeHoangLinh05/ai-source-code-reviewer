@@ -64,7 +64,7 @@ const SOURCES: IssueSource[] = [
   "ruff",
   "bandit",
   "eslint",
-  "roadmap_rule",
+  "KB",
   "secret_scanner",
 ];
 const SORT_OPTIONS: IssueSort[] = ["-created_at", "created_at", "severity", "file_path"];

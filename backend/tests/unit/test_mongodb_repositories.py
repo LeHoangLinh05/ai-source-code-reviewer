@@ -107,7 +107,4 @@ async def test_ensure_mongodb_indexes_creates_expected_indexes(
         name == "idx_chunk_metadata_job_module_risk"
         for _keys, name in database["chunk_metadata"].indexes
     )
-    assert any(
-        name == "idx_roadmap_compliance_rule_profile_id"
-        for _keys, name in database["roadmap_compliance_results"].indexes
-    )
+    assert "roadmap_compliance_results" not in database.collections

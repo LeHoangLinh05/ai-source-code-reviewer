@@ -10,14 +10,12 @@ from app.db.mongodb import (
     CHUNK_METADATA_COLLECTION,
     FILE_ANALYSIS_RESULTS_COLLECTION,
     RAW_STATIC_ANALYSIS_OUTPUTS_COLLECTION,
-    ROADMAP_COMPLIANCE_RESULTS_COLLECTION,
     TOOL_CALL_LOGS_COLLECTION,
 )
 from app.schemas.mongodb import (
     ChunkMetadataDocument,
     FileAnalysisResultDocument,
     RawStaticAnalysisOutputDocument,
-    RoadmapComplianceResultDocument,
     ToolCallLogDocument,
 )
 
@@ -85,11 +83,25 @@ class ChunkMetadataRepository(MongoDocumentRepository[ChunkMetadataDocument]):
     def __init__(self, database: AsyncIOMotorDatabase) -> None:
         super().__init__(database, CHUNK_METADATA_COLLECTION)
 
+    async def find_containing_line(
+        self,
+        *,
+        job_id: UUID,
+        file_path: str,
+        line_start: int,
+        line_end: int,
+    ) -> dict[str, object] | None:
+        """Return a persisted source chunk containing the requested line range."""
 
-class RoadmapComplianceResultRepository(
-    MongoDocumentRepository[RoadmapComplianceResultDocument]
-):
-    """MongoDB access for deterministic roadmap compliance results."""
-
-    def __init__(self, database: AsyncIOMotorDatabase) -> None:
-        super().__init__(database, ROADMAP_COMPLIANCE_RESULTS_COLLECTION)
+        document = await self.collection.find_one(
+            {
+                "job_id": str(job_id),
+                "file_path": file_path,
+                "line_start": {"$lte": line_start},
+                "line_end": {"$gte": line_end},
+            },
+            sort=[("chunk_index", 1)],
+        )
+        if document is None:
+            return None
+        return self._normalize_mongo_id(cast(dict[str, object], document))

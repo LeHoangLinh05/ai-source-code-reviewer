@@ -1,20 +1,37 @@
 """Tests for shared AI tool helpers."""
 
+from pathlib import Path
+from typing import cast
 from uuid import uuid4
 
-from app.ai.tools.common import parse_job_uuid
+from motor.motor_asyncio import AsyncIOMotorDatabase
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.ai.tool_runtime import AIToolRuntime, ai_tool_runtime
+from app.ai.tools.analyze_structure import AnalyzeProjectStructureInput
+from app.ai.tools.common import parse_job_uuid, parse_job_uuid_or_current
 from app.ai.tools.generate_issue import GenerateIssueInput
 from app.ai.tools.generate_report import (
     GenerateFinalReportInput,
     _count_reviewed_chunks,
     _expected_chunk_keys,
+    _fallback_report_scores,
+    _is_placeholder_summary,
 )
 from app.ai.tools.read_file import (
     ReadFileChunkInput,
     _build_rejected_read_response,
+    _closest_file_path_suggestions,
+    _first_unread_required_chunk_index,
     normalize_read_file_input,
 )
-from app.ai.tools.search_rag import SearchCodingStandardInput
+from app.ai.tools.search_code import SearchCodeSemanticInput
+from app.ai.tools.search_rag import (
+    SearchCodingStandardInput,
+    SearchKnowledgeBaseInput,
+)
+from app.models.review_issue import IssueCategory, IssueSeverity, IssueSource
+from app.schemas.normalized_issue import NormalizedIssue
 
 
 def test_parse_job_uuid_strips_model_output_whitespace() -> None:
@@ -27,6 +44,25 @@ def test_parse_job_uuid_accepts_json_shaped_tool_input() -> None:
     job_id = uuid4()
 
     assert parse_job_uuid(f'{{"job_id": "{job_id}"}}') == job_id
+
+
+def test_parse_job_uuid_or_current_handles_empty_agent_input() -> None:
+    job_id = uuid4()
+    runtime = AIToolRuntime(
+        job_id=job_id,
+        session_id=uuid4(),
+        sandbox_path=Path("."),
+        postgres_session=cast(AsyncSession, object()),
+        mongodb_database=cast(AsyncIOMotorDatabase, object()),
+    )
+
+    with ai_tool_runtime(runtime):
+        assert parse_job_uuid_or_current(None) == job_id
+        assert parse_job_uuid_or_current("") == job_id
+        assert parse_job_uuid_or_current("{}") == job_id
+        assert parse_job_uuid_or_current("None") == job_id
+        assert parse_job_uuid_or_current("null") == job_id
+        assert parse_job_uuid_or_current('{"job_id": ""}') == job_id
 
 
 def test_read_file_chunk_schema_unwraps_react_json_from_first_field() -> None:
@@ -49,8 +85,17 @@ def test_read_file_chunk_schema_unwraps_react_json_from_file_path() -> None:
     assert payload.job_id is None
 
 
+def test_read_file_chunk_schema_accepts_required_chunk_indexes() -> None:
+    payload = ReadFileChunkInput.model_validate(
+        {"file_path": "backend/app/auth.py", "required_chunk_indexes": [0, 2, 3]}
+    )
+
+    assert payload.chunk_index is None
+    assert payload.required_chunk_indexes == [0, 2, 3]
+
+
 def test_normalize_read_file_input_unwraps_raw_react_string() -> None:
-    file_path, job_id, chunk_index = normalize_read_file_input(
+    file_path, job_id, chunk_index, required_chunk_indexes = normalize_read_file_input(
         file_path='{"file_path": "Backend/app/agents/base.py", "chunk_index": 0}',
         job_id=None,
         chunk_index=None,
@@ -59,6 +104,39 @@ def test_normalize_read_file_input_unwraps_raw_react_string() -> None:
     assert file_path == "Backend/app/agents/base.py"
     assert chunk_index == 0
     assert job_id is None
+    assert required_chunk_indexes is None
+
+
+def test_normalize_read_file_input_unwraps_required_chunk_indexes() -> None:
+    file_path, _job_id, chunk_index, required_chunk_indexes = normalize_read_file_input(
+        file_path=(
+            '{"file_path": "backend/app/auth.py", '
+            '"required_chunk_indexes": [0, "2", "bad"]}'
+        ),
+        job_id=None,
+        chunk_index=None,
+    )
+
+    assert file_path == "backend/app/auth.py"
+    assert chunk_index is None
+    assert required_chunk_indexes == [0, 2]
+
+
+def test_first_unread_required_chunk_index_skips_reviewed_indexes() -> None:
+    assert (
+        _first_unread_required_chunk_index(
+            required_chunk_indexes=[0, 2, 3],
+            reviewed_indexes={0, 2},
+        )
+        == 3
+    )
+    assert (
+        _first_unread_required_chunk_index(
+            required_chunk_indexes=[0],
+            reviewed_indexes={0},
+        )
+        is None
+    )
 
 
 def test_read_file_chunk_builds_rejected_response_for_invalid_chunk() -> None:
@@ -76,6 +154,31 @@ def test_read_file_chunk_builds_rejected_response_for_invalid_chunk() -> None:
     assert response["file_path"] == "Backend/app/models/study_goal.py"
 
 
+def test_read_file_chunk_rejection_can_include_path_suggestions() -> None:
+    response = _build_rejected_read_response(
+        file_path="backend/app/verify_logic_errors.py",
+        reason="File does not exist in sandbox: backend/app/verify_logic_errors.py",
+        requested_chunk_index=0,
+        file_path_suggestions=["backend/app/auth.py"],
+    )
+
+    assert response["file_path_suggestions"] == ["backend/app/auth.py"]
+    assert "Retry read_file_chunk" in str(response["next_action"])
+
+
+def test_closest_file_path_suggestions_match_similar_paths() -> None:
+    suggestions = _closest_file_path_suggestions(
+        requested_file_path="backend/app/verify_logic_errors.py",
+        known_file_paths=[
+            "backend/app/auth.py",
+            "backend/app/services/logic_errors.py",
+            "backend/app/main.py",
+        ],
+    )
+
+    assert suggestions[0] == "backend/app/services/logic_errors.py"
+
+
 def test_search_schema_unwraps_react_json_from_first_field() -> None:
     payload = SearchCodingStandardInput.model_validate(
         {"query": '{"query": "csrf token", "language": "typescript", "top_k": 2}'}
@@ -84,6 +187,41 @@ def test_search_schema_unwraps_react_json_from_first_field() -> None:
     assert payload.query == "csrf token"
     assert payload.language == "typescript"
     assert payload.top_k == 2
+
+
+def test_search_knowledge_schema_clamps_oversized_top_k() -> None:
+    payload = SearchKnowledgeBaseInput.model_validate(
+        {
+            "query": "roadmap rules for profile roadmap_bootcamp_v1",
+            "doc_type": "roadmap_rule",
+            "profile_id": "roadmap_bootcamp_v1",
+            "top_k": 10,
+        }
+    )
+
+    assert payload.top_k == 5
+
+
+def test_search_code_schema_accepts_file_path_only_input() -> None:
+    payload = SearchCodeSemanticInput.model_validate(
+        {"file_path": "backend/app/auth.py"}
+    )
+
+    assert payload.job_id is None
+    assert payload.file_path == "backend/app/auth.py"
+    assert payload.query == "Review relevant behavior in backend/app/auth.py"
+
+
+def test_analyze_project_structure_schema_accepts_empty_input() -> None:
+    payload = AnalyzeProjectStructureInput.model_validate({})
+
+    assert payload.job_id is None
+
+
+def test_analyze_project_structure_schema_accepts_react_none_input() -> None:
+    payload = AnalyzeProjectStructureInput.model_validate({"input": "None"})
+
+    assert payload.job_id is None
 
 
 def test_generate_issue_schema_unwraps_react_json_from_first_field() -> None:
@@ -100,6 +238,51 @@ def test_generate_issue_schema_unwraps_react_json_from_first_field() -> None:
     assert payload.severity == "high"
     assert payload.category == "security"
     assert payload.references == ["OWASP ASVS"]
+
+
+def test_generate_issue_schema_unwraps_react_json_from_input_field() -> None:
+    payload = GenerateIssueInput.model_validate(
+        {
+            "input": (
+                "{\n"
+                '  "severity": "High",\n'
+                '  "category": "Security",\n'
+                '  "title": "Plaintext password",\n'
+                '  "description": "Password is stored in plaintext.",\n'
+                '  "confidence": 0.9,\n'
+                '  "file_path": "backend/app/auth.py",\n'
+                '  "line_start": 10,\n'
+                '  "line_end": 12\n'
+                "}"
+            )
+        }
+    )
+
+    assert payload.severity == "High"
+    assert payload.category == "Security"
+    assert payload.title == "Plaintext password"
+    assert payload.confidence == 0.9
+    assert payload.file_path == "backend/app/auth.py"
+
+
+def test_generate_issue_schema_extracts_json_from_multi_action_markdown() -> None:
+    payload = GenerateIssueInput.model_validate(
+        {
+            "input": (
+                "**Action Input:**\n```json\n"
+                '{"severity":"high","category":"bug","title":"Bad state",'
+                '"description":"State is stale.","confidence":0.8,'
+                '"path":"app.py","line_range":"10-12"}\n```\n'
+                "**Observation:** generated\n**Action: generate_issue**\n"
+                "**Action Input:**\n```json\n{}\n```"
+            )
+        }
+    )
+
+    assert payload.title == "Bad state"
+    assert payload.file_path == "app.py"
+    assert payload.line_start == 10
+    assert payload.line_end == 12
 
 
 def test_generate_issue_schema_unwraps_json_with_trailing_react_text() -> None:
@@ -165,6 +348,75 @@ def test_generate_report_schema_unwraps_react_json_from_first_field() -> None:
     assert payload.overall_score == 8
 
 
+def test_generate_report_schema_unwraps_markdown_json_from_input_field() -> None:
+    payload = GenerateFinalReportInput.model_validate(
+        {
+            "input": (
+                "```json\n"
+                "{\n"
+                '  "executive_summary": "Done",\n'
+                '  "security_score": 7,\n'
+                '  "maintainability_score": 6,\n'
+                '  "performance_score": 8,\n'
+                '  "overall_score": 7\n'
+                "}\n"
+                "```"
+            )
+        }
+    )
+
+    assert payload.executive_summary == "Done"
+    assert payload.security_score == 7
+    assert payload.maintainability_score == 6
+    assert payload.performance_score == 8
+    assert payload.overall_score == 7
+
+
+def test_generate_report_schema_accepts_tech_stack_list() -> None:
+    payload = GenerateFinalReportInput.model_validate(
+        {
+            "executive_summary": "Done",
+            "security_score": 7,
+            "maintainability_score": 6,
+            "performance_score": 8,
+            "overall_score": 7,
+            "tech_stack": ["Python", "Flask", "Redis", "MongoDB"],
+        }
+    )
+
+    assert payload.tech_stack == ["Python", "Flask", "Redis", "MongoDB"]
+
+
+def test_generate_report_detects_placeholder_summary() -> None:
+    assert _is_placeholder_summary("(as above)\n### Final Answer")
+    assert _is_placeholder_summary("The final report has been successfully generated.")
+    assert not _is_placeholder_summary("AI review found two high security issues.")
+
+
+def test_generate_report_fallback_scores_from_persisted_issues() -> None:
+    scores = _fallback_report_scores(
+        [
+            _normalized_issue(
+                severity=IssueSeverity.HIGH,
+                category=IssueCategory.SECURITY,
+            ),
+            _normalized_issue(
+                severity=IssueSeverity.MEDIUM,
+                category=IssueCategory.PERFORMANCE,
+            ),
+            _normalized_issue(
+                severity=IssueSeverity.LOW,
+                category=IssueCategory.MAINTAINABILITY,
+            ),
+        ]
+    )
+
+    assert scores["security_score"] == 8.0
+    assert scores["performance_score"] == 9.0
+    assert scores["maintainability_score"] == 9.7
+    assert scores["overall_score"] == 6.7
+
+
 def test_generate_report_schema_accepts_empty_input_for_tool_rejection() -> None:
     payload = GenerateFinalReportInput.model_validate({})
 
@@ -185,28 +437,64 @@ def test_generate_report_coverage_helpers_count_unique_valid_chunks() -> None:
     reviewed = _count_reviewed_chunks(
         [
             {
+                "tool_name": "read_file_chunk",
                 "output": {
                     "status": "ok",
                     "file_path": "app/a.py",
                     "chunk_index": 0,
-                }
+                },
             },
             {
+                "tool_name": "read_file_chunk",
                 "output": {
                     "status": "ok",
                     "file_path": "app/a.py",
                     "chunk_index": 0,
-                }
+                },
             },
             {
+                "tool_name": "read_file_chunk",
                 "output": {
                     "status": "rejected",
                     "file_path": "app/a.py",
                     "chunk_index": 1,
-                }
+                },
+            },
+            {
+                "tool_name": "search_code_semantic",
+                "output": {
+                    "status": "ok",
+                    "results": [
+                        {
+                            "status": "ok",
+                            "file_path": "app/a.py",
+                            "chunk_index": 1,
+                            "line_start": 10,
+                            "line_end": 20,
+                        }
+                    ],
+                },
             },
         ]
     )
 
     assert expected == {("app/a.py", 0), ("app/a.py", 1), ("app/b.py", 0)}
-    assert reviewed == 1
+    assert reviewed == 2
+
+
+def _normalized_issue(
+    *,
+    severity: IssueSeverity,
+    category: IssueCategory,
+) -> NormalizedIssue:
+    return NormalizedIssue(
+        file_path="app.py",
+        line_start=1,
+        line_end=1,
+        severity=severity,
+        category=category,
+        title="Issue",
+        description="Description",
+        source=IssueSource.AI_REVIEW,
+        confidence=0.8,
+    )

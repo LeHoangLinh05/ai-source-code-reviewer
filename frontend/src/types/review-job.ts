@@ -50,8 +50,6 @@ export type AITraceCoverage = {
   ai_read_chunk_percent: number;
   static_analyzer_runs: number;
   static_analyzer_issues: number;
-  roadmap_rules_checked: number;
-  roadmap_verification_items: number;
   generated_ai_issues: number;
   generated_report_by_ai: boolean;
 };
@@ -74,7 +72,6 @@ export type AITrace = {
   latest_tool_status: string | null;
   issue_counts_by_source: Record<string, number>;
   ai_issue_count: number;
-  roadmap_issue_count: number;
   static_issue_count: number;
   report_model: string | null;
   report_created_at: string | null;

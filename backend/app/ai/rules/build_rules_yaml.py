@@ -1,18 +1,18 @@
 """
-Sinh backend/app/ai/rules/roadmap_rules_v2.yaml — nguồn duy nhất (single source of truth)
-cho toàn bộ 79 Roadmap Compliance Rules.
+Sinh backend/app/ai/roadmap/roadmap_rules_v2.yaml — knowledge source cho toàn bộ
+79 roadmap requirements.
 
 Cách dùng: sửa dữ liệu rule ở phần "1. ĐỊNH NGHĨA RULE" hoặc "2. TARGET CHO TỪNG RULE"
 bên dưới, rồi chạy: python3 scripts/build_rules_yaml.py
 KHÔNG sửa tay file roadmap_rules_v2.yaml — nó luôn bị ghi đè khi chạy lại script này.
 
 Nguồn nội dung rule: Lộ_trình_đào_tạo_Python_NextJS_AI_agent.xlsx (Tuần 1-7 + Final Project).
-Spec đầy đủ (rationale thiết kế, scoring, provisional_pass mechanism): xem AI_flow.md mục 3.
+Các field legacy là metadata/hint; backend không dùng chúng để quyết định PASS/FAIL.
 """
 
 import yaml  # type: ignore[import-untyped]
 
-OUTPUT_PATH = "backend/app/ai/rules/roadmap_rules_v2.yaml"
+OUTPUT_PATH = "backend/app/ai/roadmap/roadmap_rules_v2.yaml"
 
 SKILL_GROUP = {
     1: "Backend Core & JWT Auth",
@@ -709,37 +709,12 @@ class NoAliasDumper(yaml.SafeDumper):
 
 
 HEADER = """# =============================================================================
-# roadmap_rules_v2.yaml — Roadmap Compliance Rule Set (79 rules)
+# roadmap_rules_v2.yaml — Roadmap knowledge source (79 requirements)
 # Nguồn: Lộ_trình_đào_tạo_Python_NextJS_AI_agent.xlsx (Tuần 1-7 + Mục tiêu/Final Project)
-# Sinh ra từ scripts/build_rules_yaml.py — KHÔNG sửa tay file này, sửa script rồi chạy lại.
-# Spec đầy đủ (rationale, scoring, provisional_pass mechanism): xem AI_flow.md mục 3.
+# Các field check_type/target/needs_ai_verification bên dưới là metadata lịch sử và
+# verification hint cho Review Agent. Backend không được dùng chúng để quyết định PASS/FAIL.
 #
-# QUY ƯỚC GLOB (áp dụng cho mọi rule bên dưới):
-#   - Checker tự loại trừ mặc định: node_modules/, .git/, venv/, .venv/, __pycache__/,
-#     dist/, build/, .next/  (KHÔNG cần khai báo lại trong từng rule)
-#   - "**/" ở đầu pattern = tìm ở BẤT KỲ độ sâu nào trong repo (không giả định tên thư mục
-#     backend/ hay frontend/ cố định, vì repo học viên có thể đặt tên khác nhau)
-#
-# CÁC KEY CÓ THỂ XUẤT HIỆN TRONG "target" TUỲ check_type:
-#   required_file / required_folder / forbidden_tracked_file:
-#     glob: [<pattern>, ...]              -> pass nếu CÓ match (forbidden: pass nếu KHÔNG match)
-#   required_any_of:
-#     glob_any_of: [<pattern>, ...]       -> pass nếu ít nhất 1 pattern có match
-#   required_dependency:
-#     manifest_glob: [<pattern>, ...]     -> nơi tìm (requirements.txt/package.json/...)
-#     package_any_of: [<tên_package>, ...] -> pass nếu manifest chứa 1 trong các tên này
-#     version_constraint: "<vd: ^15>"     -> optional, so khớp version nếu có khai báo
-#   required_code_pattern:
-#     glob: [<pattern>, ...]              -> phạm vi file quét regex
-#     regex: "<pattern>"                  -> 1 regex duy nhất (có thể dùng | để OR)
-#     regex_all_of: ["<p1>", "<p2>", ...] -> TẤT CẢ pattern đều phải xuất hiện (có thể khác file)
-#     min_matches: N                       -> số lần match tối thiểu (áp dụng cho regex đơn)
-#   min_file_count:
-#     glob: [<pattern>, ...]
-#     min_count: N
-#   required_config_key:
-#     file_glob: [<pattern>, ...]         -> file config cần đọc
-#     key_pattern: "<pattern>"            -> nội dung phải chứa pattern này
+# Source này được ingest thành từng document doc_type=roadmap_rule trong knowledge_base.
 # =============================================================================
 
 """

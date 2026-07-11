@@ -11,7 +11,6 @@ FILE_ANALYSIS_RESULTS_COLLECTION = "file_analysis_results"
 RAW_STATIC_ANALYSIS_OUTPUTS_COLLECTION = "raw_static_analysis_outputs"
 TOOL_CALL_LOGS_COLLECTION = "tool_call_logs"
 CHUNK_METADATA_COLLECTION = "chunk_metadata"
-ROADMAP_COMPLIANCE_RESULTS_COLLECTION = "roadmap_compliance_results"
 
 mongodb_client: AsyncIOMotorClient | None = None
 
@@ -98,19 +97,6 @@ async def ensure_mongodb_indexes() -> None:
     await database[CHUNK_METADATA_COLLECTION].create_index(
         [("job_id", ASCENDING), ("module", ASCENDING), ("risk_area", ASCENDING)],
         name="idx_chunk_metadata_job_module_risk",
-    )
-
-    await database[ROADMAP_COMPLIANCE_RESULTS_COLLECTION].create_index(
-        [("job_id", ASCENDING)],
-        name="idx_roadmap_compliance_job",
-    )
-    await database[ROADMAP_COMPLIANCE_RESULTS_COLLECTION].create_index(
-        [("job_id", ASCENDING), ("checked_at", ASCENDING)],
-        name="idx_roadmap_compliance_job_checked",
-    )
-    await database[ROADMAP_COMPLIANCE_RESULTS_COLLECTION].create_index(
-        [("rule_profile.id", ASCENDING)],
-        name="idx_roadmap_compliance_rule_profile_id",
     )
 
 

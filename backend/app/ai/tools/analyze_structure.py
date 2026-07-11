@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 from collections import Counter
-from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
 from langchain_core.tools import tool
+from pydantic import BaseModel, model_validator
 from sqlalchemy import select
 
 from app.ai.review_plan import (
@@ -15,14 +15,15 @@ from app.ai.review_plan import (
     get_review_mode,
     get_smart_review_max_chunks,
 )
+from app.ai.roadmap.selection import build_roadmap_context
+from app.ai.semantic_audit_plan import build_semantic_audit_plan
 from app.ai.tool_runtime import get_ai_tool_runtime
 from app.ai.tool_runtime import ensure_ai_job_active
-from app.ai.tools.common import parse_job_uuid, serialize_mongo_document
+from app.ai.tools.common import parse_job_uuid_or_current, serialize_mongo_document
 from app.db.mongodb import (
     CHUNK_METADATA_COLLECTION,
     FILE_ANALYSIS_RESULTS_COLLECTION,
     RAW_STATIC_ANALYSIS_OUTPUTS_COLLECTION,
-    ROADMAP_COMPLIANCE_RESULTS_COLLECTION,
 )
 from app.models.review_job import ReviewJob
 
@@ -30,13 +31,36 @@ HIGH_RISK_AREAS = {"security", "bug"}
 HIGH_RISK_PATH_PARTS = {"auth", "security", "crypto", "middleware"}
 
 
-@tool
-async def analyze_project_structure(job_id: str) -> dict[str, object]:
+class AnalyzeProjectStructureInput(BaseModel):
+    """Input schema for project structure and roadmap context."""
+
+    job_id: str | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_react_empty_input(cls, data: object) -> object:
+        if not isinstance(data, dict):
+            return data
+
+        raw_input = data.get("input")
+        if isinstance(raw_input, str) and raw_input.strip().lower() in {
+            "",
+            "{}",
+            "none",
+            "null",
+        }:
+            return {}
+
+        return data
+
+
+@tool(args_schema=AnalyzeProjectStructureInput)
+async def analyze_project_structure(job_id: str | None = None) -> dict[str, object]:
     """Lấy tổng quan project đang review: ngôn ngữ, framework, danh sách file cần review theo độ ưu tiên, tóm tắt static analysis, và tóm tắt roadmap compliance (nếu job bật rule_profile)."""
 
     runtime = get_ai_tool_runtime()
     await ensure_ai_job_active()
-    job_uuid = parse_job_uuid(job_id)
+    job_uuid = parse_job_uuid_or_current(job_id)
     database = runtime.mongodb_database
     structure_document = await database[FILE_ANALYSIS_RESULTS_COLLECTION].find_one(
         {"job_id": str(job_uuid)},
@@ -50,10 +74,6 @@ async def analyze_project_structure(job_id: str) -> dict[str, object]:
         .find({"job_id": str(job_uuid)})
         .to_list(length=None)
     )
-    roadmap_document = await database[ROADMAP_COMPLIANCE_RESULTS_COLLECTION].find_one(
-        {"job_id": str(job_uuid)},
-        sort=[("checked_at", -1)],
-    )
     chunk_documents = (
         await database[CHUNK_METADATA_COLLECTION]
         .find({"job_id": str(job_uuid)})
@@ -65,15 +85,14 @@ async def analyze_project_structure(job_id: str) -> dict[str, object]:
     structure = serialize_mongo_document(structure_document)
     project_structure = _as_dict(structure.get("project_structure"))
     file_tree = _as_list(structure.get("file_tree"))
-    verification_queue = _verification_queue(roadmap_document)
     static_issues = _static_issues(static_documents)
     chunk_counts = _chunk_counts_by_file(chunk_documents)
     files_to_review = _files_to_review(
         file_tree=file_tree,
         static_issues=static_issues,
-        verification_queue=verification_queue,
         chunk_counts=chunk_counts,
     )
+    roadmap_context = build_roadmap_context(job_options)
 
     output: dict[str, object] = {
         "languages": _languages(project_structure),
@@ -82,15 +101,18 @@ async def analyze_project_structure(job_id: str) -> dict[str, object]:
         "chunk_review_plan": build_chunk_review_plan(
             chunk_documents=chunk_documents,
             review_mode=review_mode,
-            verification_queue=verification_queue,
             max_smart_chunks=get_smart_review_max_chunks(job_options),
+        ),
+        "semantic_audit_plan": build_semantic_audit_plan(
+            roadmap_context=roadmap_context,
+            files_to_review=files_to_review,
+            static_issues=static_issues,
         ),
         "static_analysis_summary": _static_analysis_summary(static_documents),
     }
 
-    if roadmap_document is not None:
-        output["roadmap_compliance_summary"] = _roadmap_summary(roadmap_document)
-        output["roadmap_verification_queue"] = verification_queue
+    if roadmap_context is not None:
+        output["roadmap"] = roadmap_context
 
     return output
 
@@ -171,7 +193,6 @@ def _files_to_review(
     *,
     file_tree: list[object],
     static_issues: list[dict[str, Any]],
-    verification_queue: list[dict[str, object]],
     chunk_counts: dict[str, int],
 ) -> list[dict[str, object]]:
     issue_by_file: dict[str, list[dict[str, Any]]] = {}
@@ -187,9 +208,6 @@ def _files_to_review(
         if isinstance(entry, dict) and entry.get("should_review") is True
     }
     file_paths.update(issue_by_file)
-    file_paths.update(
-        str(item["file_path"]) for item in verification_queue if item.get("file_path")
-    )
 
     files = [
         {
@@ -266,59 +284,6 @@ def _file_risk_area(file_path: str, issues: list[dict[str, Any]]) -> str:
 
 def _priority_rank(priority: str) -> int:
     return {"high": 0, "medium": 1, "low": 2}.get(priority, 3)
-
-
-def _roadmap_summary(roadmap_document: dict[str, Any]) -> str:
-    results = [
-        result
-        for result in _as_list(roadmap_document.get("results"))
-        if isinstance(result, dict)
-    ]
-    status_counts = Counter(str(result.get("status", "unknown")) for result in results)
-    passed_count = status_counts["pass"] + status_counts["provisional_pass"]
-    failed_rules = [
-        f"{result.get('rule_id')} ({result.get('severity')})"
-        for result in results
-        if result.get("status") == "fail"
-    ]
-    checked_at = roadmap_document.get("checked_at")
-    if isinstance(checked_at, datetime):
-        checked_at_text = checked_at.astimezone(UTC).isoformat()
-    else:
-        checked_at_text = str(checked_at)
-
-    summary = (
-        f"{passed_count}/{len(results)} PASS/PROVISIONAL. "
-        f"FAIL: {', '.join(failed_rules) if failed_rules else 'none'}. "
-        f"compliance_score={roadmap_document.get('compliance_score')}, "
-        f"bonus_score={roadmap_document.get('bonus_score')}. "
-        f"checked_at={checked_at_text}."
-    )
-    if _verification_queue(roadmap_document):
-        summary += f" AI verification queue: {len(_verification_queue(roadmap_document))} item(s)."
-
-    return summary
-
-
-def _verification_queue(
-    roadmap_document: dict[str, Any] | None,
-) -> list[dict[str, object]]:
-    if roadmap_document is None:
-        return []
-
-    queue: list[dict[str, object]] = []
-    for item in _as_list(roadmap_document.get("verification_queue")):
-        if not isinstance(item, dict):
-            continue
-        queue.append(
-            {
-                "rule_id": str(item.get("rule_id", "")),
-                "file_path": str(item.get("file_path", "")),
-                "ai_hint": str(item.get("ai_hint", "")),
-            }
-        )
-
-    return queue
 
 
 def _as_dict(value: object) -> dict[str, object]:

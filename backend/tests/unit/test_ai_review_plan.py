@@ -25,7 +25,6 @@ def test_smart_review_plan_targets_risk_and_static_chunks() -> None:
             _chunk("docs/readme.md", 0, language="markdown"),
         ],
         review_mode=REVIEW_MODE_SMART,
-        verification_queue=[],
         max_smart_chunks=3,
     )
 
@@ -47,7 +46,6 @@ def test_full_audit_review_plan_targets_all_chunks() -> None:
             _chunk("README.md", 0, language="markdown"),
         ],
         review_mode=REVIEW_MODE_FULL_AUDIT,
-        verification_queue=[],
     )
 
     assert plan["target_chunks"] == 3
@@ -59,56 +57,29 @@ def test_full_audit_review_plan_targets_all_chunks() -> None:
 
 
 def test_smart_review_max_chunks_is_bounded() -> None:
-    assert get_smart_review_max_chunks({"smart_review_max_chunks": 5}) == 20
-    assert get_smart_review_max_chunks({"smart_review_max_chunks": 800}) == 500
+    assert get_smart_review_max_chunks({"smart_review_max_chunks": 5}) == 120
+    assert get_smart_review_max_chunks({"smart_review_max_chunks": 800}) == 240
 
 
-def test_roadmap_verification_adds_related_implementation_context() -> None:
+def test_smart_review_plan_audits_all_chunks_for_small_repositories() -> None:
     plan = build_chunk_review_plan(
         chunk_documents=[
-            _chunk(
-                "requirements.txt",
-                0,
-                language="text",
-                chunk_text="fastapi\nbcrypt\n",
-            ),
-            _chunk(
-                "app/auth/routes.py",
-                0,
-                risk_area="security",
-                function_name="register",
-                chunk_text=(
-                    "async def register(payload):\n"
-                    "    hashed_password = hash_password(payload.password)\n"
-                    "    await repository.create_user(hashed_password)\n"
-                ),
-            ),
-            _chunk("app/reports.py", 0, chunk_text="def export_report(): pass"),
+            _chunk("app/a.py", 0, total_chunks=3),
+            _chunk("app/a.py", 1, total_chunks=3),
+            _chunk("app/a.py", 2, total_chunks=3),
+            _chunk("app/b.py", 0),
         ],
         review_mode=REVIEW_MODE_SMART,
-        verification_queue=[
-            {
-                "rule_id": "RC-W1-17",
-                "file_path": "requirements.txt",
-                "ai_hint": "Xác nhận password THỰC SỰ được hash tại route /register.",
-            }
-        ],
-        max_smart_chunks=20,
+        max_smart_chunks=10,
     )
 
-    expected = expected_chunk_keys_from_plan(plan)
-
-    assert ("requirements.txt", 0) in expected
-    assert ("app/auth/routes.py", 0) in expected
-    files = {str(file_plan["file_path"]): file_plan for file_plan in plan["files"]}
-    auth_verifications = files["app/auth/routes.py"]["roadmap_verifications"]
-    assert auth_verifications == [
-        {
-            "rule_id": "RC-W1-17",
-            "ai_hint": "Xác nhận password THỰC SỰ được hash tại route /register.",
-            "match_type": "related_context",
-        }
-    ]
+    assert plan["target_chunks"] == 4
+    assert expected_chunk_keys_from_plan(plan) == {
+        ("app/a.py", 0),
+        ("app/a.py", 1),
+        ("app/a.py", 2),
+        ("app/b.py", 0),
+    }
 
 
 def _chunk(

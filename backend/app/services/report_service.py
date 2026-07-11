@@ -7,6 +7,7 @@ from app.models.review_issue import IssueCategory, IssueSeverity, IssueSource
 from app.models.review_job import ReviewJob, ReviewJobStatus
 from app.models.review_report import ReviewReport
 from app.models.user import User, UserRole
+from app.repositories.mongodb_repository import ChunkMetadataRepository
 from app.repositories.report_repository import ReportRepository
 from app.schemas.report import (
     IssueFilters,
@@ -26,8 +27,13 @@ ALLOWED_ISSUE_SORT_FIELDS = {
 class ReportService:
     """Business workflows for report and issue queries."""
 
-    def __init__(self, report_repository: ReportRepository) -> None:
+    def __init__(
+        self,
+        report_repository: ReportRepository,
+        chunk_metadata_repository: ChunkMetadataRepository,
+    ) -> None:
         self.report_repository = report_repository
+        self.chunk_metadata_repository = chunk_metadata_repository
 
     async def get_report(self, job_id: UUID, current_user: User) -> ReviewReport:
         """Return the full report for an authorized review job."""
@@ -52,8 +58,6 @@ class ReportService:
                 maintainability_score=report.maintainability_score,
                 performance_score=report.performance_score,
                 overall_score=report.overall_score,
-                compliance_score=report.compliance_score,
-                bonus_score=report.bonus_score,
             ),
         )
 
@@ -125,7 +129,27 @@ class ReportService:
         if issue is None:
             raise NotFoundError("Review issue not found")
 
-        return IssueResponse.model_validate(issue)
+        response = IssueResponse.model_validate(issue)
+        if _has_source_context(response.raw_output):
+            return response
+
+        chunk = await self.chunk_metadata_repository.find_containing_line(
+            job_id=job_id,
+            file_path=issue.file_path,
+            line_start=issue.line_start,
+            line_end=issue.line_end,
+        )
+        source_context = _source_context_from_chunk(
+            chunk,
+            line_start=issue.line_start,
+            line_end=issue.line_end,
+        )
+        if source_context is not None:
+            response.raw_output = {
+                **(response.raw_output or {}),
+                "source_context": source_context,
+            }
+        return response
 
     async def _ensure_job_access(
         self,
@@ -165,3 +189,35 @@ class ReportService:
             )
 
         return sort_field, is_descending
+
+
+def _has_source_context(raw_output: dict[str, object] | None) -> bool:
+    return isinstance(raw_output, dict) and isinstance(
+        raw_output.get("source_context"), dict
+    )
+
+
+def _source_context_from_chunk(
+    chunk: dict[str, object] | None,
+    *,
+    line_start: int,
+    line_end: int,
+    context_radius: int = 3,
+) -> dict[str, object] | None:
+    if chunk is None:
+        return None
+    chunk_text = chunk.get("chunk_text")
+    chunk_line_start = chunk.get("line_start")
+    if not isinstance(chunk_text, str) or not isinstance(chunk_line_start, int):
+        return None
+
+    lines = chunk_text.splitlines()
+    first_line = max(chunk_line_start, line_start - context_radius)
+    chunk_line_end = chunk_line_start + len(lines) - 1
+    last_line = min(chunk_line_end, line_end + context_radius)
+    first_index = first_line - chunk_line_start
+    last_index = last_line - chunk_line_start + 1
+    return {
+        "start_line": first_line,
+        "lines": lines[first_index:last_index],
+    }

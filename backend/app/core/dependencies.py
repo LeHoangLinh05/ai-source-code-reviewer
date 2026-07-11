@@ -25,7 +25,6 @@ from app.repositories.mongodb_repository import (
     ChunkMetadataRepository,
     FileAnalysisResultRepository,
     RawStaticAnalysisOutputRepository,
-    RoadmapComplianceResultRepository,
     ToolCallLogRepository,
 )
 from app.repositories.refresh_token_repository import RefreshTokenRepository
@@ -90,14 +89,6 @@ async def get_chunk_metadata_repository(
     return ChunkMetadataRepository(database)
 
 
-async def get_roadmap_compliance_result_repository(
-    database: Annotated[AsyncIOMotorDatabase, Depends(get_mongodb)],
-) -> RoadmapComplianceResultRepository:
-    """Build the MongoDB repository for roadmap compliance results."""
-
-    return RoadmapComplianceResultRepository(database)
-
-
 async def get_auth_service(
     session: Annotated[AsyncSession, Depends(get_async_session)],
     redis_client: Annotated[Redis, Depends(get_redis)],
@@ -152,11 +143,15 @@ async def get_ai_trace_service(
 
 async def get_report_service(
     session: Annotated[AsyncSession, Depends(get_async_session)],
+    chunk_metadata_repository: Annotated[
+        ChunkMetadataRepository,
+        Depends(get_chunk_metadata_repository),
+    ],
 ) -> ReportService:
     """Build report service with request-scoped DB access."""
 
     report_repository = ReportRepository(session)
-    return ReportService(report_repository)
+    return ReportService(report_repository, chunk_metadata_repository)
 
 
 async def get_current_access_token(

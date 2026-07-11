@@ -38,7 +38,7 @@ class IngestedChunk:
 
 
 class RAGIngestionPipeline:
-    """Split, metadata-tag, embed, and index coding-standard documents."""
+    """Split, metadata-tag, embed, and index knowledge-base documents."""
 
     def __init__(
         self,
@@ -106,6 +106,17 @@ class RAGIngestionPipeline:
             ingested_chunks.extend(self.ingest_document(document))
 
         return ingested_chunks
+
+    def ingest_roadmap(self, source_path: Path | None = None) -> list[IngestedChunk]:
+        """Load and ingest every roadmap requirement into the knowledge base."""
+
+        from app.ai.roadmap.knowledge import (
+            ROADMAP_SOURCE_PATH,
+            load_roadmap_documents,
+        )
+
+        roadmap_documents = load_roadmap_documents(source_path or ROADMAP_SOURCE_PATH)
+        return self.ingest_documents(roadmap_documents)
 
     def _split_document(self, document: RAGDocument) -> list[IngestedChunk]:
         tokens = _tokenize_preserving_text(document.content)

@@ -201,7 +201,7 @@ export default function RepositoryDetailPage() {
             id: ROADMAP_RULE_PROFILE_ID,
           },
           review_mode: "smart",
-          smart_review_max_chunks: 180,
+          smart_review_max_chunks: 60,
           run_static_analysis: values.runStaticAnalysis,
         },
         repository_id: selectedRepository.id,

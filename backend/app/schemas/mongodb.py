@@ -1,6 +1,9 @@
 """MongoDB document schemas for analysis, agent trace, and roadmap data."""
 
+from __future__ import annotations
+
 from datetime import datetime
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field
@@ -57,6 +60,7 @@ class ToolCallLogDocument(BaseModel):
 
     job_id: UUID
     session_id: UUID
+    agent_type: Literal["review", "report"] = "review"
     sequence: int = Field(ge=1)
     tool_name: str
     called_at: datetime
@@ -84,33 +88,3 @@ class ChunkMetadataDocument(BaseModel):
     has_static_issues: bool = False
     token_count: int = Field(ge=0)
     chunk_text: str | None = None
-
-
-class RoadmapRuleResult(BaseModel):
-    """Deterministic roadmap rule result stored for scoring and debugging."""
-
-    rule_id: str
-    status: str
-    severity: str | None = None
-    week: int | str
-    skill_group: str
-
-
-class RoadmapVerificationQueueItem(BaseModel):
-    """Rule verification candidate that the AI agent must inspect later."""
-
-    rule_id: str
-    file_path: str
-    ai_hint: str
-
-
-class RoadmapComplianceResultDocument(BaseModel):
-    """Roadmap compliance output stored when a rule profile is enabled."""
-
-    job_id: UUID
-    rule_profile: dict[str, object]
-    checked_at: datetime
-    results: list[RoadmapRuleResult]
-    verification_queue: list[RoadmapVerificationQueueItem] = Field(default_factory=list)
-    compliance_score: float | None = Field(default=None, ge=0.0, le=100.0)
-    bonus_score: float | None = Field(default=None, ge=0.0, le=100.0)

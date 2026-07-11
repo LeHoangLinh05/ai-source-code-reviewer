@@ -15,12 +15,12 @@ from app.ai.review_plan import (
     get_review_mode,
     get_smart_review_max_chunks,
 )
-from app.db.mongodb import TOOL_CALL_LOGS_COLLECTION
+from app.ai.source_evidence import SOURCE_TOOL_NAMES, source_chunk_keys
 from app.db.mongodb import (
     CHUNK_METADATA_COLLECTION,
     FILE_ANALYSIS_RESULTS_COLLECTION,
     RAW_STATIC_ANALYSIS_OUTPUTS_COLLECTION,
-    ROADMAP_COMPLIANCE_RESULTS_COLLECTION,
+    TOOL_CALL_LOGS_COLLECTION,
 )
 from app.models.review_issue import IssueSource, ReviewIssue
 from app.models.review_job import ReviewJob, ReviewJobStatus
@@ -76,13 +76,14 @@ class AITraceService:
             latest_tool_name=latest_tool_call.tool_name if latest_tool_call else None,
             latest_tool_status=latest_tool_call.status if latest_tool_call else None,
             issue_counts_by_source=issue_counts,
-            ai_issue_count=issue_counts.get(IssueSource.AI_REVIEW.value, 0),
-            roadmap_issue_count=issue_counts.get(IssueSource.ROADMAP_RULE.value, 0),
+            ai_issue_count=(
+                issue_counts.get(IssueSource.AI_REVIEW.value, 0)
+                + issue_counts.get(IssueSource.KB.value, 0)
+            ),
             static_issue_count=sum(
                 count
                 for source, count in issue_counts.items()
-                if source
-                not in {IssueSource.AI_REVIEW.value, IssueSource.ROADMAP_RULE.value}
+                if source not in {IssueSource.AI_REVIEW.value, IssueSource.KB.value}
             ),
             report_model=report.ai_model_used if report else None,
             report_created_at=report.created_at if report else None,
@@ -139,9 +140,6 @@ class AITraceService:
         structure_document = await self.mongodb_database[
             FILE_ANALYSIS_RESULTS_COLLECTION
         ].find_one(job_filter, sort=[("analyzed_at", -1)])
-        roadmap_document = await self.mongodb_database[
-            ROADMAP_COMPLIANCE_RESULTS_COLLECTION
-        ].find_one(job_filter, sort=[("checked_at", -1)])
         static_documents = cast(
             list[dict[str, Any]],
             await self.mongodb_database[RAW_STATIC_ANALYSIS_OUTPUTS_COLLECTION]
@@ -151,7 +149,12 @@ class AITraceService:
         read_chunk_documents = cast(
             list[dict[str, Any]],
             await self.mongodb_database[TOOL_CALL_LOGS_COLLECTION]
-            .find({**job_filter, "tool_name": "read_file_chunk"})
+            .find(
+                {
+                    **job_filter,
+                    "tool_name": {"$in": sorted(SOURCE_TOOL_NAMES)},
+                }
+            )
             .to_list(length=None),
         )
         chunk_documents = cast(
@@ -176,7 +179,6 @@ class AITraceService:
         review_plan = build_chunk_review_plan(
             chunk_documents=chunk_documents,
             review_mode=review_mode,
-            verification_queue=_verification_queue(roadmap_document),
             max_smart_chunks=get_smart_review_max_chunks(job.options if job else None),
         )
         target_chunks = _safe_int(review_plan.get("target_chunks"))
@@ -185,9 +187,6 @@ class AITraceService:
         ai_read_files, ai_read_chunks, ai_read_target_chunks = _read_chunk_coverage(
             read_chunk_documents,
             target_chunk_keys=target_chunk_keys,
-        )
-        roadmap_rules_checked, roadmap_verification_items = _roadmap_coverage(
-            roadmap_document
         )
         static_analyzer_issues = sum(
             len(document.get("parsed_issues", []))
@@ -210,9 +209,10 @@ class AITraceService:
             ai_read_chunk_percent=_percent(ai_read_target_chunks, target_chunks),
             static_analyzer_runs=len(static_documents),
             static_analyzer_issues=static_analyzer_issues,
-            roadmap_rules_checked=roadmap_rules_checked,
-            roadmap_verification_items=roadmap_verification_items,
-            generated_ai_issues=issue_counts.get(IssueSource.AI_REVIEW.value, 0),
+            generated_ai_issues=(
+                issue_counts.get(IssueSource.AI_REVIEW.value, 0)
+                + issue_counts.get(IssueSource.KB.value, 0)
+            ),
             generated_report_by_ai=_is_full_ai_review(
                 report_model=report.ai_model_used if report else None,
                 coverage_ai_chunks=ai_read_target_chunks,
@@ -265,15 +265,6 @@ class AITraceService:
                 progress_percent=100.0 if coverage.total_reviewable_files > 0 else 0.0,
                 current=coverage.total_reviewable_files,
                 total=coverage.total_reviewable_files,
-            ),
-            AITraceStage(
-                key="roadmap",
-                label="Roadmap rules",
-                status=_roadmap_stage_status(job, coverage),
-                detail=_roadmap_stage_detail(job, coverage),
-                progress_percent=100.0 if coverage.roadmap_rules_checked else 0.0,
-                current=coverage.roadmap_rules_checked,
-                total=coverage.roadmap_rules_checked,
             ),
             AITraceStage(
                 key="static",
@@ -336,12 +327,35 @@ class AITraceService:
         output = _preview_value(document.get("output", {}))
         output_dict = output if isinstance(output, dict) else {"output": output}
         tool_name = str(document.get("tool_name", "unknown"))
+        tool_input = _preview_dict(document.get("input", {}))
+        if tool_name == "analyze_project_structure":
+            files = output_dict.get("files_to_review")
+            review_plan = output_dict.get("chunk_review_plan")
+            target_chunks = (
+                review_plan.get("target_chunks") if isinstance(review_plan, dict) else 0
+            )
+            tool_input = {}
+            output_dict = {
+                "status": "ok",
+                "files_to_review": len(files) if isinstance(files, list) else 0,
+                "target_chunks": target_chunks,
+            }
+        elif tool_name == "search_knowledge_base":
+            tool_input = {"scope": "internal knowledge"}
+            result_count = output_dict.get("result_count")
+            if result_count is None:
+                results = output_dict.get("results")
+                result_count = len(results) if isinstance(results, list) else 0
+            output_dict = {
+                "status": output_dict.get("status", "ok"),
+                "result_count": result_count,
+            }
         return AIToolCallTrace(
             sequence=int(document.get("sequence", 0)),
             tool_name=tool_name,
             called_at=document["called_at"],
             duration_ms=int(document.get("duration_ms", 0)),
-            input=_preview_dict(document.get("input", {})),
+            input=tool_input,
             output=output_dict,
             status=_tool_call_status(tool_name, output_dict),
         )
@@ -408,23 +422,8 @@ def _read_chunk_coverage(
     *,
     target_chunk_keys: set[tuple[str, int]] | None = None,
 ) -> tuple[int, int, int]:
-    read_files: set[str] = set()
-    read_chunks: set[tuple[str, int]] = set()
-    for document in documents:
-        output = document.get("output", {})
-        if not isinstance(output, dict):
-            continue
-        if output.get("status") != "ok":
-            continue
-
-        file_path = output.get("file_path")
-        chunk_index = output.get("chunk_index")
-        if not isinstance(file_path, str):
-            continue
-
-        read_files.add(file_path)
-        if isinstance(chunk_index, int):
-            read_chunks.add((file_path, chunk_index))
+    read_chunks = source_chunk_keys(documents)
+    read_files = {file_path for file_path, _chunk_index in read_chunks}
 
     if target_chunk_keys is None:
         read_target_chunks = len(read_chunks)
@@ -432,43 +431,6 @@ def _read_chunk_coverage(
         read_target_chunks = len(read_chunks & target_chunk_keys)
 
     return len(read_files), len(read_chunks), read_target_chunks
-
-
-def _verification_queue(
-    roadmap_document: dict[str, Any] | None,
-) -> list[dict[str, object]]:
-    if roadmap_document is None:
-        return []
-
-    raw_queue = roadmap_document.get("verification_queue", [])
-    if not isinstance(raw_queue, list):
-        return []
-
-    queue: list[dict[str, object]] = []
-    for item in raw_queue:
-        if not isinstance(item, dict):
-            continue
-        queue.append(
-            {
-                "rule_id": str(item.get("rule_id", "")),
-                "file_path": str(item.get("file_path", "")),
-                "ai_hint": str(item.get("ai_hint", "")),
-            }
-        )
-
-    return queue
-
-
-def _roadmap_coverage(document: dict[str, Any] | None) -> tuple[int, int]:
-    if document is None:
-        return 0, 0
-
-    results = document.get("results", [])
-    queue = document.get("verification_queue", [])
-    return (
-        len(results) if isinstance(results, list) else 0,
-        len(queue) if isinstance(queue, list) else 0,
-    )
 
 
 def _percent(current: int, total: int) -> float:
@@ -498,13 +460,11 @@ def _is_full_ai_review(
     coverage_ai_chunks: int,
     total_chunks: int,
 ) -> bool:
+    _ = coverage_ai_chunks, total_chunks
     if report_model != AI_REPORT_MODEL:
         return False
 
-    if total_chunks == 0:
-        return True
-
-    return coverage_ai_chunks >= total_chunks
+    return True
 
 
 def _safe_int(value: object) -> int:
@@ -525,33 +485,6 @@ def _stage_status(
     if current_status == running_status:
         return "running"
     return "pending"
-
-
-def _roadmap_stage_status(
-    job: ReviewJob | None,
-    coverage: AITraceCoverage,
-) -> str:
-    if coverage.roadmap_rules_checked > 0:
-        return "completed"
-    if job and job.status == ReviewJobStatus.FAILED:
-        return "failed"
-    if job and job.status == ReviewJobStatus.COMPLETED:
-        return "warning"
-    return "pending"
-
-
-def _roadmap_stage_detail(
-    job: ReviewJob | None,
-    coverage: AITraceCoverage,
-) -> str:
-    if coverage.roadmap_rules_checked > 0:
-        return (
-            f"{coverage.roadmap_rules_checked} rules checked, "
-            f"{coverage.roadmap_verification_items} need AI verification"
-        )
-    if job and job.status == ReviewJobStatus.COMPLETED:
-        return "No roadmap result was persisted for this completed job"
-    return "Waiting for roadmap rule check"
 
 
 def _chunk_stage_status(
@@ -617,14 +550,13 @@ def _ai_stage_detail(
 ) -> str:
     if report_model == AI_REPORT_MODEL:
         return (
-            f"Read {coverage.ai_read_target_chunks}/{coverage.target_chunks} "
-            f"target chunks and "
+            f"Used {coverage.ai_read_chunks} semantic/source chunks and "
             f"created {coverage.generated_ai_issues} AI issues"
         )
     if latest_tool_name:
         return (
-            f"Read {coverage.ai_read_target_chunks}/{coverage.target_chunks} "
-            f"target chunks; latest activity is {latest_tool_name}"
+            f"Used {coverage.ai_read_chunks} semantic/source chunks; latest "
+            f"activity is {latest_tool_name}"
         )
     return "Waiting for first agent tool call"
 
@@ -659,10 +591,7 @@ def _report_stage_detail(coverage: AITraceCoverage, report_model: str | None) ->
     ):
         return "Final report was generated by the AI agent"
     if report_model == AI_REPORT_MODEL:
-        return (
-            "AI report exists, but chunk coverage is incomplete: "
-            f"{coverage.ai_read_target_chunks}/{coverage.target_chunks}"
-        )
+        return "Final report was generated by the AI agent"
     if report_model == STATIC_REPORT_MODEL:
         return "Waiting for the AI final report"
     return "Waiting for report generation"

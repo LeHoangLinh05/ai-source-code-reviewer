@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+import hashlib
 from pathlib import Path
 from uuid import UUID
 
@@ -24,6 +25,25 @@ class AIToolRuntime:
     sandbox_path: Path
     postgres_session: AsyncSession
     mongodb_database: AsyncIOMotorDatabase
+    delivered_chunk_hashes: dict[tuple[str, int], str] = field(default_factory=dict)
+
+    def register_chunk_content(
+        self,
+        *,
+        file_path: str,
+        chunk_index: int,
+        content: str,
+    ) -> tuple[bool, str, int]:
+        """Track full chunks already delivered during this model session."""
+
+        content_bytes = content.encode("utf-8")
+        content_sha256 = hashlib.sha256(content_bytes).hexdigest()
+        chunk_key = (file_path, chunk_index)
+        if self.delivered_chunk_hashes.get(chunk_key) == content_sha256:
+            return False, content_sha256, len(content_bytes)
+
+        self.delivered_chunk_hashes[chunk_key] = content_sha256
+        return True, content_sha256, len(content_bytes)
 
 
 _runtime: ContextVar[AIToolRuntime | None] = ContextVar(

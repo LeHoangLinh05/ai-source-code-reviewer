@@ -76,6 +76,7 @@ class BM25Index:
         query: str,
         *,
         top_k: int,
+        metadata_filters: dict[str, object] | None = None,
         language: str | None = None,
     ) -> list[BM25SearchResult]:
         """Search indexed chunks and return normalized keyword scores."""
@@ -92,6 +93,11 @@ class BM25Index:
         scored_documents = []
         for document, raw_score in zip(self._documents, raw_scores, strict=True):
             if language and document.metadata.get("language") != language:
+                continue
+            if metadata_filters and not _matches_filters(
+                document.metadata,
+                metadata_filters,
+            ):
                 continue
 
             normalized_score = raw_score / max_score if max_score > 0 else 0.0
@@ -135,6 +141,22 @@ def tokenize(text: str) -> list[str]:
     """Tokenize text for BM25 using lowercase alphanumeric terms."""
 
     return [match.group(0).lower() for match in _TOKEN_PATTERN.finditer(text)]
+
+
+def _matches_filters(
+    metadata: dict[str, object],
+    filters: dict[str, object],
+) -> bool:
+    for key, expected_value in filters.items():
+        actual_value = metadata.get(key)
+        if isinstance(expected_value, list):
+            if actual_value not in expected_value:
+                return False
+            continue
+        if actual_value != expected_value:
+            return False
+
+    return True
 
 
 def _fallback_bm25_scores(

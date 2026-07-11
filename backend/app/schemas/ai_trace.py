@@ -35,8 +35,6 @@ class AITraceCoverage(BaseModel):
     ai_read_chunk_percent: float = Field(ge=0.0, le=100.0)
     static_analyzer_runs: int = Field(ge=0)
     static_analyzer_issues: int = Field(ge=0)
-    roadmap_rules_checked: int = Field(ge=0)
-    roadmap_verification_items: int = Field(ge=0)
     generated_ai_issues: int = Field(ge=0)
     generated_report_by_ai: bool
 
@@ -63,7 +61,6 @@ class AITraceResponse(BaseModel):
     latest_tool_status: str | None = None
     issue_counts_by_source: dict[str, int]
     ai_issue_count: int = Field(ge=0)
-    roadmap_issue_count: int = Field(ge=0)
     static_issue_count: int = Field(ge=0)
     report_model: str | None = None
     report_created_at: datetime | None = None
