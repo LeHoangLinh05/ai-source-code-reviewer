@@ -14,6 +14,7 @@ from app.repositories.mongodb_repository import (
     ChunkMetadataRepository,
     FileAnalysisResultRepository,
     RawStaticAnalysisOutputRepository,
+    RepoSummaryResultRepository,
 )
 from app.repositories.report_repository import ReportRepository
 from app.repositories.repository_repository import RepositoryRepository
@@ -85,6 +86,7 @@ async def process_review_job_async(job_id: UUID) -> None:
                 repository_repository=RepositoryRepository(session),
                 report_repository=ReportRepository(session),
                 file_analysis_repository=FileAnalysisResultRepository(database),
+                repo_summary_repository=RepoSummaryResultRepository(database),
                 raw_static_repository=RawStaticAnalysisOutputRepository(database),
                 chunk_metadata_repository=ChunkMetadataRepository(database),
                 code_embedding_store=code_embedding_store,

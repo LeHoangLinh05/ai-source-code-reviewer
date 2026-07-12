@@ -5,7 +5,7 @@ backend/.env
 backend/.env.*
 !backend/.env.example
 
-/*.md
+*.md
 !/AGENTS.md
 !/style.md
 

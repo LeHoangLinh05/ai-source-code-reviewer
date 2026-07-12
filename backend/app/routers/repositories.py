@@ -5,13 +5,19 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, status
 
-from app.core.dependencies import get_current_user, get_repository_service
+from app.core.dependencies import (
+    get_current_user,
+    get_repo_summary_query_service,
+    get_repository_service,
+)
 from app.models.user import User
 from app.schemas.repository import (
     DeleteResponse,
     RepositoryCreate,
     RepositoryResponse,
 )
+from app.schemas.repo_summary import RepoSummaryResponse
+from app.services.repo_summary_query_service import RepoSummaryQueryService
 from app.services.repository_service import RepositoryService
 
 router = APIRouter(prefix="/repositories", tags=["repositories"])
@@ -53,6 +59,24 @@ async def list_repositories(
         RepositoryResponse.model_validate(source_repository)
         for source_repository in repositories
     ]
+
+
+@router.get(
+    "/{repository_id}/summary",
+    response_model=RepoSummaryResponse,
+    summary="Get latest repository project overview",
+)
+async def get_repository_summary(
+    repository_id: UUID,
+    current_user: Annotated[User, Depends(get_current_user)],
+    summary_service: Annotated[
+        RepoSummaryQueryService,
+        Depends(get_repo_summary_query_service),
+    ],
+) -> RepoSummaryResponse:
+    """Return the newest generated project overview for an authorized repository."""
+
+    return await summary_service.get_latest_summary(repository_id, current_user)
 
 
 @router.get(

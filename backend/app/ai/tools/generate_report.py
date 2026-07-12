@@ -62,7 +62,13 @@ class GenerateFinalReportInput(BaseModel):
     @classmethod
     def unwrap_react_json(cls, data: object) -> object:
         data = unwrap_react_json_input(data, "input")
-        return unwrap_react_json_input(data, "job_id")
+        data = unwrap_react_json_input(data, "job_id")
+        if isinstance(data, dict) and "top_priorities" in data:
+            top_priorities = _optional_str_list(data.get("top_priorities"))
+            if top_priorities is not None:
+                return {**data, "top_priorities": top_priorities}
+
+        return data
 
 
 @tool(args_schema=GenerateFinalReportInput)
@@ -457,7 +463,33 @@ def _optional_str_list(value: object) -> list[str] | None:
     if not isinstance(value, list):
         return None
 
-    return [str(item) for item in value]
+    normalized_items: list[str] = []
+    for item in value:
+        normalized_item = _stringify_top_priority(item)
+        if normalized_item is not None:
+            normalized_items.append(normalized_item)
+
+    return normalized_items
+
+
+def _stringify_top_priority(value: object) -> str | None:
+    if isinstance(value, str):
+        return value.strip() or None
+
+    if isinstance(value, dict):
+        path = _optional_str(value.get("file_path")) or _optional_str(value.get("path"))
+        if path is not None:
+            return path
+
+        parts = [
+            _optional_str(value.get("severity")),
+            _optional_str(value.get("category")),
+            _optional_str(value.get("title")),
+            _optional_str(value.get("source")),
+        ]
+        return " | ".join(part for part in parts if part) or None
+
+    return str(value).strip() or None
 
 
 def _optional_tech_stack(value: object) -> TechStackInput | None:

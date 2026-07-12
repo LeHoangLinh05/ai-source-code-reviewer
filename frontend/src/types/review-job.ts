@@ -2,6 +2,7 @@ export type ReviewJobStatus =
   | "PENDING"
   | "CLONING"
   | "ANALYZING_STRUCTURE"
+  | "GENERATING_SUMMARY"
   | "RUNNING_STATIC_ANALYSIS"
   | "CHUNKING_CODE"
   | "AI_REVIEWING"

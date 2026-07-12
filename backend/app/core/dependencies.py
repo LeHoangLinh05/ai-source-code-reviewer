@@ -25,6 +25,7 @@ from app.repositories.mongodb_repository import (
     ChunkMetadataRepository,
     FileAnalysisResultRepository,
     RawStaticAnalysisOutputRepository,
+    RepoSummaryResultRepository,
     ToolCallLogRepository,
 )
 from app.repositories.refresh_token_repository import RefreshTokenRepository
@@ -37,6 +38,7 @@ from app.services.ai_trace_service import AITraceService
 from app.services.job_service import ReviewJobService
 from app.services.job_queue_service import JobQueueService
 from app.services.report_service import ReportService
+from app.services.repo_summary_query_service import RepoSummaryQueryService
 from app.services.repository_service import RepositoryService
 from app.services.token_blacklist import TokenBlacklistService
 
@@ -89,6 +91,14 @@ async def get_chunk_metadata_repository(
     return ChunkMetadataRepository(database)
 
 
+async def get_repo_summary_result_repository(
+    database: Annotated[AsyncIOMotorDatabase, Depends(get_mongodb)],
+) -> RepoSummaryResultRepository:
+    """Build the MongoDB repository for generated repository summaries."""
+
+    return RepoSummaryResultRepository(database)
+
+
 async def get_auth_service(
     session: Annotated[AsyncSession, Depends(get_async_session)],
     redis_client: Annotated[Redis, Depends(get_redis)],
@@ -112,6 +122,21 @@ async def get_repository_service(
 
     repository_repository = RepositoryRepository(session)
     return RepositoryService(repository_repository)
+
+
+async def get_repo_summary_query_service(
+    repository_service: Annotated[
+        RepositoryService,
+        Depends(get_repository_service),
+    ],
+    repo_summary_repository: Annotated[
+        RepoSummaryResultRepository,
+        Depends(get_repo_summary_result_repository),
+    ],
+) -> RepoSummaryQueryService:
+    """Build the query service for repository project overview summaries."""
+
+    return RepoSummaryQueryService(repository_service, repo_summary_repository)
 
 
 async def get_review_job_service(

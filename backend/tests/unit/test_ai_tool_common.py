@@ -387,6 +387,40 @@ def test_generate_report_schema_accepts_tech_stack_list() -> None:
     assert payload.tech_stack == ["Python", "Flask", "Redis", "MongoDB"]
 
 
+def test_generate_report_schema_accepts_structured_top_priorities() -> None:
+    payload = GenerateFinalReportInput.model_validate(
+        {
+            "executive_summary": "Done",
+            "security_score": 7,
+            "maintainability_score": 6,
+            "performance_score": 8,
+            "overall_score": 7,
+            "top_priorities": [
+                {
+                    "severity": "critical",
+                    "category": "requirement",
+                    "source": "KB",
+                    "title": "Missing FastAPI implementation",
+                    "file_path": "requirements.txt",
+                    "line_start": 1,
+                },
+                {
+                    "severity": "high",
+                    "category": "security",
+                    "title": "Missing authorization",
+                },
+                "src/app.py",
+            ],
+        }
+    )
+
+    assert payload.top_priorities == [
+        "requirements.txt",
+        "high | security | Missing authorization",
+        "src/app.py",
+    ]
+
+
 def test_generate_report_detects_placeholder_summary() -> None:
     assert _is_placeholder_summary("(as above)\n### Final Answer")
     assert _is_placeholder_summary("The final report has been successfully generated.")

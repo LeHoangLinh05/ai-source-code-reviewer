@@ -36,7 +36,11 @@ import {
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { getApiErrorMessage } from "@/lib/api-error";
-import { deleteRepository, getRepository } from "@/lib/repositories";
+import {
+  deleteRepository,
+  getRepository,
+  getRepositorySummary,
+} from "@/lib/repositories";
 import { createReviewJob, getReviewJobs } from "@/lib/review-jobs";
 import { useAppDispatch, useAppSelector } from "@/store/hooks";
 import {
@@ -48,6 +52,7 @@ import {
   upsertRepository,
 } from "@/store/slices/repositorySlice";
 import type { ReviewJob, ReviewJobStatus } from "@/types/review-job";
+import type { RepoSummary } from "@/types/repository";
 
 const startReviewSchema = z.object({
   branch: z.string().trim().min(1, "Branch is required.").max(100),
@@ -66,6 +71,7 @@ const STATUS_STYLES: Record<ReviewJobStatus, string> = {
   COMPLETED: "border-emerald-400/40 bg-emerald-500/10 text-emerald-200",
   FAILED: "border-rose-400/40 bg-rose-500/10 text-rose-200",
   GENERATING_REPORT: "border-amber-400/40 bg-amber-500/10 text-amber-200",
+  GENERATING_SUMMARY: "border-teal-400/40 bg-teal-500/10 text-teal-200",
   PENDING: "border-slate-500/50 bg-slate-500/10 text-slate-200",
   RUNNING_STATIC_ANALYSIS:
     "border-orange-400/40 bg-orange-500/10 text-orange-200",
@@ -85,6 +91,9 @@ export default function RepositoryDetailPage() {
   const [areReviewJobsLoading, setAreReviewJobsLoading] = useState(false);
   const [reviewJobs, setReviewJobs] = useState<ReviewJob[]>([]);
   const [reviewJobsError, setReviewJobsError] = useState<string | null>(null);
+  const [repoSummary, setRepoSummary] = useState<RepoSummary | null>(null);
+  const [isRepoSummaryLoading, setIsRepoSummaryLoading] = useState(false);
+  const [repoSummaryError, setRepoSummaryError] = useState<string | null>(null);
   const startReviewForm = useForm<StartReviewFormValues>({
     resolver: zodResolver(startReviewSchema),
     defaultValues: {
@@ -140,18 +149,38 @@ export default function RepositoryDetailPage() {
     }
   }, [repositoryId]);
 
+  const loadRepositorySummary = useCallback(async () => {
+    setIsRepoSummaryLoading(true);
+    setRepoSummaryError(null);
+
+    try {
+      setRepoSummary(await getRepositorySummary(repositoryId));
+    } catch (requestError) {
+      setRepoSummaryError(
+        getApiErrorMessage(
+          requestError,
+          "Unable to load repository summary.",
+        ),
+      );
+    } finally {
+      setIsRepoSummaryLoading(false);
+    }
+  }, [repositoryId]);
+
   useEffect(() => {
     void loadRepository();
     void loadReviewJobs();
+    void loadRepositorySummary();
 
     return () => {
       dispatch(setSelectedRepository(null));
     };
-  }, [dispatch, loadRepository, loadReviewJobs]);
+  }, [dispatch, loadRepository, loadRepositorySummary, loadReviewJobs]);
 
   function refreshPageData() {
     void loadRepository();
     void loadReviewJobs();
+    void loadRepositorySummary();
   }
 
   async function handleDeleteRepository() {
@@ -335,6 +364,23 @@ export default function RepositoryDetailPage() {
 
           <Card>
             <CardHeader>
+              <CardTitle>Tổng quan dự án</CardTitle>
+              <CardDescription>
+                Project overview generated from repository structure and setup
+                files.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <RepositorySummaryCard
+                error={repoSummaryError}
+                isLoading={isRepoSummaryLoading}
+                summary={repoSummary}
+              />
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
               <CardTitle>Review History</CardTitle>
               <CardDescription>
                 Review jobs for this repository will appear here.
@@ -488,6 +534,186 @@ function DetailRow({ label, value }: DetailRowProps) {
     <div className="grid gap-2 border-b border-border pb-4 last:border-b-0 last:pb-0 sm:grid-cols-[180px_1fr]">
       <dt className="text-[15px] text-muted-foreground">{label}</dt>
       <dd className="min-w-0 text-[15px] text-foreground">{value}</dd>
+    </div>
+  );
+}
+
+type RepositorySummaryCardProps = {
+  error: string | null;
+  isLoading: boolean;
+  summary: RepoSummary | null;
+};
+
+function RepositorySummaryCard({
+  error,
+  isLoading,
+  summary,
+}: RepositorySummaryCardProps) {
+  if (isLoading) {
+    return <RepositorySummarySkeleton />;
+  }
+
+  if (error !== null) {
+    return <p className="text-sm text-destructive">{error}</p>;
+  }
+
+  if (summary === null) {
+    return (
+      <div className="rounded-md border border-dashed border-slate-700 bg-background px-6 py-8 text-center">
+        <h2 className="text-lg font-semibold tracking-normal">
+          Chưa có tổng quan dự án
+        </h2>
+        <p className="mx-auto mt-2 max-w-md text-[15px] leading-6 text-muted-foreground">
+          Chưa có tổng quan dự án, sẽ có sau lần review đầu tiên.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="grid gap-6">
+      <div className="grid gap-4 lg:grid-cols-[1fr_280px]">
+        <div>
+          <p className="text-xs font-medium uppercase text-muted-foreground">
+            Purpose
+          </p>
+          <p className="mt-2 text-[15px] leading-6 text-foreground">
+            {summary.purpose}
+          </p>
+        </div>
+        <div className="rounded-md border border-border bg-background p-4">
+          <p className="text-xs font-medium uppercase text-muted-foreground">
+            Metadata
+          </p>
+          <div className="mt-3 grid gap-2 text-sm text-muted-foreground">
+            <span>{summary.project_type}</span>
+            <span>Generated {formatDateTime(summary.generated_at)}</span>
+            <span className="truncate">Commit {summary.commit_sha}</span>
+            <span>{summary.model_used}</span>
+          </div>
+        </div>
+      </div>
+
+      <div>
+        <p className="text-xs font-medium uppercase text-muted-foreground">
+          Architecture
+        </p>
+        <p className="mt-2 text-[15px] leading-6 text-foreground">
+          {summary.architecture_overview}
+        </p>
+      </div>
+
+      <SummaryChipList items={summary.tech_stack} label="Tech stack" />
+      <SummaryItemList
+        emptyLabel="No key modules detected."
+        items={summary.key_modules}
+        label="Key modules"
+      />
+      <SummaryItemList
+        emptyLabel="No entry points detected."
+        items={summary.entry_points}
+        label="Entry points"
+      />
+      <SummaryChipList items={summary.notable_setup} label="Notable setup" />
+    </div>
+  );
+}
+
+type SummaryChipListProps = {
+  items: string[];
+  label: string;
+};
+
+function SummaryChipList({ items, label }: SummaryChipListProps) {
+  return (
+    <div>
+      <p className="text-xs font-medium uppercase text-muted-foreground">
+        {label}
+      </p>
+      {items.length > 0 ? (
+        <div className="mt-3 flex flex-wrap gap-2">
+          {items.map((item) => (
+            <span
+              className="rounded-md border border-border bg-background px-2 py-1 text-xs font-medium text-slate-200"
+              key={item}
+            >
+              {item}
+            </span>
+          ))}
+        </div>
+      ) : (
+        <p className="mt-2 text-sm text-muted-foreground">None detected.</p>
+      )}
+    </div>
+  );
+}
+
+type SummaryItem = {
+  description: string;
+  name?: string;
+  path: string;
+};
+
+type SummaryItemListProps = {
+  emptyLabel: string;
+  items: SummaryItem[];
+  label: string;
+};
+
+function SummaryItemList({ emptyLabel, items, label }: SummaryItemListProps) {
+  return (
+    <div>
+      <p className="text-xs font-medium uppercase text-muted-foreground">
+        {label}
+      </p>
+      {items.length > 0 ? (
+        <div className="mt-3 grid gap-3">
+          {items.map((item) => (
+            <div
+              className="rounded-md border border-border bg-background p-4"
+              key={item.path}
+            >
+              <div className="flex flex-wrap items-center gap-2">
+                {item.name ? (
+                  <span className="text-[15px] font-semibold text-foreground">
+                    {item.name}
+                  </span>
+                ) : null}
+                <code className="break-all rounded bg-muted px-2 py-1 text-xs text-slate-200">
+                  {item.path}
+                </code>
+              </div>
+              <p className="mt-2 text-[15px] leading-6 text-muted-foreground">
+                {item.description}
+              </p>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <p className="mt-2 text-sm text-muted-foreground">{emptyLabel}</p>
+      )}
+    </div>
+  );
+}
+
+function RepositorySummarySkeleton() {
+  return (
+    <div className="grid gap-5">
+      <div className="h-5 w-40 animate-pulse rounded bg-muted" />
+      <div className="h-20 animate-pulse rounded bg-muted" />
+      <div className="flex flex-wrap gap-2">
+        {Array.from({ length: 4 }).map((_, index) => (
+          <div
+            className="h-7 w-20 animate-pulse rounded-md bg-muted"
+            key={index}
+          />
+        ))}
+      </div>
+      <div className="grid gap-3">
+        {Array.from({ length: 2 }).map((_, index) => (
+          <div className="h-20 animate-pulse rounded-md bg-muted" key={index} />
+        ))}
+      </div>
     </div>
   );
 }

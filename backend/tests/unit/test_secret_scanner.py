@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from app.analyzers.secret_scanner import scan_secrets
+from app.analyzers.secret_scanner import SECRET_MASK, mask_secret_values, scan_secrets
 from app.models.review_issue import IssueSeverity, IssueSource
 
 
@@ -28,3 +28,19 @@ def test_scan_secrets_detects_and_redacts_secret_values(tmp_path: Path) -> None:
         issue.raw_output["redacted"] is True for issue in issues if issue.raw_output
     )
     assert "super-secret-password" not in str([issue.model_dump() for issue in issues])
+
+
+def test_mask_secret_values_preserves_assignment_structure() -> None:
+    content = "\n".join(
+        [
+            "API_KEY=sk-fake-secret-value",
+            'password = "super-secret-password"',
+        ]
+    )
+
+    masked_content = mask_secret_values(content)
+
+    assert "sk-fake-secret-value" not in masked_content
+    assert "super-secret-password" not in masked_content
+    assert f"API_KEY={SECRET_MASK}" in masked_content
+    assert f'password = "{SECRET_MASK}"' in masked_content

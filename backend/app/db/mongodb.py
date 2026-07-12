@@ -3,7 +3,7 @@
 from collections.abc import AsyncIterator
 
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
-from pymongo import ASCENDING
+from pymongo import ASCENDING, DESCENDING
 
 from app.core.config import get_settings
 
@@ -11,6 +11,7 @@ FILE_ANALYSIS_RESULTS_COLLECTION = "file_analysis_results"
 RAW_STATIC_ANALYSIS_OUTPUTS_COLLECTION = "raw_static_analysis_outputs"
 TOOL_CALL_LOGS_COLLECTION = "tool_call_logs"
 CHUNK_METADATA_COLLECTION = "chunk_metadata"
+REPO_SUMMARY_RESULTS_COLLECTION = "repo_summary_results"
 
 mongodb_client: AsyncIOMotorClient | None = None
 
@@ -97,6 +98,15 @@ async def ensure_mongodb_indexes() -> None:
     await database[CHUNK_METADATA_COLLECTION].create_index(
         [("job_id", ASCENDING), ("module", ASCENDING), ("risk_area", ASCENDING)],
         name="idx_chunk_metadata_job_module_risk",
+    )
+
+    await database[REPO_SUMMARY_RESULTS_COLLECTION].create_index(
+        [("repository_id", ASCENDING)],
+        name="idx_repo_summary_repository",
+    )
+    await database[REPO_SUMMARY_RESULTS_COLLECTION].create_index(
+        [("repository_id", ASCENDING), ("generated_at", DESCENDING)],
+        name="idx_repo_summary_repository_generated_desc",
     )
 
 

@@ -10,12 +10,14 @@ from app.db.mongodb import (
     CHUNK_METADATA_COLLECTION,
     FILE_ANALYSIS_RESULTS_COLLECTION,
     RAW_STATIC_ANALYSIS_OUTPUTS_COLLECTION,
+    REPO_SUMMARY_RESULTS_COLLECTION,
     TOOL_CALL_LOGS_COLLECTION,
 )
 from app.schemas.mongodb import (
     ChunkMetadataDocument,
     FileAnalysisResultDocument,
     RawStaticAnalysisOutputDocument,
+    RepoSummaryResultDocument,
     ToolCallLogDocument,
 )
 
@@ -101,6 +103,27 @@ class ChunkMetadataRepository(MongoDocumentRepository[ChunkMetadataDocument]):
                 "line_end": {"$gte": line_end},
             },
             sort=[("chunk_index", 1)],
+        )
+        if document is None:
+            return None
+        return self._normalize_mongo_id(cast(dict[str, object], document))
+
+
+class RepoSummaryResultRepository(MongoDocumentRepository[RepoSummaryResultDocument]):
+    """MongoDB access for generated repository project overview summaries."""
+
+    def __init__(self, database: AsyncIOMotorDatabase) -> None:
+        super().__init__(database, REPO_SUMMARY_RESULTS_COLLECTION)
+
+    async def find_latest_by_repository_id(
+        self,
+        repository_id: UUID,
+    ) -> dict[str, object] | None:
+        """Return the newest summary stored for a repository."""
+
+        document = await self.collection.find_one(
+            {"repository_id": str(repository_id)},
+            sort=[("generated_at", -1)],
         )
         if document is None:
             return None

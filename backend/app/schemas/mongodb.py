@@ -8,6 +8,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
+from app.schemas.repo_summary import RepoSummary
+
 
 class FileTreeEntry(BaseModel):
     """One file entry discovered during structure analysis."""
@@ -88,3 +90,13 @@ class ChunkMetadataDocument(BaseModel):
     has_static_issues: bool = False
     token_count: int = Field(ge=0)
     chunk_text: str | None = None
+
+
+class RepoSummaryResultDocument(RepoSummary):
+    """Project overview generated for one repository review job."""
+
+    repository_id: UUID
+    job_id: UUID
+    commit_sha: str
+    generated_at: datetime
+    model_used: str

@@ -37,6 +37,7 @@ from app.repositories.mongodb_repository import (
     ChunkMetadataRepository,
     FileAnalysisResultRepository,
     RawStaticAnalysisOutputRepository,
+    RepoSummaryResultRepository,
 )
 from app.repositories.report_repository import ReportRepository
 from app.repositories.repository_repository import RepositoryRepository
@@ -47,9 +48,11 @@ from app.schemas.mongodb import (
     ChunkMetadataDocument,
     ParsedStaticIssue,
     RawStaticAnalysisOutputDocument,
+    RepoSummaryResultDocument,
 )
 from app.schemas.normalized_issue import NormalizedIssue
 from app.services.notification_service import publish_job_progress
+from app.services.repo_summary_service import RepoSummaryService
 from app.services.report_generation_service import AI_REPORT_MODEL, build_static_report
 
 logger = logging.getLogger(__name__)
@@ -76,6 +79,7 @@ class ReviewPipelineService:
         repository_repository: RepositoryRepository,
         report_repository: ReportRepository,
         file_analysis_repository: FileAnalysisResultRepository,
+        repo_summary_repository: RepoSummaryResultRepository,
         raw_static_repository: RawStaticAnalysisOutputRepository,
         chunk_metadata_repository: ChunkMetadataRepository,
         code_embedding_store: CodeEmbeddingStore,
@@ -86,6 +90,7 @@ class ReviewPipelineService:
         self.repository_repository = repository_repository
         self.report_repository = report_repository
         self.file_analysis_repository = file_analysis_repository
+        self.repo_summary_repository = repo_summary_repository
         self.raw_static_repository = raw_static_repository
         self.chunk_metadata_repository = chunk_metadata_repository
         self.code_embedding_store = code_embedding_store
@@ -153,6 +158,8 @@ class ReviewPipelineService:
             review_job, sandbox_path, filtered_files
         )
         await self._ensure_job_active(review_job.id)
+        await self._generate_repo_summary(review_job, sandbox_path)
+        await self._ensure_job_active(review_job.id)
         issues = await self._run_static_analysis(
             review_job, sandbox_path, filtered_files
         )
@@ -219,6 +226,52 @@ class ReviewPipelineService:
             "Project structure analyzed",
         )
         return structure
+
+    async def _generate_repo_summary(
+        self,
+        review_job: ReviewJob,
+        sandbox_path: Path,
+    ) -> None:
+        await self._transition(
+            review_job,
+            ReviewJobStatus.GENERATING_SUMMARY,
+            50,
+            "Generating repository summary",
+        )
+        try:
+            repo_summary_service = RepoSummaryService()
+            prompt = repo_summary_service.build_prompt(sandbox_path)
+            summary = await repo_summary_service.generate_summary(prompt)
+            await self.repo_summary_repository.insert_one(
+                RepoSummaryResultDocument(
+                    repository_id=review_job.repository_id,
+                    job_id=review_job.id,
+                    commit_sha=review_job.commit_sha or "",
+                    generated_at=datetime.now(UTC),
+                    model_used=self.settings.openai_model,
+                    **summary.model_dump(),
+                )
+            )
+        except Exception as error:
+            logger.exception(
+                "Repo Summary generation failed for review job %s; continuing: %s",
+                review_job.id,
+                error,
+            )
+            await self._publish_status(
+                review_job,
+                ReviewJobStatus.GENERATING_SUMMARY,
+                55,
+                "Repository summary generation failed; continuing review",
+            )
+            return
+
+        await self._publish_status(
+            review_job,
+            ReviewJobStatus.GENERATING_SUMMARY,
+            55,
+            "Repository summary generated",
+        )
 
     async def _run_static_analysis(
         self,
