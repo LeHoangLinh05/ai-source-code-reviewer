@@ -6,9 +6,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
-SOURCE_TOOL_NAMES = frozenset(
-    {"read_file_chunk", "read_next_review_chunk", "search_code_semantic"}
-)
+SOURCE_TOOL_NAMES = frozenset({"read_file_chunk", "read_next_review_chunk"})
 
 
 @dataclass(slots=True, frozen=True)
@@ -19,6 +17,7 @@ class SourceChunkEvidence:
     chunk_index: int
     line_start: int | None
     line_end: int | None
+    tool_sequence: int | None = None
 
 
 def source_chunk_evidence(
@@ -36,12 +35,12 @@ def source_chunk_evidence(
             continue
 
         tool_name = document.get("tool_name")
-        if tool_name == "search_code_semantic":
-            evidence.extend(_semantic_evidence(output))
-        elif tool_name in {"read_file_chunk", "read_next_review_chunk"} or (
+        if tool_name in {"read_file_chunk", "read_next_review_chunk"} or (
             tool_name is None and "file_path" in output
         ):
-            item = _evidence_item(output)
+            item = _evidence_item(
+                output, sequence=_optional_int(document.get("sequence"))
+            )
             if item is not None:
                 evidence.append(item)
 
@@ -65,35 +64,48 @@ def has_source_line_evidence(
 ) -> bool:
     """Return whether a delivered chunk contains the claimed source range."""
 
-    return any(
-        item.file_path == file_path
-        and item.line_start is not None
-        and item.line_end is not None
-        and item.line_start <= line_start
-        and item.line_end >= line_end
-        for item in source_chunk_evidence(documents)
+    return line_range_is_covered(
+        source_chunk_evidence(documents),
+        file_path=file_path,
+        line_start=line_start,
+        line_end=line_end,
     )
 
 
-def _semantic_evidence(output: dict[str, Any]) -> list[SourceChunkEvidence]:
-    results = output.get("results")
-    if not isinstance(results, list):
-        return []
+def line_range_is_covered(
+    evidence: Sequence[SourceChunkEvidence],
+    *,
+    file_path: str,
+    line_start: int,
+    line_end: int,
+) -> bool:
+    """Return whether delivered chunks continuously cover a source range."""
 
-    evidence: list[SourceChunkEvidence] = []
-    for result in results:
-        if not isinstance(result, dict):
-            continue
-        if result.get("status", "ok") != "ok":
-            continue
-        item = _evidence_item(result)
-        if item is not None:
-            evidence.append(item)
+    intervals = sorted(
+        (item.line_start, item.line_end)
+        for item in evidence
+        if item.file_path == file_path
+        and item.line_start is not None
+        and item.line_end is not None
+        and item.line_end >= line_start
+        and item.line_start <= line_end
+    )
+    next_uncovered_line = line_start
+    for interval_start, interval_end in intervals:
+        if interval_start > next_uncovered_line:
+            return False
+        if interval_end >= line_end:
+            return True
+        next_uncovered_line = max(next_uncovered_line, interval_end + 1)
 
-    return evidence
+    return False
 
 
-def _evidence_item(payload: dict[str, Any]) -> SourceChunkEvidence | None:
+def _evidence_item(
+    payload: dict[str, Any],
+    *,
+    sequence: int | None = None,
+) -> SourceChunkEvidence | None:
     file_path = payload.get("file_path")
     chunk_index = payload.get("chunk_index")
     if not isinstance(file_path, str) or not isinstance(chunk_index, int):
@@ -104,6 +116,7 @@ def _evidence_item(payload: dict[str, Any]) -> SourceChunkEvidence | None:
         chunk_index=chunk_index,
         line_start=_optional_int(payload.get("line_start")),
         line_end=_optional_int(payload.get("line_end")),
+        tool_sequence=sequence,
     )
 
 

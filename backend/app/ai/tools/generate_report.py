@@ -403,8 +403,10 @@ def _is_placeholder_summary(executive_summary: str | None) -> bool:
     placeholder_markers = (
         "(as above)",
         "(as prepared above)",
+        "(the json input above)",
         "as above",
         "as prepared above",
+        "json input above",
         "successfully generated",
         "final report has been",
     )

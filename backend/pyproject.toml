@@ -1,0 +1,9 @@
+[tool.ruff]
+target-version = "py311"
+extend-exclude = [
+    ".cache",
+    ".chroma",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+]

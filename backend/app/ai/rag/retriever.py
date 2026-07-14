@@ -53,6 +53,7 @@ class HybridRetriever:
         profile_id: str | None = None,
         weeks: list[int] | None = None,
         priority: str | None = None,
+        rule_id: str | None = None,
         top_k: int = 3,
     ) -> list[RetrievedChunk]:
         """Search knowledge using vector, keyword, and metadata retrieval."""
@@ -65,6 +66,7 @@ class HybridRetriever:
             profile_id=profile_id,
             weeks=weeks,
             priority=priority,
+            rule_id=rule_id,
         )
         where = _chroma_where(metadata_filters)
         vector_results = self.vectorstore.query(
@@ -153,6 +155,7 @@ def _metadata_filters(
     profile_id: str | None,
     weeks: list[int] | None,
     priority: str | None,
+    rule_id: str | None,
 ) -> dict[str, object]:
     filters: dict[str, object] = {}
     if doc_type:
@@ -167,6 +170,8 @@ def _metadata_filters(
         filters["week"] = weeks
     if priority:
         filters["priority"] = priority
+    if rule_id:
+        filters["rule_id"] = rule_id
 
     return filters
 

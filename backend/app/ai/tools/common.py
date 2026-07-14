@@ -14,6 +14,68 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.ai.tool_runtime import get_ai_tool_runtime
 from app.models.review_job import ReviewJob
 
+
+def tool_validation_error_observation(error: Exception) -> str:
+    """Return a retryable observation instead of failing the review pipeline."""
+
+    errors_method = getattr(error, "errors", None)
+    if not callable(errors_method):
+        return json.dumps(
+            {
+                "status": "invalid_input",
+                "reason": "tool_input_validation_failed",
+                "next_action": "Retry the same tool with every required field.",
+            }
+        )
+
+    try:
+        validation_errors = errors_method(include_url=False, include_input=False)
+    except TypeError:
+        validation_errors = errors_method()
+    fields: list[str] = []
+    details: list[str] = []
+    for item in validation_errors:
+        if not isinstance(item, dict):
+            continue
+        location = item.get("loc")
+        if isinstance(location, tuple | list):
+            field = ".".join(str(part) for part in location)
+            if field:
+                fields.append(field)
+        message = item.get("msg")
+        if isinstance(message, str):
+            details.append(message)
+
+    unique_fields = list(dict.fromkeys(fields))
+    if "investigation_id" in unique_fields:
+        next_action = (
+            "Retry with a stable hypothesis-specific investigation_id. Never use "
+            "job_id or session_id; unrelated requirements need distinct IDs."
+        )
+    elif any(field.startswith("supporting_evidence") for field in unique_fields):
+        next_action = (
+            "Retry generate_issue with supporting_evidence as a JSON list of "
+            "objects. Every object requires file_path, chunk_index, line_start, "
+            "line_end, and rationale copied from a successful read_file_chunk "
+            "result. Use contradicting_evidence=[] when none exists."
+        )
+    else:
+        next_action = (
+            "Retry the same tool with every required field. Preserve the same "
+            "investigation context when correcting a related tool call."
+        )
+
+    return json.dumps(
+        {
+            "status": "invalid_input",
+            "reason": "tool_input_validation_failed",
+            "missing_or_invalid_fields": unique_fields,
+            "details": details,
+            "next_action": next_action,
+        }
+    )
+
+
 EMPTY_AGENT_JOB_ID_INPUTS = {"", "{}", "none", "null"}
 
 

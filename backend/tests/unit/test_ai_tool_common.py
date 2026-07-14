@@ -1,14 +1,19 @@
 """Tests for shared AI tool helpers."""
 
+import importlib
 from pathlib import Path
 from typing import cast
 from uuid import uuid4
 
 from motor.motor_asyncio import AsyncIOMotorDatabase
+import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai.tool_runtime import AIToolRuntime, ai_tool_runtime
-from app.ai.tools.analyze_structure import AnalyzeProjectStructureInput
+from app.ai.tools.analyze_structure import (
+    AnalyzeProjectStructureInput,
+    _compact_roadmap_context,
+)
 from app.ai.tools.common import parse_job_uuid, parse_job_uuid_or_current
 from app.ai.tools.generate_issue import GenerateIssueInput
 from app.ai.tools.generate_report import (
@@ -23,6 +28,7 @@ from app.ai.tools.read_file import (
     _build_rejected_read_response,
     _closest_file_path_suggestions,
     _first_unread_required_chunk_index,
+    _read_file_chunk_impl,
     normalize_read_file_input,
 )
 from app.ai.tools.search_code import SearchCodeSemanticInput
@@ -30,8 +36,11 @@ from app.ai.tools.search_rag import (
     SearchCodingStandardInput,
     SearchKnowledgeBaseInput,
 )
+from app.db.mongodb import CHUNK_METADATA_COLLECTION
 from app.models.review_issue import IssueCategory, IssueSeverity, IssueSource
 from app.schemas.normalized_issue import NormalizedIssue
+
+read_file_module = importlib.import_module("app.ai.tools.read_file")
 
 
 def test_parse_job_uuid_strips_model_output_whitespace() -> None:
@@ -179,6 +188,79 @@ def test_closest_file_path_suggestions_match_similar_paths() -> None:
     assert suggestions[0] == "backend/app/services/logic_errors.py"
 
 
+def test_closest_file_path_suggestions_match_unique_basename() -> None:
+    suggestions = _closest_file_path_suggestions(
+        requested_file_path="backend/database.py",
+        known_file_paths=[
+            "backend/app/auth.py",
+            "backend/app/database.py",
+            "backend/app/products.py",
+        ],
+    )
+
+    assert suggestions[0] == "backend/app/database.py"
+
+
+@pytest.mark.asyncio
+async def test_read_file_chunk_resolves_unique_basename_alias(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    job_id = uuid4()
+    file_path = "backend/app/database.py"
+    source_path = tmp_path / file_path
+    source_path.parent.mkdir(parents=True)
+    source_path.write_text(
+        "def add_user(password):\n    return password\n", encoding="utf-8"
+    )
+    database = _ReadFileMongoDatabase(
+        [
+            {
+                "job_id": str(job_id),
+                "file_path": file_path,
+                "chunk_index": 3,
+                "total_chunks": 4,
+                "line_start": 12,
+                "line_end": 16,
+                "language": "python",
+                "chunk_type": "function",
+                "function_name": "add_user",
+                "class_name": None,
+                "module": "backend.app.database",
+                "risk_area": "database",
+                "imports": [],
+                "token_count": 8,
+                "chunk_text": "def add_user(password):\n    return password\n",
+            }
+        ]
+    )
+
+    async def active_job() -> None:
+        return None
+
+    monkeypatch.setattr(read_file_module, "ensure_ai_job_active", active_job)
+    runtime = AIToolRuntime(
+        job_id=job_id,
+        session_id=uuid4(),
+        sandbox_path=tmp_path,
+        postgres_session=cast(AsyncSession, object()),
+        mongodb_database=cast(AsyncIOMotorDatabase, database),
+    )
+
+    with ai_tool_runtime(runtime):
+        response = await _read_file_chunk_impl(
+            file_path="backend/database.py",
+            job_id=str(job_id),
+            chunk_index=3,
+            required_chunk_indexes=None,
+        )
+
+    assert response["status"] == "ok"
+    assert response["file_path"] == "backend/app/database.py"
+    assert response["requested_file_path"] == "backend/database.py"
+    assert response["path_resolution"] == "unique_file_path_suggestion"
+
+
 def test_search_schema_unwraps_react_json_from_first_field() -> None:
     payload = SearchCodingStandardInput.model_validate(
         {"query": '{"query": "csrf token", "language": "typescript", "top_k": 2}'}
@@ -222,6 +304,41 @@ def test_analyze_project_structure_schema_accepts_react_none_input() -> None:
     payload = AnalyzeProjectStructureInput.model_validate({"input": "None"})
 
     assert payload.job_id is None
+
+
+def test_compact_roadmap_context_omits_full_rule_lists() -> None:
+    compact = _compact_roadmap_context(
+        {
+            "profile_id": "roadmap_bootcamp_v1",
+            "weeks_included": None,
+            "applicable_rule_ids": ["RC-W1-01", "RC-W1-10"],
+            "review_rules": [
+                {
+                    "rule_id": "RC-W1-01",
+                    "review_category": "structure",
+                    "requirement": "Dùng FastAPI",
+                },
+                {
+                    "rule_id": "RC-W1-10",
+                    "review_category": "security",
+                    "requirement": "Endpoint /login",
+                },
+            ],
+            "ai_verification_rules": [
+                {
+                    "rule_id": "RC-W1-10",
+                    "review_category": "security",
+                    "requirement": "Endpoint /login",
+                }
+            ],
+        }
+    )
+
+    assert "review_rules" not in compact
+    assert "ai_verification_rules" not in compact
+    assert compact["review_rule_count"] == 2
+    assert compact["ai_verification_rule_count"] == 1
+    assert compact["review_category_counts"] == {"security": 1, "structure": 1}
 
 
 def test_generate_issue_schema_unwraps_react_json_from_first_field() -> None:
@@ -423,6 +540,7 @@ def test_generate_report_schema_accepts_structured_top_priorities() -> None:
 
 def test_generate_report_detects_placeholder_summary() -> None:
     assert _is_placeholder_summary("(as above)\n### Final Answer")
+    assert _is_placeholder_summary("(the JSON input above)")
     assert _is_placeholder_summary("The final report has been successfully generated.")
     assert not _is_placeholder_summary("AI review found two high security issues.")
 
@@ -513,7 +631,52 @@ def test_generate_report_coverage_helpers_count_unique_valid_chunks() -> None:
     )
 
     assert expected == {("app/a.py", 0), ("app/a.py", 1), ("app/b.py", 0)}
-    assert reviewed == 2
+    assert reviewed == 1
+
+
+class _ReadFileMongoDatabase:
+    def __init__(self, chunk_documents: list[dict[str, object]]) -> None:
+        self.chunk_documents = chunk_documents
+
+    def __getitem__(self, name: str) -> "_ReadFileMongoCollection":
+        documents = self.chunk_documents if name == CHUNK_METADATA_COLLECTION else []
+        return _ReadFileMongoCollection(documents)
+
+
+class _ReadFileMongoCollection:
+    def __init__(self, documents: list[dict[str, object]]) -> None:
+        self.documents = documents
+
+    async def find_one(self, query: dict[str, object]) -> dict[str, object] | None:
+        for document in self.documents:
+            if _matches_query(document, query):
+                return document
+        return None
+
+    def find(
+        self,
+        query: dict[str, object],
+        *_args: object,
+    ) -> "_ReadFileMongoCursor":
+        return _ReadFileMongoCursor(
+            [document for document in self.documents if _matches_query(document, query)]
+        )
+
+
+class _ReadFileMongoCursor:
+    def __init__(self, documents: list[dict[str, object]]) -> None:
+        self.documents = documents
+
+    async def to_list(self, *, length: int | None) -> list[dict[str, object]]:
+        _ = length
+        return self.documents
+
+
+def _matches_query(
+    document: dict[str, object],
+    query: dict[str, object],
+) -> bool:
+    return all(document.get(key) == value for key, value in query.items())
 
 
 def _normalized_issue(

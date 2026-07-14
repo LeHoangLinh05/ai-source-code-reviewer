@@ -6,6 +6,7 @@ from langchain_core.tools import tool
 from pydantic import BaseModel, Field, model_validator
 
 from app.ai.rag.retriever import HybridRetriever
+from app.ai.tool_runtime import AIToolRuntime, get_ai_tool_runtime
 from app.ai.tools.common import unwrap_react_json_input
 
 _retriever: HybridRetriever | None = None
@@ -22,6 +23,7 @@ class SearchKnowledgeBaseInput(BaseModel):
     profile_id: str | None = None
     weeks: list[int] | None = None
     priority: str | None = None
+    rule_id: str | None = None
     top_k: int = Field(default=3, ge=1)
 
     @model_validator(mode="before")
@@ -52,6 +54,7 @@ def search_knowledge_base(
     profile_id: str | None = None,
     weeks: list[int] | None = None,
     priority: str | None = None,
+    rule_id: str | None = None,
     top_k: int = 3,
 ) -> dict[str, object]:
     """Search standards, guidelines, checklists, project docs, or roadmap rules."""
@@ -64,6 +67,7 @@ def search_knowledge_base(
         profile_id=profile_id,
         weeks=weeks,
         priority=priority,
+        rule_id=rule_id,
         top_k=top_k,
     )
 
@@ -93,9 +97,38 @@ def _search(
     profile_id: str | None = None,
     weeks: list[int] | None = None,
     priority: str | None = None,
+    rule_id: str | None = None,
     top_k: int = 3,
 ) -> dict[str, object]:
-    results = get_retriever().search(
+    filters: dict[str, object] = {
+        "doc_type": doc_type,
+        "category": category,
+        "language": language,
+        "profile_id": profile_id,
+        "weeks": weeks,
+        "priority": priority,
+        "rule_id": rule_id,
+        "top_k": top_k,
+    }
+    runtime = _optional_runtime()
+    decision = None
+    if runtime is not None:
+        decision = runtime.prepare_knowledge_search(query=query, filters=filters)
+        if decision.status == "duplicate_query":
+            return {
+                "status": "duplicate_query",
+                "query_id": decision.query_id,
+                "previous_query_id": decision.previous_query_id,
+                "normalized_query": decision.normalized_query,
+                "results": [],
+                "next_action": (
+                    "Use the earlier knowledge_base observation for this exact "
+                    "query/filter set; do not retrieve it again."
+                ),
+            }
+
+    retriever = get_retriever()
+    results = retriever.search(
         query=query,
         doc_type=doc_type,
         category=category,
@@ -103,10 +136,27 @@ def _search(
         profile_id=profile_id,
         weeks=weeks,
         priority=priority,
+        rule_id=rule_id,
         top_k=top_k,
     )
+    if not results and rule_id is not None:
+        results = retriever.search(
+            query=rule_id,
+            doc_type=doc_type,
+            profile_id=profile_id,
+            rule_id=rule_id,
+            top_k=top_k,
+        )
+    if runtime is not None and decision is not None:
+        runtime.record_knowledge_search(decision)
     return {
         "status": "ok",
+        "query_id": decision.query_id if decision is not None else None,
+        "normalized_query": (
+            decision.normalized_query
+            if decision is not None
+            else " ".join(query.split())
+        ),
         "results": [
             {
                 "source": result.source,
@@ -130,6 +180,13 @@ def get_retriever() -> HybridRetriever:
         _retriever = HybridRetriever()
 
     return _retriever
+
+
+def _optional_runtime() -> AIToolRuntime | None:
+    try:
+        return get_ai_tool_runtime()
+    except RuntimeError:
+        return None
 
 
 def _clamp_top_k(data: object) -> object:

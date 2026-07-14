@@ -22,6 +22,8 @@ class RoadmapRequirement:
     priority: str
     skill_group: str
     requirement: str
+    category: str = "requirement"
+    check_type: str | None = None
     needs_ai_verification: bool = False
     verification_hint: str | None = None
     rationale: str | None = None
@@ -34,8 +36,11 @@ class RoadmapRequirement:
             f"Week: {self.week}",
             f"Priority: {self.priority}",
             f"Skill group: {self.skill_group}",
+            f"Category: {self.category}",
             f"Requirement: {self.requirement}",
         ]
+        if self.check_type:
+            content_parts.append(f"Check type: {self.check_type}")
         if self.verification_hint:
             content_parts.append(f"Verification hint: {self.verification_hint}")
         if self.rationale:
@@ -53,6 +58,7 @@ class RoadmapRequirement:
                 "week": self.week,
                 "priority": self.priority,
                 "skill_group": self.skill_group,
+                "check_type": self.check_type,
                 "needs_ai_verification": self.needs_ai_verification,
             },
         )
@@ -98,6 +104,8 @@ def _parse_requirement(raw_rule: object, *, index: int) -> RoadmapRequirement:
         week=_required_week(raw_rule, index=index),
         priority=_required_string(raw_rule, "priority", index=index),
         skill_group=_required_string(raw_rule, "skill_group", index=index),
+        category=_optional_string(raw_rule.get("category")) or "requirement",
+        check_type=_optional_string(raw_rule.get("check_type")),
         needs_ai_verification=raw_rule.get("needs_ai_verification") is True,
         requirement=_required_string(raw_rule, "requirement", index=index),
         verification_hint=_verification_hint(raw_rule),

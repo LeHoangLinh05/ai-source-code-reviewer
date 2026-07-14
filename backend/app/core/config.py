@@ -98,6 +98,14 @@ class Settings(BaseSettings):
     openai_api_key: SecretStr | None = None
     openai_model: str = "gpt-4o-mini"
     openai_max_retries: int = Field(default=6, ge=0, le=10)
+    openai_min_request_interval_seconds: float = Field(
+        default=1.5,
+        ge=0.0,
+        le=30.0,
+    )
+    llm_job_call_budget: int = Field(default=96, ge=1, le=200)
+    llm_rate_limit_failure_budget: int = Field(default=1, ge=1, le=5)
+    enable_ai_issue_verifier: bool = True
     nvidia_api_key: SecretStr | None = None
     nvidia_base_url: str = "https://integrate.api.nvidia.com/v1"
     nvidia_model: str = "deepseek-ai/deepseek-v4-flash"

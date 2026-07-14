@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import cast
+from uuid import uuid4
 
+from motor.motor_asyncio import AsyncIOMotorDatabase
 import pytest
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai.rag.bm25_index import BM25Index
 from app.ai.rag.ingestion import RAGDocument, RAGIngestionPipeline
@@ -23,6 +27,8 @@ from app.ai.roadmap.knowledge import (
     load_roadmap_documents,
     load_roadmap_requirements,
 )
+from app.ai.roadmap.selection import build_roadmap_context
+from app.ai.tool_runtime import AIToolRuntime, ai_tool_runtime
 import app.ai.tools.search_knowledge as search_knowledge_module
 from app.ai.tools.search_knowledge import search_knowledge_base
 
@@ -34,6 +40,7 @@ REQUIRED_ROADMAP_METADATA = {
     "week",
     "priority",
     "skill_group",
+    "check_type",
     "needs_ai_verification",
 }
 
@@ -146,6 +153,50 @@ def test_roadmap_ingestion_creates_one_document_per_rule() -> None:
     assert all(chunk.metadata["source"] == ROADMAP_PROFILE_ID for chunk in chunks)
 
 
+def test_roadmap_context_exposes_all_applicable_rules_as_review_targets() -> None:
+    vectorstore = FakeVectorStore()
+    pipeline = RAGIngestionPipeline(
+        vectorstore=vectorstore,  # type: ignore[arg-type]
+        bm25_index=BM25Index(),
+    )
+    pipeline.ingest_roadmap()
+
+    context = build_roadmap_context(
+        {
+            "rule_profile": {
+                "id": ROADMAP_PROFILE_ID,
+                "weeks_included": [1],
+            }
+        },
+        vectorstore=vectorstore,  # type: ignore[arg-type]
+    )
+
+    assert context is not None
+    applicable_rule_ids = context["applicable_rule_ids"]
+    review_rules = context["review_rules"]
+    ai_rules = context["ai_verification_rules"]
+    assert isinstance(applicable_rule_ids, list)
+    assert isinstance(review_rules, list)
+    assert isinstance(ai_rules, list)
+    assert len(review_rules) == len(applicable_rule_ids)
+    assert len(review_rules) > len(ai_rules)
+
+    review_rule_ids = {
+        rule["rule_id"] for rule in review_rules if isinstance(rule, dict)
+    }
+    ai_rule_ids = {rule["rule_id"] for rule in ai_rules if isinstance(rule, dict)}
+    assert "RC-W1-01" in review_rule_ids
+    assert "RC-W1-01" not in ai_rule_ids
+    non_ai_rule = next(
+        rule
+        for rule in review_rules
+        if isinstance(rule, dict) and rule.get("rule_id") == "RC-W1-01"
+    )
+    assert non_ai_rule["needs_ai_verification"] is False
+    assert non_ai_rule["check_type"] == "required_dependency"
+    assert isinstance(non_ai_rule["review_category"], str)
+
+
 def test_search_roadmap_by_rule_id() -> None:
     retriever = _roadmap_retriever()
 
@@ -178,6 +229,21 @@ def test_search_roadmap_by_profile_and_weeks() -> None:
     )
     assert all(result.metadata["week"] == 5 for result in results)
     assert all(result.metadata["priority"] == "P0" for result in results)
+
+
+def test_search_roadmap_rule_id_is_an_exact_metadata_filter() -> None:
+    retriever = _roadmap_retriever()
+
+    results = retriever.search(
+        "logout requirement",
+        doc_type="roadmap_rule",
+        profile_id=ROADMAP_PROFILE_ID,
+        rule_id="RC-W1-13",
+        top_k=5,
+    )
+
+    assert len(results) == 1
+    assert results[0].metadata["rule_id"] == "RC-W1-13"
 
 
 def test_search_knowledge_tool_supports_roadmap_filters_and_metadata(
@@ -227,6 +293,117 @@ def test_search_knowledge_tool_supports_roadmap_filters_and_metadata(
     assert isinstance(results, list)
     assert results[0]["metadata"]["rule_id"] == "RC-W5-01"
     assert results[0]["vector_score"] == 0.81
+
+
+def test_search_knowledge_tool_relaxes_drifting_filters_for_exact_rule_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeRetriever:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def search(self, query: str, **filters: object) -> list[RetrievedChunk]:
+            self.calls.append({"query": query, **filters})
+            if len(self.calls) == 1:
+                assert filters["rule_id"] == "RC-W1-10"
+                assert filters["category"] == "security"
+                assert filters["language"] == "python"
+                return []
+
+            assert query == "RC-W1-10"
+            assert filters["rule_id"] == "RC-W1-10"
+            assert "category" not in filters
+            assert "language" not in filters
+            return [
+                RetrievedChunk(
+                    id="roadmap-rule",
+                    source=ROADMAP_PROFILE_ID,
+                    content="Rule ID: RC-W1-10",
+                    metadata={
+                        "doc_type": "roadmap_rule",
+                        "rule_id": "RC-W1-10",
+                        "profile_id": ROADMAP_PROFILE_ID,
+                        "category": "requirement",
+                        "language": "general",
+                    },
+                    vector_score=0.0,
+                    bm25_score=1.0,
+                    final_score=1.0,
+                )
+            ]
+
+    fake_retriever = FakeRetriever()
+    monkeypatch.setattr(search_knowledge_module, "_retriever", fake_retriever)
+
+    output = search_knowledge_base.invoke(
+        {
+            "query": "Endpoint /login returns access+refresh token",
+            "doc_type": "roadmap_rule",
+            "category": "security",
+            "language": "python",
+            "profile_id": ROADMAP_PROFILE_ID,
+            "rule_id": "RC-W1-10",
+            "top_k": 3,
+        }
+    )
+
+    results = output["results"]
+    assert isinstance(results, list)
+    assert results[0]["metadata"]["rule_id"] == "RC-W1-10"
+    assert len(fake_retriever.calls) == 2
+
+
+def test_search_knowledge_tool_deduplicates_exact_runtime_queries(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    class FakeRetriever:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def search(self, query: str, **filters: object) -> list[RetrievedChunk]:
+            self.calls += 1
+            assert query == "RC-W1-13"
+            assert filters["rule_id"] == "RC-W1-13"
+            return [
+                RetrievedChunk(
+                    id="roadmap-rule",
+                    source=ROADMAP_PROFILE_ID,
+                    content="Rule ID: RC-W1-13",
+                    metadata={
+                        "doc_type": "roadmap_rule",
+                        "rule_id": "RC-W1-13",
+                        "profile_id": ROADMAP_PROFILE_ID,
+                    },
+                    vector_score=0.81,
+                    bm25_score=0.74,
+                    final_score=0.79,
+                )
+            ]
+
+    fake_retriever = FakeRetriever()
+    monkeypatch.setattr(search_knowledge_module, "_retriever", fake_retriever)
+    runtime = AIToolRuntime(
+        job_id=uuid4(),
+        session_id=uuid4(),
+        sandbox_path=tmp_path,
+        postgres_session=cast(AsyncSession, object()),
+        mongodb_database=cast(AsyncIOMotorDatabase, object()),
+    )
+    payload = {
+        "query": "RC-W1-13",
+        "doc_type": "roadmap_rule",
+        "rule_id": "RC-W1-13",
+    }
+
+    with ai_tool_runtime(runtime):
+        first = search_knowledge_base.invoke(payload)
+        second = search_knowledge_base.invoke(payload)
+
+    assert first["status"] == "ok"
+    assert second["status"] == "duplicate_query"
+    assert second["results"] == []
+    assert fake_retriever.calls == 1
 
 
 @pytest.mark.parametrize("doc_type", ["standard", "guideline", "checklist"])

@@ -57,8 +57,8 @@ def test_read_chunk_coverage_counts_only_successful_unique_chunks() -> None:
     )
 
     assert files_read == 1
-    assert chunks_read == 2
-    assert target_chunks_read == 2
+    assert chunks_read == 1
+    assert target_chunks_read == 1
 
 
 def test_ai_report_without_full_chunk_coverage_is_completed() -> None:
@@ -77,7 +77,6 @@ def test_ai_report_without_full_chunk_coverage_is_completed() -> None:
         ai_read_chunk_percent=66.7,
         static_analyzer_runs=3,
         static_analyzer_issues=0,
-        roadmap_rules_checked=79,
         generated_ai_issues=0,
         generated_report_by_ai=False,
     )

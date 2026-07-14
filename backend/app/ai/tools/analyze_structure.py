@@ -93,6 +93,11 @@ async def analyze_project_structure(job_id: str | None = None) -> dict[str, obje
         chunk_counts=chunk_counts,
     )
     roadmap_context = build_roadmap_context(job_options)
+    semantic_audit_plan = build_semantic_audit_plan(
+        roadmap_context=roadmap_context,
+        files_to_review=files_to_review,
+        static_issues=static_issues,
+    )
 
     output: dict[str, object] = {
         "languages": _languages(project_structure),
@@ -103,16 +108,12 @@ async def analyze_project_structure(job_id: str | None = None) -> dict[str, obje
             review_mode=review_mode,
             max_smart_chunks=get_smart_review_max_chunks(job_options),
         ),
-        "semantic_audit_plan": build_semantic_audit_plan(
-            roadmap_context=roadmap_context,
-            files_to_review=files_to_review,
-            static_issues=static_issues,
-        ),
+        "semantic_audit_plan": semantic_audit_plan,
         "static_analysis_summary": _static_analysis_summary(static_documents),
     }
 
     if roadmap_context is not None:
-        output["roadmap"] = roadmap_context
+        output["roadmap"] = _compact_roadmap_context(roadmap_context)
 
     return output
 
@@ -187,6 +188,34 @@ def _static_analysis_summary(static_documents: list[dict[str, Any]]) -> str:
         )
 
     return f"{issue_count} issues found; by tool: {tool_summary}."
+
+
+def _compact_roadmap_context(
+    roadmap_context: dict[str, object],
+) -> dict[str, object]:
+    """Return roadmap metadata without duplicating full rule text in the prompt."""
+
+    review_rules = _as_list(roadmap_context.get("review_rules"))
+    ai_rules = _as_list(roadmap_context.get("ai_verification_rules"))
+    review_category_counts: Counter[str] = Counter()
+    for raw_rule in review_rules:
+        if not isinstance(raw_rule, dict):
+            continue
+        category = raw_rule.get("review_category") or raw_rule.get("category")
+        review_category_counts[str(category or "requirement")] += 1
+
+    return {
+        "profile_id": roadmap_context.get("profile_id"),
+        "weeks_included": roadmap_context.get("weeks_included"),
+        "applicable_rule_ids": roadmap_context.get("applicable_rule_ids", []),
+        "review_rule_count": len(review_rules),
+        "ai_verification_rule_count": len(ai_rules),
+        "review_category_counts": dict(sorted(review_category_counts.items())),
+        "details_location": (
+            "Use semantic_audit_plan category_probe items for roadmap rule "
+            "requirements, verification hints, and focused probe grouping."
+        ),
+    }
 
 
 def _files_to_review(

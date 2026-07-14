@@ -6,7 +6,11 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from app.ai.rag.vectorstore import get_vectorstore
-from app.ai.roadmap.knowledge import ROADMAP_PROFILE_ID, load_roadmap_requirements
+from app.ai.roadmap.knowledge import (
+    ROADMAP_PROFILE_ID,
+    RoadmapRequirement,
+    load_roadmap_requirements,
+)
 
 
 class KnowledgeDocument(Protocol):
@@ -159,18 +163,32 @@ def build_roadmap_context(
             profile,
             vectorstore=vectorstore,
         ),
+        "review_rules": _review_rules(profile),
         "ai_verification_rules": _ai_verification_rules(profile),
     }
 
 
+def _review_rules(profile: RoadmapProfile) -> list[dict[str, object]]:
+    return [
+        _roadmap_rule_context(requirement)
+        for requirement in _requirements_for_profile(profile)
+    ]
+
+
 def _ai_verification_rules(profile: RoadmapProfile) -> list[dict[str, object]]:
+    return [
+        _roadmap_rule_context(requirement)
+        for requirement in _requirements_for_profile(profile)
+        if requirement.needs_ai_verification
+    ]
+
+
+def _requirements_for_profile(profile: RoadmapProfile) -> list[RoadmapRequirement]:
     selected_weeks = (
         set(profile.weeks_included) if profile.weeks_included is not None else None
     )
-    rules: list[dict[str, object]] = []
+    requirements: list[RoadmapRequirement] = []
     for requirement in load_roadmap_requirements():
-        if not requirement.needs_ai_verification:
-            continue
         if (
             requirement.week != "GEN"
             and selected_weeks is not None
@@ -178,18 +196,56 @@ def _ai_verification_rules(profile: RoadmapProfile) -> list[dict[str, object]]:
         ):
             continue
 
-        rules.append(
-            {
-                "rule_id": requirement.rule_id,
-                "week": requirement.week,
-                "priority": requirement.priority,
-                "skill_group": requirement.skill_group,
-                "requirement": requirement.requirement,
-                "verification_hint": requirement.verification_hint,
-            }
-        )
+        requirements.append(requirement)
 
-    return sorted(rules, key=lambda rule: (_week_sort_key(rule["week"]), rule["rule_id"]))
+    return sorted(
+        requirements,
+        key=lambda requirement: (_week_sort_key(requirement.week), requirement.rule_id),
+    )
+
+
+def _roadmap_rule_context(requirement: RoadmapRequirement) -> dict[str, object]:
+    return {
+        "rule_id": requirement.rule_id,
+        "week": requirement.week,
+        "priority": requirement.priority,
+        "skill_group": requirement.skill_group,
+        "category": requirement.category,
+        "review_category": _review_category(requirement),
+        "check_type": requirement.check_type,
+        "needs_ai_verification": requirement.needs_ai_verification,
+        "requirement": requirement.requirement,
+        "verification_hint": requirement.verification_hint,
+    }
+
+
+def _review_category(requirement: RoadmapRequirement) -> str:
+    text = " ".join(
+        value.lower()
+        for value in (
+            requirement.skill_group,
+            requirement.requirement,
+            requirement.verification_hint or "",
+            requirement.check_type or "",
+        )
+    )
+    if any(term in text for term in ("jwt", "auth", "password", "token", "secret")):
+        return "security"
+    if any(term in text for term in ("cache", "ttl", "redis", "performance")):
+        return "performance"
+    if any(term in text for term in ("websocket", "sse", "pub/sub", "realtime")):
+        return "realtime"
+    if any(term in text for term in ("rag", "llm", "memory", "retriev", "chatbot")):
+        return "ai"
+    if requirement.check_type in {
+        "required_dependency",
+        "required_folder",
+        "required_file",
+        "required_config_key",
+        "min_file_count",
+    }:
+        return "structure"
+    return "requirement"
 
 
 def _week_sort_key(week: object) -> int:

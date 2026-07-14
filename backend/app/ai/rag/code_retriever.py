@@ -43,11 +43,6 @@ class CodeSemanticRetriever:
 
     def __init__(self, vectorstore: CodeVectorStore | None = None) -> None:
         self.vectorstore = vectorstore or CodeEmbeddingStore()
-        # Chunk keys already served to the Review Agent, tracked per job_id so
-        # a review session cannot keep re-winning the same one or two files
-        # call after call. Cleared implicitly per job because keys are
-        # job-scoped; call clear_job(job_id) if a job is retried in-process.
-        self._served_chunk_keys: dict[str, set[tuple[str, int]]] = {}
 
     def search(
         self,
@@ -90,21 +85,17 @@ class CodeSemanticRetriever:
             key=lambda result: _ranking_score(result=result, query=query),
             reverse=True,
         )
-        served = self._served_chunk_keys.setdefault(normalized_job_id, set())
         max_per_file = max(1, requested_top_k // 2)
-        selected = _select_diverse_unseen(
+        return _select_diverse(
             ranked,
             requested_top_k=requested_top_k,
-            served=served,
             max_per_file=max_per_file,
         )
-        served.update(_chunk_key(chunk) for chunk in selected)
-        return selected
 
     def clear_job(self, job_id: str | UUID) -> None:
-        """Drop served-chunk memory for a job (e.g. on retry)."""
+        """Compatibility no-op; retrieval is now stable and stateless."""
 
-        self._served_chunk_keys.pop(_require_job_id(job_id), None)
+        _require_job_id(job_id)
 
 
 def _chunk_key(chunk: RetrievedCodeChunk) -> tuple[str, int]:
@@ -115,22 +106,13 @@ def _chunk_key(chunk: RetrievedCodeChunk) -> tuple[str, int]:
     )
 
 
-def _select_diverse_unseen(
+def _select_diverse(
     ranked: list[RetrievedCodeChunk],
     *,
     requested_top_k: int,
-    served: set[tuple[str, int]],
     max_per_file: int,
 ) -> list[RetrievedCodeChunk]:
-    """Pick top_k chunks favoring unseen chunks and per-file diversity.
-
-    Three passes over the already-ranked candidates:
-    1. unseen chunks, respecting the per-file cap;
-    2. unseen chunks that exceeded the per-file cap (backfill);
-    3. previously served chunks, only if the candidate pool is exhausted.
-    Falling through to pass 3 is itself a useful signal: it means this job's
-    candidate pool (not just the ranking) is too small to keep exploring.
-    """
+    """Pick a stable, path-diverse top-k from already-ranked candidates."""
 
     selected: list[RetrievedCodeChunk] = []
     selected_keys: set[tuple[str, int]] = set()
@@ -141,8 +123,6 @@ def _select_diverse_unseen(
         if len(selected) >= requested_top_k:
             return selected
         key = _chunk_key(chunk)
-        if key in served:
-            continue
         file_path = str(chunk.metadata.get("file_path") or "")
         if per_file_count.get(file_path, 0) >= max_per_file:
             deferred.append(chunk)
@@ -159,16 +139,6 @@ def _select_diverse_unseen(
             continue
         selected.append(chunk)
         selected_keys.add(key)
-
-    if len(selected) < requested_top_k:
-        for chunk in ranked:
-            if len(selected) >= requested_top_k:
-                break
-            key = _chunk_key(chunk)
-            if key in selected_keys:
-                continue
-            selected.append(chunk)
-            selected_keys.add(key)
 
     return selected
 

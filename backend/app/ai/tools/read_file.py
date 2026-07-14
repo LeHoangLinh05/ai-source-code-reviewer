@@ -122,11 +122,25 @@ async def _read_file_chunk_impl(
             required_chunk_indexes=required_chunk_indexes or [],
         )
 
+    requested_file_path = file_path
     metadata = await _load_persisted_chunk(
         job_id=job_uuid,
         file_path=file_path,
         chunk_index=requested_chunk_index,
     )
+    if metadata is None:
+        resolved_file_path = await _resolve_known_file_path_alias(
+            job_id=job_uuid,
+            file_path=file_path,
+            chunk_index=requested_chunk_index,
+        )
+        if resolved_file_path is not None:
+            file_path = resolved_file_path
+            metadata = await _load_persisted_chunk(
+                job_id=job_uuid,
+                file_path=file_path,
+                chunk_index=requested_chunk_index,
+            )
     if metadata is None:
         try:
             metadata = _build_chunk_from_source(file_path, requested_chunk_index)
@@ -176,6 +190,10 @@ async def _read_file_chunk_impl(
             "line_end": int(metadata["line_end"]),
             "content_sha256": content_sha256,
             "content_size": content_size,
+            **_path_resolution_metadata(
+                requested_file_path=requested_file_path,
+                resolved_file_path=file_path,
+            ),
         }
 
     return {
@@ -196,6 +214,10 @@ async def _read_file_chunk_impl(
         "token_count": int(metadata.get("token_count") or 0),
         "context_hints": context_hints,
         "static_issues_in_range": static_issues,
+        **_path_resolution_metadata(
+            requested_file_path=requested_file_path,
+            resolved_file_path=file_path,
+        ),
     }
 
 
@@ -337,6 +359,32 @@ async def _file_path_suggestions(
     )
 
 
+async def _resolve_known_file_path_alias(
+    *,
+    job_id: UUID,
+    file_path: str,
+    chunk_index: int,
+) -> str | None:
+    candidate_paths: list[str] = []
+    for candidate_path in await _file_path_suggestions(
+        job_id=job_id,
+        file_path=file_path,
+    ):
+        if candidate_path == file_path:
+            continue
+        if (
+            await _load_persisted_chunk(
+                job_id=job_id,
+                file_path=candidate_path,
+                chunk_index=chunk_index,
+            )
+            is not None
+        ):
+            candidate_paths.append(candidate_path)
+
+    return candidate_paths[0] if len(candidate_paths) == 1 else None
+
+
 def _closest_file_path_suggestions(
     *,
     requested_file_path: str,
@@ -350,13 +398,33 @@ def _closest_file_path_suggestions(
         known_file_path.replace("\\", "/").lower(): known_file_path
         for known_file_path in known_file_paths
     }
+    requested_basename = normalized_requested.rsplit("/", 1)[-1]
+    basename_matches = [
+        known_file_path
+        for normalized_path, known_file_path in normalized_by_path.items()
+        if normalized_path.rsplit("/", 1)[-1] == requested_basename
+    ]
     matches = get_close_matches(
         normalized_requested,
         list(normalized_by_path),
         n=5,
         cutoff=0.45,
     )
-    return [normalized_by_path[match] for match in matches]
+    suggestions = [*basename_matches, *(normalized_by_path[match] for match in matches)]
+    return list(dict.fromkeys(suggestions))[:5]
+
+
+def _path_resolution_metadata(
+    *,
+    requested_file_path: str,
+    resolved_file_path: str,
+) -> dict[str, str]:
+    if requested_file_path == resolved_file_path:
+        return {}
+    return {
+        "requested_file_path": requested_file_path,
+        "path_resolution": "unique_file_path_suggestion",
+    }
 
 
 def _build_chunk_from_source(file_path: str, chunk_index: int) -> dict[str, Any]:
