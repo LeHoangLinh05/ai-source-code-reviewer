@@ -35,6 +35,7 @@ from app.ai.roadmap.selection import (
     get_applicable_rule_ids,
     parse_roadmap_profile,
 )
+from app.ai.probe_review import run_backend_directed_probe_review
 from app.ai.tool_runtime import (
     AIToolRuntime,
     ai_tool_runtime,
@@ -209,10 +210,11 @@ async def run_ai_review(
     )
 
     from app.ai.llm_config import get_pipeline_llm, llm_session
+    from app.core.config import get_settings
 
     async def run_with_model(llm: Any) -> dict[str, Any]:
-        review_executor = create_review_agent_executor(llm)
         report_executor = create_report_agent_executor(llm)
+        settings = get_settings()
         callback = MongoToolCallLogger(
             job_id=job_id,
             session_id=session_id,
@@ -223,15 +225,57 @@ async def run_ai_review(
                 job_id=job_id,
                 callback=callback,
             )
-            (
-                review_result,
-                reviewed_chunks,
-                total_chunks,
-            ) = await _run_review_until_coverage_complete(
-                review_executor=review_executor,
-                job_id=job_id,
-                callback=callback,
-            )
+            if settings.enable_backend_directed_probe_review:
+                probe_result = await run_backend_directed_probe_review(
+                    job_id=job_id,
+                    llm=llm,
+                    postgres_session=postgres_session,
+                    mongodb_database=mongodb_database,
+                    trace_writer=callback,
+                    enable_semantic_search=True,
+                    chunks_per_probe=settings.probe_retrieval_chunks_per_probe,
+                    max_chunks=settings.probe_retrieval_max_chunks,
+                    max_probes_per_batch=settings.probe_judge_max_probes_per_batch,
+                    max_chunks_per_batch=settings.probe_judge_max_chunks_per_batch,
+                )
+                review_result = {"output": probe_result.handoff}
+                (
+                    reviewed_chunks,
+                    total_chunks,
+                    _missing_chunks,
+                ) = await _load_review_coverage(
+                    job_id,
+                    missing_limit=REVIEW_RETRY_MISSING_CHUNK_LIMIT,
+                )
+                if settings.enable_exploratory_react_review and (
+                    _remaining_llm_budget_for_exploration()
+                    > REPORT_AGENT_MAX_ITERATIONS + 4
+                ):
+                    review_executor = create_review_agent_executor(llm)
+                    (
+                        exploratory_result,
+                        reviewed_chunks,
+                        total_chunks,
+                    ) = await _run_review_until_coverage_complete(
+                        review_executor=review_executor,
+                        job_id=job_id,
+                        callback=callback,
+                    )
+                    review_result["output"] = (
+                        f"{probe_result.handoff}\n\nExploratory fallback:\n"
+                        f"{exploratory_result.get('output', '')}"
+                    )
+            else:
+                review_executor = create_review_agent_executor(llm)
+                (
+                    review_result,
+                    reviewed_chunks,
+                    total_chunks,
+                ) = await _run_review_until_coverage_complete(
+                    review_executor=review_executor,
+                    job_id=job_id,
+                    callback=callback,
+                )
             report_context = await _build_report_context(
                 job_id=job_id,
                 postgres_session=postgres_session,
@@ -254,6 +298,16 @@ async def run_ai_review(
 
     async with llm_session():
         return await run_with_model(get_pipeline_llm())
+
+
+def _remaining_llm_budget_for_exploration() -> int:
+    from app.ai.llm_config import get_remaining_llm_call_budget
+
+    remaining_budget = get_remaining_llm_call_budget()
+    if remaining_budget is None:
+        return 0
+
+    return remaining_budget
 
 
 async def _run_review_until_coverage_complete(
