@@ -20,7 +20,6 @@ from app.ai.tools.generate_report import (
     GenerateFinalReportInput,
     _count_reviewed_chunks,
     _expected_chunk_keys,
-    _fallback_report_scores,
     _is_placeholder_summary,
 )
 from app.ai.tools.read_file import (
@@ -39,6 +38,7 @@ from app.ai.tools.search_rag import (
 from app.db.mongodb import CHUNK_METADATA_COLLECTION
 from app.models.review_issue import IssueCategory, IssueSeverity, IssueSource
 from app.schemas.normalized_issue import NormalizedIssue
+from app.services.report_generation_service import calculate_report_scores
 
 read_file_module = importlib.import_module("app.ai.tools.read_file")
 
@@ -546,7 +546,7 @@ def test_generate_report_detects_placeholder_summary() -> None:
 
 
 def test_generate_report_fallback_scores_from_persisted_issues() -> None:
-    scores = _fallback_report_scores(
+    scores = calculate_report_scores(
         [
             _normalized_issue(
                 severity=IssueSeverity.HIGH,

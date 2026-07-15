@@ -23,8 +23,6 @@ CONFIG_FILE_NAMES = (
     "docker-compose.yml",
 )
 MAX_REPO_SUMMARY_LLM_ATTEMPTS = 2
-MAX_KEY_MODULES = 10
-MAX_NOTABLE_SETUP = 8
 FILE_TREE_HEADER = "File tree (depth <= 3, max 200 lines):"
 FILE_TREE_LINE_REGEX = re.compile(r"^(?P<indent> *)- (?P<name>.+)$")
 
@@ -54,11 +52,15 @@ class RepoSummaryService:
         return "\n\n".join(
             [
                 "You are generating a repository project overview, not a code "
-                "review report. Use only the project-level context below.",
+                "review report. Use only the project-level context below. "
+                "Write every field in English.",
                 "Return structured data matching RepoSummary with fields: "
-                "purpose, project_type, tech_stack, architecture_overview, "
-                "key_modules, entry_points, notable_setup. Do not invent file "
-                "paths that are not present in the file tree.",
+                "purpose, project_type, tech_stack, architecture_overview. "
+                "Make purpose a detailed paragraph that explains what the project "
+                "does, the main user-facing or operational workflows, and the "
+                "important capabilities visible from the repository context. "
+                "Do not include separate key modules, entry points, or notable "
+                "setup sections.",
                 format_project_structure(structure.project_structure),
                 "File tree (depth <= 3, max 200 lines):\n"
                 + ("\n".join(tree_lines) if tree_lines else "(empty)"),
@@ -134,30 +136,10 @@ def coerce_repo_summary(value: object) -> RepoSummary:
 
 
 def validate_repo_summary(summary: RepoSummary, valid_paths: set[str]) -> RepoSummary:
-    """Drop hallucinated paths and cap list fields for display/storage."""
+    """Validate the generated summary against the prompt context."""
 
-    key_modules = [
-        key_module
-        for key_module in summary.key_modules
-        if is_valid_summary_path(key_module.path, valid_paths, field_name="key_modules")
-    ][:MAX_KEY_MODULES]
-    entry_points = [
-        entry_point
-        for entry_point in summary.entry_points
-        if is_valid_summary_path(
-            entry_point.path,
-            valid_paths,
-            field_name="entry_points",
-        )
-    ]
-
-    return summary.model_copy(
-        update={
-            "key_modules": key_modules,
-            "entry_points": entry_points,
-            "notable_setup": summary.notable_setup[:MAX_NOTABLE_SETUP],
-        }
-    )
+    _ = valid_paths
+    return summary
 
 
 def is_valid_summary_path(path: str, valid_paths: set[str], *, field_name: str) -> bool:

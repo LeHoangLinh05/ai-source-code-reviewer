@@ -10,9 +10,12 @@ import pytest
 from app.ai.probe_review import (
     ProbeCandidateChunk,
     ProbeEvidenceBundle,
+    ProbeJudgeIssueCandidate,
     ProbeJudgeResponse,
     ProbeRetrievalService,
     _RoadmapMetadataStore,
+    _candidate_rule_id,
+    _dependency_manifest_contradicts_candidate,
     _judge_prompt,
     _probe_judge_response_from_payload,
     _trim_bundles,
@@ -189,6 +192,86 @@ def test_probe_judge_response_keeps_valid_candidates_from_mixed_batch() -> None:
     assert len(response.candidates) == 1
     assert response.candidates[0].title == "Logout does not revoke refresh token"
     assert response.schema_rejected_count == 1
+
+
+def test_batched_dependency_candidate_uses_matching_rule_id() -> None:
+    requirements = {
+        requirement.rule_id: requirement for requirement in load_roadmap_requirements()
+    }
+    candidate = _probe_candidate(
+        title="Missing Required Dependency: Axios",
+        description="The project is missing the required Axios dependency.",
+        file_path="frontend/package.json",
+        line_start=13,
+        line_end=13,
+    )
+
+    rule_id = _candidate_rule_id(
+        candidate,
+        [
+            _bundle(
+                probe={
+                    "probe_id": "structure.frontend_next_js_15.required_dependency.rc_w4_01",
+                    "related_rule_ids": ["RC-W4-01", "RC-W4-02", "RC-W4-03"],
+                },
+                chunks=[],
+            )
+        ],
+        roadmap_by_id=requirements,
+    )
+
+    assert rule_id == "RC-W4-03"
+
+
+def test_dependency_manifest_rejects_missing_claim_when_package_exists() -> None:
+    requirements = {
+        requirement.rule_id: requirement for requirement in load_roadmap_requirements()
+    }
+    candidate = _probe_candidate(
+        title="Missing Required Dependency: TailwindCSS",
+        description="The project is missing the required TailwindCSS dependency.",
+        file_path="frontend/package.json",
+        line_start=21,
+        line_end=21,
+    )
+    manifest_chunk = _candidate_chunk(
+        file_path="frontend/package.json",
+        content=(
+            "{\n"
+            '  "dependencies": {"axios": "^1.17.0", "next": "15.1.0"},\n'
+            '  "devDependencies": {"tailwindcss": "^4"}\n'
+            "}\n"
+        ),
+    )
+
+    assert _dependency_manifest_contradicts_candidate(
+        candidate=candidate,
+        rule=requirements["RC-W4-02"],
+        evidence_chunk=manifest_chunk,
+    )
+
+
+def test_dependency_manifest_allows_version_mismatch_claim() -> None:
+    requirements = {
+        requirement.rule_id: requirement for requirement in load_roadmap_requirements()
+    }
+    candidate = _probe_candidate(
+        title="Required Dependency Version Mismatch: Next.js 15",
+        description="The project is using Next.js version 16.2.9.",
+        file_path="frontend/package.json",
+        line_start=15,
+        line_end=15,
+    )
+    manifest_chunk = _candidate_chunk(
+        file_path="frontend/package.json",
+        content='{"dependencies": {"next": "16.2.9"}}',
+    )
+
+    assert not _dependency_manifest_contradicts_candidate(
+        candidate=candidate,
+        rule=requirements["RC-W4-01"],
+        evidence_chunk=manifest_chunk,
+    )
 
 
 def test_probe_judge_prompt_requires_evidence_arrays() -> None:
@@ -394,6 +477,42 @@ def _candidate_chunk(
         static_score=0.0,
         final_score=1.2,
     )
+
+
+def _probe_candidate(
+    *,
+    title: str,
+    description: str,
+    file_path: str,
+    line_start: int,
+    line_end: int,
+) -> ProbeJudgeIssueCandidate:
+    response = ProbeJudgeResponse.model_validate(
+        {
+            "candidates": [
+                {
+                    "verdict": "issue",
+                    "title": title,
+                    "description": description,
+                    "severity": "high",
+                    "category": "requirement",
+                    "confidence": 0.8,
+                    "file_path": file_path,
+                    "line_start": line_start,
+                    "line_end": line_end,
+                    "supporting_evidence": [
+                        {
+                            "file_path": file_path,
+                            "chunk_index": 0,
+                            "line_start": line_start,
+                            "line_end": line_end,
+                        }
+                    ],
+                }
+            ]
+        }
+    )
+    return response.candidates[0]
 
 
 def _bundle(

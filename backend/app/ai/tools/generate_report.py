@@ -40,7 +40,7 @@ from app.schemas.normalized_issue import NormalizedIssue
 from app.services.report_generation_service import (
     AI_REPORT_MODEL,
     build_top_risky_files,
-    calculate_score,
+    calculate_report_scores,
 )
 
 TechStackInput = dict[str, object] | list[str]
@@ -116,25 +116,17 @@ async def generate_final_report(
     issues = await _load_issues(job_uuid)
     normalized_issues = [_to_normalized_issue(issue) for issue in issues]
     total_files_analyzed = await _total_files_analyzed(job_uuid, existing_report)
-    if _needs_report_fallback(
-        executive_summary=executive_summary,
-        maintainability_score=maintainability_score,
-        overall_score=overall_score,
-        performance_score=performance_score,
-        security_score=security_score,
-    ):
-        fallback_scores = _fallback_report_scores(normalized_issues)
-        security_score = security_score or fallback_scores["security_score"]
-        maintainability_score = (
-            maintainability_score or fallback_scores["maintainability_score"]
+    deterministic_scores = calculate_report_scores(normalized_issues)
+    security_score = deterministic_scores["security_score"]
+    maintainability_score = deterministic_scores["maintainability_score"]
+    performance_score = deterministic_scores["performance_score"]
+    overall_score = deterministic_scores["overall_score"]
+
+    if _is_placeholder_summary(executive_summary):
+        executive_summary = _fallback_executive_summary(
+            issues=normalized_issues,
+            total_files_analyzed=total_files_analyzed,
         )
-        performance_score = performance_score or fallback_scores["performance_score"]
-        overall_score = overall_score or fallback_scores["overall_score"]
-        if _is_placeholder_summary(executive_summary):
-            executive_summary = _fallback_executive_summary(
-                issues=normalized_issues,
-                total_files_analyzed=total_files_analyzed,
-            )
 
     rejection_reason = _report_rejection_reason(
         executive_summary=executive_summary,
@@ -352,47 +344,6 @@ def _report_rejection_reason(
         "AI final report rejected: missing required fields: "
         f"{', '.join(missing_fields)}"
     )
-
-
-def _needs_report_fallback(
-    *,
-    executive_summary: str | None,
-    maintainability_score: float | None,
-    overall_score: float | None,
-    performance_score: float | None,
-    security_score: float | None,
-) -> bool:
-    return (
-        _is_placeholder_summary(executive_summary)
-        or security_score is None
-        or maintainability_score is None
-        or performance_score is None
-        or overall_score is None
-    )
-
-
-def _fallback_report_scores(issues: list[NormalizedIssue]) -> dict[str, float]:
-    return {
-        "security_score": calculate_score(
-            [issue for issue in issues if issue.category == IssueCategory.SECURITY]
-        ),
-        "maintainability_score": calculate_score(
-            [
-                issue
-                for issue in issues
-                if issue.category
-                in {
-                    IssueCategory.BUG,
-                    IssueCategory.MAINTAINABILITY,
-                    IssueCategory.STYLE,
-                }
-            ]
-        ),
-        "performance_score": calculate_score(
-            [issue for issue in issues if issue.category == IssueCategory.PERFORMANCE]
-        ),
-        "overall_score": calculate_score(issues),
-    }
 
 
 def _is_placeholder_summary(executive_summary: str | None) -> bool:

@@ -216,6 +216,7 @@ def _roadmap_rule_context(requirement: RoadmapRequirement) -> dict[str, object]:
         "needs_ai_verification": requirement.needs_ai_verification,
         "requirement": requirement.requirement,
         "verification_hint": requirement.verification_hint,
+        "target": requirement.target,
     }
 
 

@@ -89,8 +89,6 @@ export type CreateReviewJobPayload = {
       id: string;
     };
     run_static_analysis: boolean;
-    review_mode: "smart" | "full_audit";
-    smart_review_max_chunks?: number;
   };
 };
 

@@ -27,6 +27,7 @@ class RoadmapRequirement:
     needs_ai_verification: bool = False
     verification_hint: str | None = None
     rationale: str | None = None
+    target: dict[str, object] | None = None
 
     def to_rag_document(self) -> RAGDocument:
         """Convert the requirement into one knowledge-base document."""
@@ -112,6 +113,7 @@ def _parse_requirement(raw_rule: object, *, index: int) -> RoadmapRequirement:
         rationale=_optional_string(
             raw_rule.get("rationale") or raw_rule.get("rationale_if_missing")
         ),
+        target=_optional_target(raw_rule.get("target")),
     )
 
 
@@ -156,3 +158,24 @@ def _verification_hint(raw_rule: dict[object, object]) -> str | None:
 
 def _optional_string(value: object) -> str | None:
     return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+def _optional_target(value: object) -> dict[str, object] | None:
+    if not isinstance(value, dict):
+        return None
+
+    target: dict[str, object] = {}
+    for key, raw_target_value in value.items():
+        if not isinstance(key, str):
+            continue
+        if isinstance(raw_target_value, str | int | float | bool):
+            target[key] = raw_target_value
+            continue
+        if isinstance(raw_target_value, list):
+            target[key] = [
+                item
+                for item in raw_target_value
+                if isinstance(item, str | int | float | bool)
+            ]
+
+    return target or None

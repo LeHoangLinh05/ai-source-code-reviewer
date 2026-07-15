@@ -27,20 +27,6 @@ async def test_get_latest_summary_returns_authorized_repository_summary() -> Non
             "project_type": "REST API backend",
             "tech_stack": ["Python", "FastAPI"],
             "architecture_overview": "API routes call services and repositories.",
-            "key_modules": [
-                {
-                    "path": "backend/app/services",
-                    "name": "Services",
-                    "description": "Contains business workflows.",
-                }
-            ],
-            "entry_points": [
-                {
-                    "path": "backend/app/main.py",
-                    "description": "Creates the FastAPI application.",
-                }
-            ],
-            "notable_setup": ["Uses Docker Compose"],
         }
     )
     service = RepoSummaryQueryService(
@@ -54,7 +40,6 @@ async def test_get_latest_summary_returns_authorized_repository_summary() -> Non
     assert summary_repository.repository_ids == [repository_id]
     assert summary.purpose == "Explains what a repository does."
     assert summary.tech_stack == ["Python", "FastAPI"]
-    assert summary.key_modules[0].path == "backend/app/services"
     assert summary.generated_at == generated_at
     assert summary.commit_sha == "abc123"
     assert summary.model_used == "gpt-4o-mini"

@@ -9,7 +9,7 @@ import pytest
 
 from app.ai.roadmap.knowledge import ROADMAP_PROFILE_ID
 from app.models.review_job import ReviewJobStatus
-from app.schemas.repo_summary import EntryPoint, KeyModule, RepoSummary
+from app.schemas.repo_summary import RepoSummary
 from app.services.review_pipeline_service import (
     ReviewJobCanceled,
     ReviewPipelineError,
@@ -343,20 +343,6 @@ class _SuccessfulRepoSummaryService:
             project_type="REST API backend",
             tech_stack=["Python", "FastAPI"],
             architecture_overview="A compact layered API.",
-            key_modules=[
-                KeyModule(
-                    path="app/main.py",
-                    name="Main",
-                    description="Application entry module.",
-                )
-            ],
-            entry_points=[
-                EntryPoint(
-                    path="app/main.py",
-                    description="Starts the API app.",
-                )
-            ],
-            notable_setup=["Uses Docker Compose"],
         )
 
 

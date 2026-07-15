@@ -12,25 +12,11 @@ export type Repository = {
   created_at: string;
 };
 
-export type RepoSummaryModule = {
-  path: string;
-  name: string;
-  description: string;
-};
-
-export type RepoSummaryEntryPoint = {
-  path: string;
-  description: string;
-};
-
 export type RepoSummary = {
   purpose: string;
   project_type: string;
   tech_stack: string[];
   architecture_overview: string;
-  key_modules: RepoSummaryModule[];
-  entry_points: RepoSummaryEntryPoint[];
-  notable_setup: string[];
   generated_at: string;
   commit_sha: string;
   model_used: string;

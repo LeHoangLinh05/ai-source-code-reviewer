@@ -46,10 +46,22 @@ def build_static_report(
         medium_count=severity_counts[IssueSeverity.MEDIUM],
         low_count=severity_counts[IssueSeverity.LOW],
         info_count=severity_counts[IssueSeverity.INFO],
-        security_score=calculate_score(
+        **calculate_report_scores(issues),
+        tech_stack=tech_stack,
+        top_risky_files=build_top_risky_files(issues),
+        executive_summary=build_executive_summary(issues, total_files_analyzed),
+        ai_model_used=STATIC_REPORT_MODEL,
+    )
+
+
+def calculate_report_scores(issues: list[NormalizedIssue]) -> dict[str, float]:
+    """Return deterministic report scores from persisted issue categories."""
+
+    return {
+        "security_score": calculate_score(
             [issue for issue in issues if issue.category == IssueCategory.SECURITY]
         ),
-        maintainability_score=calculate_score(
+        "maintainability_score": calculate_score(
             [
                 issue
                 for issue in issues
@@ -61,15 +73,11 @@ def build_static_report(
                 }
             ]
         ),
-        performance_score=calculate_score(
+        "performance_score": calculate_score(
             [issue for issue in issues if issue.category == IssueCategory.PERFORMANCE]
         ),
-        overall_score=calculate_score(issues),
-        tech_stack=tech_stack,
-        top_risky_files=build_top_risky_files(issues),
-        executive_summary=build_executive_summary(issues, total_files_analyzed),
-        ai_model_used=STATIC_REPORT_MODEL,
-    )
+        "overall_score": calculate_score(issues),
+    }
 
 
 def calculate_score(issues: list[NormalizedIssue]) -> float:

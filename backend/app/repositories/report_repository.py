@@ -89,6 +89,13 @@ class ReportRepository:
         result = await self.session.execute(statement)
         return list(result.scalars().all())
 
+    async def list_all_issues(self, job_id: UUID) -> list[ReviewIssue]:
+        """Return every issue attached to a review job."""
+
+        statement = select(ReviewIssue).where(ReviewIssue.job_id == job_id)
+        result = await self.session.execute(statement)
+        return list(result.scalars().all())
+
     async def get_issue_by_id(
         self,
         *,

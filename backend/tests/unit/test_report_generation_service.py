@@ -8,6 +8,7 @@ from app.services.report_generation_service import (
     build_static_report,
     build_top_risky_files,
     calculate_score,
+    calculate_report_scores,
 )
 
 
@@ -18,6 +19,22 @@ def test_calculate_score_uses_weighted_severity_penalties() -> None:
     ]
 
     assert calculate_score(issues) == 6.7
+
+
+def test_calculate_report_scores_uses_all_persisted_issue_categories() -> None:
+    issues = [
+        _issue(IssueSeverity.CRITICAL, IssueCategory.SECURITY, "security.py"),
+        _issue(IssueSeverity.HIGH, IssueCategory.BUG, "bug.py"),
+        _issue(IssueSeverity.LOW, IssueCategory.REQUIREMENT, "requirements.py"),
+        _issue(IssueSeverity.LOW, IssueCategory.PERFORMANCE, "perf.py"),
+    ]
+
+    assert calculate_report_scores(issues) == {
+        "security_score": 7.0,
+        "maintainability_score": 8.0,
+        "performance_score": 9.7,
+        "overall_score": 4.4,
+    }
 
 
 def test_build_static_report_counts_scores_and_risky_files() -> None:

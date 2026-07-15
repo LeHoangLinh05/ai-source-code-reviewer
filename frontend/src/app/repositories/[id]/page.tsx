@@ -229,8 +229,6 @@ export default function RepositoryDetailPage() {
           rule_profile: {
             id: ROADMAP_RULE_PROFILE_ID,
           },
-          review_mode: "smart",
-          smart_review_max_chunks: 60,
           run_static_analysis: values.runStaticAnalysis,
         },
         repository_id: selectedRepository.id,
@@ -364,7 +362,7 @@ export default function RepositoryDetailPage() {
 
           <Card>
             <CardHeader>
-              <CardTitle>Tổng quan dự án</CardTitle>
+              <CardTitle>Project Overview</CardTitle>
               <CardDescription>
                 Project overview generated from repository structure and setup
                 files.
@@ -561,10 +559,10 @@ function RepositorySummaryCard({
     return (
       <div className="rounded-md border border-dashed border-slate-700 bg-background px-6 py-8 text-center">
         <h2 className="text-lg font-semibold tracking-normal">
-          Chưa có tổng quan dự án
+          No project overview yet
         </h2>
         <p className="mx-auto mt-2 max-w-md text-[15px] leading-6 text-muted-foreground">
-          Chưa có tổng quan dự án, sẽ có sau lần review đầu tiên.
+          A project overview will be generated after the first review completes.
         </p>
       </div>
     );
@@ -604,17 +602,6 @@ function RepositorySummaryCard({
       </div>
 
       <SummaryChipList items={summary.tech_stack} label="Tech stack" />
-      <SummaryItemList
-        emptyLabel="No key modules detected."
-        items={summary.key_modules}
-        label="Key modules"
-      />
-      <SummaryItemList
-        emptyLabel="No entry points detected."
-        items={summary.entry_points}
-        label="Entry points"
-      />
-      <SummaryChipList items={summary.notable_setup} label="Notable setup" />
     </div>
   );
 }
@@ -648,70 +635,18 @@ function SummaryChipList({ items, label }: SummaryChipListProps) {
   );
 }
 
-type SummaryItem = {
-  description: string;
-  name?: string;
-  path: string;
-};
-
-type SummaryItemListProps = {
-  emptyLabel: string;
-  items: SummaryItem[];
-  label: string;
-};
-
-function SummaryItemList({ emptyLabel, items, label }: SummaryItemListProps) {
-  return (
-    <div>
-      <p className="text-xs font-medium uppercase text-muted-foreground">
-        {label}
-      </p>
-      {items.length > 0 ? (
-        <div className="mt-3 grid gap-3">
-          {items.map((item) => (
-            <div
-              className="rounded-md border border-border bg-background p-4"
-              key={item.path}
-            >
-              <div className="flex flex-wrap items-center gap-2">
-                {item.name ? (
-                  <span className="text-[15px] font-semibold text-foreground">
-                    {item.name}
-                  </span>
-                ) : null}
-                <code className="break-all rounded bg-muted px-2 py-1 text-xs text-slate-200">
-                  {item.path}
-                </code>
-              </div>
-              <p className="mt-2 text-[15px] leading-6 text-muted-foreground">
-                {item.description}
-              </p>
-            </div>
-          ))}
-        </div>
-      ) : (
-        <p className="mt-2 text-sm text-muted-foreground">{emptyLabel}</p>
-      )}
-    </div>
-  );
-}
-
 function RepositorySummarySkeleton() {
   return (
     <div className="grid gap-5">
       <div className="h-5 w-40 animate-pulse rounded bg-muted" />
       <div className="h-20 animate-pulse rounded bg-muted" />
+      <div className="h-16 animate-pulse rounded bg-muted" />
       <div className="flex flex-wrap gap-2">
         {Array.from({ length: 4 }).map((_, index) => (
           <div
             className="h-7 w-20 animate-pulse rounded-md bg-muted"
             key={index}
           />
-        ))}
-      </div>
-      <div className="grid gap-3">
-        {Array.from({ length: 2 }).map((_, index) => (
-          <div className="h-20 animate-pulse rounded-md bg-muted" key={index} />
         ))}
       </div>
     </div>

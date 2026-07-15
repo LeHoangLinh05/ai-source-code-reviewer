@@ -3,18 +3,28 @@
 from uuid import UUID
 
 from app.core.exceptions import AuthorizationError, BadRequestError, NotFoundError
-from app.models.review_issue import IssueCategory, IssueSeverity, IssueSource
+from app.models.review_issue import (
+    IssueCategory,
+    IssueSeverity,
+    IssueSource,
+    ReviewIssue,
+)
 from app.models.review_job import ReviewJob, ReviewJobStatus
 from app.models.review_report import ReviewReport
 from app.models.user import User, UserRole
 from app.repositories.mongodb_repository import ChunkMetadataRepository
 from app.repositories.report_repository import ReportRepository
+from app.schemas.normalized_issue import NormalizedIssue
 from app.schemas.report import (
     IssueFilters,
     IssueListResponse,
     IssueResponse,
     ReportScores,
     ReportSummaryResponse,
+)
+from app.services.report_generation_service import (
+    build_top_risky_files,
+    calculate_report_scores,
 )
 
 ALLOWED_ISSUE_SORT_FIELDS = {
@@ -39,7 +49,9 @@ class ReportService:
         """Return the full report for an authorized review job."""
 
         review_job = await self._ensure_job_access(job_id, current_user)
-        return await self._get_existing_report(job_id, review_job.status)
+        report = await self._get_existing_report(job_id, review_job.status)
+        await self._refresh_report_aggregates(report)
+        return report
 
     async def get_summary(
         self,
@@ -50,6 +62,7 @@ class ReportService:
 
         review_job = await self._ensure_job_access(job_id, current_user)
         report = await self._get_existing_report(job_id, review_job.status)
+        await self._refresh_report_aggregates(report)
         return ReportSummaryResponse(
             job_id=report.job_id,
             executive_summary=report.executive_summary,
@@ -179,6 +192,28 @@ class ReportService:
 
         return report
 
+    async def _refresh_report_aggregates(self, report: ReviewReport) -> None:
+        """Refresh score/count fields from current persisted issues for display."""
+
+        issues = await self.report_repository.list_all_issues(report.job_id)
+        normalized_issues = [_to_normalized_issue(issue) for issue in issues]
+        scores = calculate_report_scores(normalized_issues)
+        severity_counts = {
+            severity: sum(1 for issue in issues if issue.severity == severity)
+            for severity in IssueSeverity
+        }
+        report.total_issues = len(issues)
+        report.critical_count = severity_counts[IssueSeverity.CRITICAL]
+        report.high_count = severity_counts[IssueSeverity.HIGH]
+        report.medium_count = severity_counts[IssueSeverity.MEDIUM]
+        report.low_count = severity_counts[IssueSeverity.LOW]
+        report.info_count = severity_counts[IssueSeverity.INFO]
+        report.security_score = scores["security_score"]
+        report.maintainability_score = scores["maintainability_score"]
+        report.performance_score = scores["performance_score"]
+        report.overall_score = scores["overall_score"]
+        report.top_risky_files = build_top_risky_files(normalized_issues)
+
     def _parse_sort(self, sort: str) -> tuple[str, bool]:
         is_descending = sort.startswith("-")
         sort_field = sort[1:] if is_descending else sort
@@ -194,6 +229,22 @@ class ReportService:
 def _has_source_context(raw_output: dict[str, object] | None) -> bool:
     return isinstance(raw_output, dict) and isinstance(
         raw_output.get("source_context"), dict
+    )
+
+
+def _to_normalized_issue(review_issue: ReviewIssue) -> NormalizedIssue:
+    return NormalizedIssue(
+        file_path=review_issue.file_path,
+        line_start=review_issue.line_start,
+        line_end=review_issue.line_end,
+        severity=review_issue.severity,
+        category=review_issue.category,
+        title=review_issue.title,
+        description=review_issue.description,
+        suggestion=review_issue.suggestion,
+        source=review_issue.source,
+        confidence=review_issue.confidence,
+        raw_output=review_issue.raw_output,
     )
 
 

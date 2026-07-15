@@ -5,11 +5,9 @@ from pathlib import Path
 import pytest
 
 from app.analyzers.secret_scanner import SECRET_MASK
-from app.schemas.repo_summary import EntryPoint, KeyModule, RepoSummary
+from app.schemas.repo_summary import RepoSummary
 import app.services.repo_summary_service as repo_summary_service
 from app.services.repo_summary_service import (
-    MAX_KEY_MODULES,
-    MAX_NOTABLE_SETUP,
     RepoSummaryGenerationError,
     RepoSummaryService,
     extract_file_tree_paths_from_prompt,
@@ -59,7 +57,7 @@ def test_repo_summary_prompt_uses_project_context_and_masks_secrets(
 
 
 @pytest.mark.asyncio
-async def test_generate_summary_calls_structured_output_and_validates_paths(
+async def test_generate_summary_calls_structured_output(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     prompt = "\n".join(
@@ -75,7 +73,7 @@ async def test_generate_summary_calls_structured_output_and_validates_paths(
             "Project context file: README.md",
         ]
     )
-    before_validate = build_summary_with_extra_items()
+    before_validate = build_summary()
     fake_llm = FakeStructuredLLM([before_validate])
     monkeypatch.setattr(repo_summary_service, "get_openai_llm", lambda: fake_llm)
 
@@ -83,20 +81,11 @@ async def test_generate_summary_calls_structured_output_and_validates_paths(
 
     assert fake_llm.schema is RepoSummary
     assert fake_llm.prompts == [prompt]
-    assert [module.path for module in before_validate.key_modules] == [
-        "src/api",
-        "missing/module",
-        "src/api/routes.py",
-        *["src/api/routes.py" for _index in range(MAX_KEY_MODULES)],
-    ]
-    assert [module.path for module in summary.key_modules] == [
-        "src/api",
-        "src/api/routes.py",
-        *["src/api/routes.py" for _index in range(MAX_KEY_MODULES - 2)],
-    ]
-    assert [entry.path for entry in summary.entry_points] == ["src/api/routes.py"]
-    assert len(summary.key_modules) == MAX_KEY_MODULES
-    assert len(summary.notable_setup) == MAX_NOTABLE_SETUP
+    assert summary == before_validate
+    assert summary.purpose == (
+        "A small API service for managing review jobs and exposing repository "
+        "analysis workflows."
+    )
 
 
 @pytest.mark.asyncio
@@ -161,47 +150,13 @@ class FakeStructuredLLM:
         return response
 
 
-def build_summary_with_extra_items() -> RepoSummary:
-    valid_extra_modules = [
-        KeyModule(
-            path="src/api/routes.py",
-            name=f"Extra module {index}",
-            description="Additional valid module.",
-        )
-        for index in range(MAX_KEY_MODULES)
-    ]
+def build_summary() -> RepoSummary:
     return RepoSummary(
-        purpose="A small API service.",
+        purpose=(
+            "A small API service for managing review jobs and exposing repository "
+            "analysis workflows."
+        ),
         project_type="REST API backend",
         tech_stack=["Python", "FastAPI"],
         architecture_overview="Routes live under src/api.",
-        key_modules=[
-            KeyModule(
-                path="src/api",
-                name="API package",
-                description="Contains API routing code.",
-            ),
-            KeyModule(
-                path="missing/module",
-                name="Hallucinated module",
-                description="This path is not in the tree.",
-            ),
-            KeyModule(
-                path="src/api/routes.py",
-                name="Routes",
-                description="Defines HTTP routes.",
-            ),
-            *valid_extra_modules,
-        ],
-        entry_points=[
-            EntryPoint(
-                path="src/api/routes.py",
-                description="Main route definitions.",
-            ),
-            EntryPoint(
-                path="missing.py",
-                description="Hallucinated entry point.",
-            ),
-        ],
-        notable_setup=[f"setup {index}" for index in range(MAX_NOTABLE_SETUP + 3)],
     )

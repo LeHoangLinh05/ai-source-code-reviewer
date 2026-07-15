@@ -425,7 +425,17 @@ class ProbeJudgeService:
         if existing_issue is not None:
             return False
 
-        rule_id = _candidate_rule_id(candidate, bundles)
+        rule_id = _candidate_rule_id(
+            candidate,
+            bundles,
+            roadmap_by_id=self.roadmap_by_id,
+        )
+        if _dependency_manifest_contradicts_candidate(
+            candidate=candidate,
+            rule=self.roadmap_by_id.get(rule_id or ""),
+            evidence_chunk=evidence_chunk,
+        ):
+            return False
         issue_source = IssueSource.KB if rule_id else IssueSource.AI_REVIEW
         references = _candidate_references(
             category=category,
@@ -1180,6 +1190,8 @@ def _candidate_has_required_fields(candidate: ProbeJudgeIssueCandidate) -> bool:
 def _candidate_rule_id(
     candidate: ProbeJudgeIssueCandidate,
     bundles: list[ProbeEvidenceBundle],
+    *,
+    roadmap_by_id: dict[str, RoadmapRequirement] | None = None,
 ) -> str | None:
     if candidate.rule_id:
         return candidate.rule_id
@@ -1187,12 +1199,179 @@ def _candidate_rule_id(
         for bundle in bundles:
             if _probe_id(bundle.probe) == candidate.probe_id:
                 rule_ids = _string_list(bundle.probe.get("related_rule_ids"))
-                return rule_ids[0] if rule_ids else None
+                return _matching_rule_id(candidate, rule_ids, roadmap_by_id)
     for bundle in bundles:
         rule_ids = _string_list(bundle.probe.get("related_rule_ids"))
         if rule_ids:
-            return rule_ids[0]
+            return _matching_rule_id(candidate, rule_ids, roadmap_by_id)
     return None
+
+
+def _matching_rule_id(
+    candidate: ProbeJudgeIssueCandidate,
+    rule_ids: list[str],
+    roadmap_by_id: dict[str, RoadmapRequirement] | None,
+) -> str | None:
+    if not rule_ids:
+        return None
+    if len(rule_ids) == 1 or not roadmap_by_id:
+        return rule_ids[0]
+
+    candidate_text = _candidate_search_text(candidate)
+    for rule_id in rule_ids:
+        rule = roadmap_by_id.get(rule_id)
+        if rule is not None and _rule_matches_candidate_text(rule, candidate_text):
+            return rule_id
+
+    return rule_ids[0]
+
+
+def _candidate_search_text(candidate: ProbeJudgeIssueCandidate) -> str:
+    values = [
+        candidate.title,
+        candidate.description,
+        candidate.suggestion,
+        candidate.rule_id,
+        candidate.probe_id,
+        *(evidence.rationale for evidence in candidate.supporting_evidence),
+        *(evidence.rationale for evidence in candidate.contradicting_evidence),
+    ]
+    return " ".join(value.lower() for value in values if value)
+
+
+def _rule_matches_candidate_text(
+    rule: RoadmapRequirement,
+    candidate_text: str,
+) -> bool:
+    for package_name in _target_package_names(rule):
+        if _package_name_in_text(package_name, candidate_text):
+            return True
+
+    requirement_terms = [
+        term
+        for term in tokenize(rule.requirement.lower())
+        if len(term) >= 4 and term not in STOP_WORDS
+    ]
+    return bool(requirement_terms) and all(
+        term in candidate_text for term in requirement_terms[:3]
+    )
+
+
+def _dependency_manifest_contradicts_candidate(
+    *,
+    candidate: ProbeJudgeIssueCandidate,
+    rule: RoadmapRequirement | None,
+    evidence_chunk: ProbeCandidateChunk,
+) -> bool:
+    if rule is None or rule.check_type != "required_dependency":
+        return False
+    if not evidence_chunk.file_path.endswith("package.json"):
+        return False
+
+    manifest = _json_object(evidence_chunk.content)
+    if not manifest:
+        return False
+
+    package_versions = _package_versions(manifest)
+    for package_name in _target_package_names(rule):
+        actual_version = package_versions.get(package_name.lower())
+        if actual_version is None:
+            continue
+
+        version_constraint = _target_version_constraint(rule)
+        if version_constraint and not _version_satisfies(
+            actual_version,
+            version_constraint,
+        ):
+            return False
+
+        logger.info(
+            "Rejecting roadmap dependency candidate contradicted by manifest: "
+            "rule_id=%s package=%s file=%s line=%s",
+            rule.rule_id,
+            package_name,
+            candidate.file_path,
+            candidate.line_start,
+        )
+        return True
+
+    return False
+
+
+def _json_object(content: str) -> dict[str, object]:
+    try:
+        payload = json.loads(content)
+    except json.JSONDecodeError:
+        return {}
+
+    return payload if isinstance(payload, dict) else {}
+
+
+def _package_versions(manifest: dict[str, object]) -> dict[str, str]:
+    package_versions: dict[str, str] = {}
+    for section_name in (
+        "dependencies",
+        "devDependencies",
+        "peerDependencies",
+        "optionalDependencies",
+    ):
+        section = manifest.get(section_name)
+        if not isinstance(section, dict):
+            continue
+        for package_name, version in section.items():
+            if isinstance(package_name, str) and isinstance(version, str):
+                package_versions[package_name.lower()] = version
+
+    return package_versions
+
+
+def _target_package_names(rule: RoadmapRequirement) -> list[str]:
+    target = rule.target or {}
+    package_any_of = target.get("package_any_of")
+    if not isinstance(package_any_of, list):
+        return []
+
+    return [
+        package_name for package_name in package_any_of if isinstance(package_name, str)
+    ]
+
+
+def _target_version_constraint(rule: RoadmapRequirement) -> str | None:
+    target = rule.target or {}
+    version_constraint = target.get("version_constraint")
+    if not isinstance(version_constraint, str) or not version_constraint.strip():
+        return None
+
+    return version_constraint.strip()
+
+
+def _version_satisfies(actual_version: str, constraint: str) -> bool:
+    actual_major = _major_version(actual_version)
+    constraint_major = _major_version(constraint)
+    if actual_major is None or constraint_major is None:
+        return True
+
+    return actual_major == constraint_major
+
+
+def _major_version(version_text: str) -> int | None:
+    match = re.search(r"\d+", version_text)
+    if match is None:
+        return None
+
+    return int(match.group(0))
+
+
+def _package_name_in_text(package_name: str, text: str) -> bool:
+    normalized_package = package_name.lower()
+    if normalized_package in text:
+        return True
+    if normalized_package == "next":
+        return any(alias in text for alias in ("next.js", "nextjs"))
+    if normalized_package == "tailwindcss":
+        return "tailwind" in text
+
+    return False
 
 
 def _candidate_references(

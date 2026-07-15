@@ -42,7 +42,6 @@ import {
   upsertJob,
 } from "@/store/slices/jobSlice";
 import type {
-  AITraceCoverage,
   AITraceStage,
   AITrace,
   AIToolCallTrace,
@@ -329,11 +328,8 @@ function AITracePanel({
         {error ? <p className="text-sm text-destructive">{error}</p> : null}
         {isIncompleteAiReport ? (
           <div className="rounded-md border border-amber-400/30 bg-amber-400/10 p-4 text-[15px] leading-6 text-amber-100">
-            The AI report exists, but the agent has not read every target chunk yet:
-            {" "}
-            {trace.coverage.ai_read_target_chunks}/{trace.coverage.target_chunks} target
-            chunks.
-            This run should be treated as incomplete.
+            The AI report exists, but the review trace is incomplete. This run should
+            be treated as incomplete.
           </div>
         ) : null}
 
@@ -346,7 +342,6 @@ function AITracePanel({
         {trace ? (
           <>
             <StageTimeline stages={trace.stages} />
-            <CoverageSummary coverage={trace.coverage} />
           </>
         ) : null}
 
@@ -359,17 +354,22 @@ function AITracePanel({
               />
             ))}
           </ol>
-        ) : (
-          <p className="rounded-md border border-dashed border-border px-4 py-6 text-center text-[15px] text-muted-foreground">
-            Waiting for the AI agent to call its first tool.
-          </p>
-        )}
+        ) : null}
       </CardContent>
     </Card>
   );
 }
 
 function StageTimeline({ stages }: { stages: AITraceStage[] }) {
+  const visibleStages = stages.filter(
+    (stage) =>
+      stage.status !== "pending" && stage.key !== "ai" && stage.key !== "report",
+  );
+
+  if (visibleStages.length === 0) {
+    return null;
+  }
+
   return (
     <section className="grid gap-3">
       <div className="flex items-center gap-2">
@@ -378,8 +378,8 @@ function StageTimeline({ stages }: { stages: AITraceStage[] }) {
           Execution timeline
         </h2>
       </div>
-      <ol className="grid gap-3 lg:grid-cols-7">
-        {stages.map((stage) => (
+      <ol className="grid gap-3 lg:grid-cols-5">
+        {visibleStages.map((stage) => (
           <StageItem key={stage.key} stage={stage} />
         ))}
       </ol>
@@ -412,64 +412,6 @@ function StageItem({ stage }: { stage: AITraceStage }) {
         </p>
       ) : null}
     </li>
-  );
-}
-
-function CoverageSummary({ coverage }: { coverage: AITraceCoverage }) {
-  return (
-    <section className="grid gap-3 rounded-md border border-border bg-muted/20 p-4">
-      <div className="flex flex-col gap-1 md:flex-row md:items-center md:justify-between">
-        <p className="text-xs font-semibold uppercase text-muted-foreground">
-          AI review mode
-        </p>
-        <p className="text-sm font-semibold text-foreground">
-          {coverage.review_mode.replace("_", " ")}
-        </p>
-      </div>
-      <div className="grid gap-3 md:grid-cols-3">
-        <CoverageBar
-          label="Files selected by pipeline"
-          value={coverage.total_reviewable_files}
-          detail={`${coverage.total_reviewable_lines} lines`}
-          percent={coverage.total_reviewable_files > 0 ? 100 : 0}
-        />
-        <CoverageBar
-          label="Target chunks read"
-          value={coverage.ai_read_target_chunks}
-          detail={`${coverage.target_chunks} target / ${coverage.total_chunks} available`}
-          percent={coverage.ai_read_chunk_percent}
-        />
-        <CoverageBar
-          label="Target files touched"
-          value={coverage.ai_read_files}
-          detail={`${coverage.target_files} target files`}
-          percent={coverage.ai_read_file_percent}
-        />
-      </div>
-    </section>
-  );
-}
-
-function CoverageBar({
-  detail,
-  label,
-  percent,
-  value,
-}: {
-  detail: string;
-  label: string;
-  percent: number;
-  value: number;
-}) {
-  return (
-    <div className="min-w-0">
-      <div className="flex items-center justify-between gap-3">
-        <p className="text-xs font-medium uppercase text-muted-foreground">{label}</p>
-        <p className="text-sm font-semibold text-foreground">{value}</p>
-      </div>
-      <p className="mt-1 text-xs text-muted-foreground">{detail}</p>
-      <ProgressBar value={percent} tone="bg-sky-400" />
-    </div>
   );
 }
 

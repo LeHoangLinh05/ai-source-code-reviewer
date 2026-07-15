@@ -11,7 +11,6 @@ from app.repositories.mongodb_repository import (
     ToolCallLogRepository,
 )
 from app.schemas.mongodb import RepoSummaryResultDocument, ToolCallLogDocument
-from app.schemas.repo_summary import EntryPoint, KeyModule
 
 
 class FakeInsertOneResult:
@@ -124,20 +123,6 @@ async def test_repo_summary_repository_inserts_and_finds_latest() -> None:
         project_type="REST API backend",
         tech_stack=["Python", "FastAPI", "MongoDB"],
         architecture_overview="Thin API routes call services and repositories.",
-        key_modules=[
-            KeyModule(
-                path="backend/app/services",
-                name="Services",
-                description="Contains business workflows.",
-            )
-        ],
-        entry_points=[
-            EntryPoint(
-                path="backend/app/main.py",
-                description="Creates the FastAPI application.",
-            )
-        ],
-        notable_setup=["Uses Docker Compose"],
     )
     collection.find_one_document = {
         "_id": "summary-id-1",

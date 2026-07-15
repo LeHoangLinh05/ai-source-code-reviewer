@@ -35,6 +35,7 @@ const CATEGORY_COLORS: Record<IssueCategory, string> = {
   style: "#38bdf8",
 };
 const AI_REPORT_MODEL = "langchain-react-agent-v1";
+const REPORT_ISSUES_PAGE_SIZE = 100;
 
 export default function ReviewReportPage() {
   const params = useParams<{ id: string }>();
@@ -51,14 +52,10 @@ export default function ReviewReportPage() {
     try {
       const [reportData, issueData] = await Promise.all([
         getReport(jobId),
-        getReportIssues(jobId, {
-          page: 1,
-          per_page: 100,
-          sort: "-created_at",
-        }),
+        getAllReportIssues(jobId),
       ]);
       setReport(reportData);
-      setIssues(issueData.issues);
+      setIssues(issueData);
     } catch (requestError) {
       setError(getApiErrorMessage(requestError, "Unable to load report."));
     } finally {
@@ -412,6 +409,32 @@ function ReportSkeleton() {
       ))}
     </div>
   );
+}
+
+async function getAllReportIssues(jobId: string) {
+  const firstPage = await getReportIssues(jobId, {
+    page: 1,
+    per_page: REPORT_ISSUES_PAGE_SIZE,
+    sort: "-created_at",
+  });
+  const totalPages = Math.ceil(firstPage.total / REPORT_ISSUES_PAGE_SIZE);
+  if (totalPages <= 1) {
+    return firstPage.issues;
+  }
+
+  const remainingPages = await Promise.all(
+    Array.from({ length: totalPages - 1 }, (_, index) =>
+      getReportIssues(jobId, {
+        page: index + 2,
+        per_page: REPORT_ISSUES_PAGE_SIZE,
+        sort: "-created_at",
+      }),
+    ),
+  );
+  return [
+    ...firstPage.issues,
+    ...remainingPages.flatMap((page) => page.issues),
+  ];
 }
 
 function buildCategoryData(issues: ReviewIssue[]) {
