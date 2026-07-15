@@ -1,5 +1,7 @@
 """Tests for dynamic semantic audit planning."""
 
+from typing import cast
+
 from app.ai.semantic_audit_plan import build_semantic_audit_plan
 
 
@@ -33,7 +35,7 @@ def test_audit_plan_builds_queries_from_roadmap_hints() -> None:
         and item["category"] == "security"
     )
     assert item["reason"] == "category_probe"
-    assert item["audit_plan_item_id"].startswith("category_probe:security.")
+    assert cast(str, item["audit_plan_item_id"]).startswith("category_probe:security.")
     assert item["priority"] == "high"
     assert item["review_category"] == "security"
     assert item["source_kinds"] == ["roadmap"]
@@ -106,7 +108,7 @@ def test_audit_plan_groups_roadmap_rules_by_category() -> None:
         if item["review_category"] == "performance"
         and item.get("probe_kind") == "roadmap"
     )
-    assert performance_item["audit_plan_item_id"].startswith(
+    assert cast(str, performance_item["audit_plan_item_id"]).startswith(
         "category_probe:performance."
     )
     assert performance_item["related_rule_ids"] == ["RC-CACHE-01"]
@@ -176,7 +178,7 @@ def test_audit_plan_covers_large_roadmap_rule_set_without_dropping_categories() 
     planned_rule_ids = {
         rule_id
         for item in plan
-        for rule_id in item.get("related_rule_ids", [])
+        for rule_id in cast(list[object], item.get("related_rule_ids", []))
         if isinstance(rule_id, str)
     }
     assert planned_rule_ids == {str(rule["rule_id"]) for rule in rules}

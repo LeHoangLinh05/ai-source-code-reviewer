@@ -24,11 +24,11 @@ except ImportError:
 
 
 from motor.motor_asyncio import AsyncIOMotorDatabase
-from pydantic import BaseModel, PrivateAttr
+from pydantic import BaseModel
 from langchain_core.agents import AgentAction, AgentFinish
 from langchain_core.exceptions import OutputParserException
 
-from app.ai.prompts import FINAL_REPORT_SYSTEM_PROMPT, REVIEW_SYSTEM_PROMPT
+from app.ai.prompts import FINAL_REPORT_SYSTEM_PROMPT
 from app.ai.roadmap.knowledge import RoadmapRequirement, load_roadmap_requirements
 from app.ai.roadmap.selection import (
     RoadmapProfile,
@@ -40,7 +40,6 @@ from app.ai.tool_runtime import (
     AIToolRuntime,
     ai_tool_runtime,
     get_ai_tool_runtime,
-    reset_source_search_pass_budget,
 )
 from app.db.mongodb import TOOL_CALL_LOGS_COLLECTION
 from app.models.review_issue import ReviewIssue
@@ -50,28 +49,29 @@ from app.schemas.mongodb import ToolCallLogDocument
 
 logger = logging.getLogger(__name__)
 
-REVIEW_AGENT_MAX_ITERATIONS = 36
 REPORT_AGENT_MAX_ITERATIONS = 6
-MAX_AGENT_ITERATIONS = REVIEW_AGENT_MAX_ITERATIONS
-MAX_REVIEW_COVERAGE_PASSES = 1
-REVIEW_RETRY_MISSING_CHUNK_LIMIT = 60
+PROBE_REVIEW_COVERAGE_MISSING_CHUNK_LIMIT = 60
 ROADMAP_RULE_CATALOG_TOOL_NAME = "roadmap_rule_catalog"
-ROADMAP_RULE_ID_PATTERN = re.compile(r"\bRC-[A-Z0-9]+-\d+\b", re.IGNORECASE)
-SEMANTIC_AUDIT_COVERAGE_REASONS = {"category_probe", "category_review"}
 REACT_PARSING_ERROR_OBSERVATION = (
     "Invalid ReAct format. Continue using exactly one of these forms: "
     'Action: tool_name plus Action Input: {"field": "value"}, or Final Answer: ... '
     "Do not call tools with an empty JSON object unless the tool schema allows it."
 )
-KNOWN_REACT_TOOL_NAMES = {
-    "analyze_project_structure",
-    "generate_final_report",
-    "generate_issue",
+KNOWN_REACT_TOOL_NAMES = {"generate_final_report"}
+FINAL_REPORT_PAYLOAD_FIELDS = {
+    "executive_summary",
+    "maintainability_score",
+    "overall_score",
+    "performance_score",
+    "security_score",
+    "tech_stack",
+    "top_priorities",
+}
+LEGACY_SOURCE_TOOL_NAMES = {
     "read_file_chunk",
     "read_next_review_chunk",
     "search_code",
     "search_code_semantic",
-    "search_knowledge_base",
 }
 
 REACT_PROMPT_SUFFIX_TEMPLATE = """
@@ -96,10 +96,6 @@ Thought:{agent_scratchpad}
 """
 
 
-REVIEW_FINAL_ANSWER_INSTRUCTION = (
-    "Final Answer: a concise review handoff after semantic code review, AI issue "
-    "generation, and enabled KB audit checks have completed"
-)
 REPORT_FINAL_ANSWER_INSTRUCTION = (
     "Final Answer: a concise completion note after generate_final_report has "
     "returned status=created"
@@ -124,20 +120,6 @@ def build_react_prompt(
             tools="{tools}",
             tool_names="{tool_names}",
         )
-    )
-
-
-def create_review_agent_executor(llm: Any) -> Any:
-    """Create the review-phase executor without the final report tool."""
-
-    from app.ai.tools import AI_REVIEW_TOOLS
-
-    return _create_agent_executor(
-        llm=llm,
-        tools=AI_REVIEW_TOOLS,
-        system_prompt=REVIEW_SYSTEM_PROMPT,
-        final_answer_instruction=REVIEW_FINAL_ANSWER_INSTRUCTION,
-        max_iterations=REVIEW_AGENT_MAX_ITERATIONS,
     )
 
 
@@ -225,57 +207,27 @@ async def run_ai_review(
                 job_id=job_id,
                 callback=callback,
             )
-            if settings.enable_backend_directed_probe_review:
-                probe_result = await run_backend_directed_probe_review(
-                    job_id=job_id,
-                    llm=llm,
-                    postgres_session=postgres_session,
-                    mongodb_database=mongodb_database,
-                    trace_writer=callback,
-                    enable_semantic_search=True,
-                    chunks_per_probe=settings.probe_retrieval_chunks_per_probe,
-                    max_chunks=settings.probe_retrieval_max_chunks,
-                    max_probes_per_batch=settings.probe_judge_max_probes_per_batch,
-                    max_chunks_per_batch=settings.probe_judge_max_chunks_per_batch,
-                )
-                review_result = {"output": probe_result.handoff}
-                (
-                    reviewed_chunks,
-                    total_chunks,
-                    _missing_chunks,
-                ) = await _load_review_coverage(
-                    job_id,
-                    missing_limit=REVIEW_RETRY_MISSING_CHUNK_LIMIT,
-                )
-                if settings.enable_exploratory_react_review and (
-                    _remaining_llm_budget_for_exploration()
-                    > REPORT_AGENT_MAX_ITERATIONS + 4
-                ):
-                    review_executor = create_review_agent_executor(llm)
-                    (
-                        exploratory_result,
-                        reviewed_chunks,
-                        total_chunks,
-                    ) = await _run_review_until_coverage_complete(
-                        review_executor=review_executor,
-                        job_id=job_id,
-                        callback=callback,
-                    )
-                    review_result["output"] = (
-                        f"{probe_result.handoff}\n\nExploratory fallback:\n"
-                        f"{exploratory_result.get('output', '')}"
-                    )
-            else:
-                review_executor = create_review_agent_executor(llm)
-                (
-                    review_result,
-                    reviewed_chunks,
-                    total_chunks,
-                ) = await _run_review_until_coverage_complete(
-                    review_executor=review_executor,
-                    job_id=job_id,
-                    callback=callback,
-                )
+            probe_result = await run_backend_directed_probe_review(
+                job_id=job_id,
+                llm=llm,
+                postgres_session=postgres_session,
+                mongodb_database=mongodb_database,
+                trace_writer=callback,
+                enable_semantic_search=True,
+                chunks_per_probe=settings.probe_retrieval_chunks_per_probe,
+                max_chunks=settings.probe_retrieval_max_chunks,
+                max_probes_per_batch=settings.probe_judge_max_probes_per_batch,
+                max_chunks_per_batch=settings.probe_judge_max_chunks_per_batch,
+            )
+            review_result = {"output": probe_result.handoff}
+            (
+                reviewed_chunks,
+                total_chunks,
+                _missing_chunks,
+            ) = await _load_review_coverage(
+                job_id,
+                missing_limit=PROBE_REVIEW_COVERAGE_MISSING_CHUNK_LIMIT,
+            )
             report_context = await _build_report_context(
                 job_id=job_id,
                 postgres_session=postgres_session,
@@ -284,10 +236,11 @@ async def run_ai_review(
             report_result = await report_executor.ainvoke(
                 {
                     "input": (
-                        f"Review job_id={job_id}. Target chunk coverage is complete "
-                        f"({reviewed_chunks}/{total_chunks}). Now call "
-                        "generate_final_report exactly once. Use this completed "
-                        "review handoff and persisted issue context.\n\n"
+                        f"Review job_id={job_id}. Backend-directed probe review "
+                        f"completed with source evidence coverage "
+                        f"{reviewed_chunks}/{total_chunks}. Now call "
+                        "generate_final_report exactly once. Use the review "
+                        "handoff and persisted issue context.\n\n"
                         f"Review handoff:\n{review_result.get('output', '')}\n\n"
                         f"Persisted issue context:\n{report_context}"
                     )
@@ -298,114 +251,6 @@ async def run_ai_review(
 
     async with llm_session():
         return await run_with_model(get_pipeline_llm())
-
-
-def _remaining_llm_budget_for_exploration() -> int:
-    from app.ai.llm_config import get_remaining_llm_call_budget
-
-    remaining_budget = get_remaining_llm_call_budget()
-    if remaining_budget is None:
-        return 0
-
-    return remaining_budget
-
-
-async def _run_review_until_coverage_complete(
-    *,
-    review_executor: Any,
-    job_id: UUID,
-    callback: MongoToolCallLogger,
-) -> tuple[dict[str, Any], int, int]:
-    """Run bounded review passes until review and roadmap obligations complete."""
-
-    handoff_parts: list[str] = []
-    reviewed_chunks = 0
-    total_chunks = 0
-    missing_chunks: list[dict[str, object]] = []
-    roadmap_required = False
-    roadmap_catalog_loaded = False
-    roadmap_missing_review_rule_ids: list[str] = []
-    missing_audit_plan_items: list[str] = []
-
-    for pass_number in range(1, MAX_REVIEW_COVERAGE_PASSES + 1):
-        reset_source_search_pass_budget()
-        review_result = await review_executor.ainvoke(
-            {
-                "input": _build_review_pass_input(
-                    job_id=job_id,
-                    pass_number=pass_number,
-                    reviewed_chunks=reviewed_chunks,
-                    total_chunks=total_chunks,
-                    missing_chunks=missing_chunks,
-                    roadmap_required=roadmap_required,
-                    roadmap_catalog_loaded=roadmap_catalog_loaded,
-                    roadmap_missing_review_rule_ids=roadmap_missing_review_rule_ids,
-                    missing_audit_plan_items=missing_audit_plan_items,
-                )
-            },
-            config={"callbacks": [callback]},
-        )
-        handoff = review_result.get("output")
-        if isinstance(handoff, str) and handoff.strip():
-            handoff_parts.append(f"Pass {pass_number}: {handoff.strip()}")
-
-        reviewed_chunks, total_chunks, missing_chunks = await _load_review_coverage(
-            job_id,
-            missing_limit=REVIEW_RETRY_MISSING_CHUNK_LIMIT,
-        )
-        roadmap_required, roadmap_catalog_loaded = await _load_roadmap_catalog_state(
-            job_id
-        )
-        if roadmap_required and not roadmap_catalog_loaded:
-            await _materialize_roadmap_rule_catalog(
-                job_id=job_id,
-                callback=callback,
-            )
-            (
-                roadmap_required,
-                roadmap_catalog_loaded,
-            ) = await _load_roadmap_catalog_state(job_id)
-        if roadmap_required:
-            (
-                _roadmap_review_required,
-                roadmap_missing_review_rule_ids,
-            ) = await _load_roadmap_review_rule_state(job_id)
-        missing_audit_plan_items = await _load_semantic_audit_plan_coverage(job_id)
-        if (
-            not roadmap_required
-            or (roadmap_catalog_loaded and not roadmap_missing_review_rule_ids)
-        ) and not missing_audit_plan_items:
-            merged_result = dict(review_result)
-            merged_result["output"] = "\n\n".join(handoff_parts)
-            return merged_result, reviewed_chunks, total_chunks
-
-    if roadmap_required and not roadmap_catalog_loaded:
-        handoff_parts.append(
-            "Some enabled roadmap rules could not be loaded into the review "
-            "catalog; no issue was created without sufficient source evidence."
-        )
-    if roadmap_missing_review_rule_ids:
-        handoff_parts.append(
-            "Some roadmap review rules were not included in the unified "
-            "category review plan within the bounded review budget: "
-            f"{', '.join(roadmap_missing_review_rule_ids)}. No issue was created "
-            "without sufficient source evidence."
-        )
-    if missing_audit_plan_items:
-        handoff_parts.append(
-            "Some unified category review items were not source-searched within "
-            "the bounded review budget: "
-            f"{', '.join(missing_audit_plan_items)}. No issue was created "
-            "without sufficient source evidence."
-        )
-
-    return (
-        {
-            "output": "\n\n".join(handoff_parts),
-        },
-        reviewed_chunks,
-        total_chunks,
-    )
 
 
 async def _ensure_roadmap_catalog_loaded(
@@ -419,138 +264,6 @@ async def _ensure_roadmap_catalog_loaded(
             job_id=job_id,
             callback=callback,
         )
-
-
-def _build_review_pass_input(
-    *,
-    job_id: UUID,
-    pass_number: int,
-    reviewed_chunks: int,
-    total_chunks: int,
-    missing_chunks: list[dict[str, object]],
-    roadmap_required: bool = False,
-    roadmap_catalog_loaded: bool = False,
-    roadmap_missing_review_rule_ids: list[str] | None = None,
-    missing_audit_plan_items: list[str] | None = None,
-) -> str:
-    if pass_number == 1:
-        return (
-            f"Review job_id={job_id}. Start by calling "
-            "analyze_project_structure with Action Input: {}, use its "
-            "chunk_review_plan as an authoritative risk map and valid "
-            "path source, not as a mandatory read checklist. Review code with "
-            "search_code mode='auto' first using semantic_audit_plan plus "
-            "behavior-based, cross-file, and roadmap-driven queries. Call "
-            "search_code for high-risk semantic_audit_plan items with "
-            "reason=category_probe first, passing that item's audit_plan_item_id, "
-            "query, top_k, and mode='auto'. Do not exhaust the whole job trying "
-            "to search every probe when the plan is large; unsearched probes can "
-            "be reported in the handoff. Use "
-            "at most one search per semantic_audit_plan item unless a result "
-            "points to a clearly related path that needs one focused follow-up. "
-            "Give each hypothesis a stable investigation_id that is not the "
-            "job_id or session_id; unrelated requirements need distinct IDs. "
-            "Keep queries concise instead of copying roadmap hints. Start with "
-            "search_code mode='auto', switch to mode='exact' for discovered "
-            "routes/symbols/literals, and read only results needed to test the "
-            "hypothesis. Search previews are not evidence. "
-            "Run the mandatory audit method from the system prompt and derive "
-            "targeted queries from roadmap hints, manifests, static findings, "
-            "high-risk paths, routes, and framework conventions. If "
-            "semantic_audit_plan has category_probe items with roadmap "
-            "related_rule_ids, treat those probes as normal review targets "
-            "within their category and generate normal issues when source evidence shows fake, "
-            "stubbed, incomplete, insecure, or static-only implementations. "
-            "Generate AI issues only when confidence >= 0.7, "
-            "using exact file_path and line ranges from successful "
-            "source tool outputs. For violations grounded in knowledge_base, set "
-            'source="KB" and choose the category by the real problem. Treat '
-            "deduplicated read_file_chunk outputs as already "
-            "available in your prior context; do not read the same chunk again. "
-            "Do not invent paths. Then "
-            "if analyze_project_structure returns a roadmap profile, use the "
-            "auto-loaded roadmap catalog as context. You do not need to retrieve "
-            "every applicable_rule_id manually; retrieve an exact rule_id only "
-            "when grounding a specific issue. Create a normal issue only for "
-            "confident violations; insufficient evidence produces no issue. If it "
-            "returns no profile, do not retrieve roadmap rules. Stop with a review "
-            "handoff summary. Do not create the final report in this phase."
-        )
-
-    missing_json = json.dumps(missing_chunks, ensure_ascii=False)
-    roadmap_instruction = _roadmap_retry_instruction(
-        roadmap_required=roadmap_required,
-        roadmap_catalog_loaded=roadmap_catalog_loaded,
-        roadmap_missing_review_rule_ids=roadmap_missing_review_rule_ids or [],
-    )
-    audit_plan_instruction = _semantic_audit_retry_instruction(
-        missing_audit_plan_items or []
-    )
-    return (
-        f"Continue review job_id={job_id}. Previous review passes read "
-        f"{reviewed_chunks}/{total_chunks} target chunks through source tools. "
-        "Do not bulk-read missing chunks. Continue semantic search only where it "
-        "is needed for evidence-backed code issues. Generate code issues only "
-        f"when confidence >= 0.7. {roadmap_instruction} {audit_plan_instruction} "
-        "Do not create the final "
-        "report in this phase. Optional unresolved target preview for path "
-        f"context only: {missing_json}"
-    )
-
-
-def _roadmap_retry_instruction(
-    *,
-    roadmap_required: bool,
-    roadmap_catalog_loaded: bool,
-    roadmap_missing_review_rule_ids: list[str],
-) -> str:
-    if roadmap_catalog_loaded:
-        if roadmap_missing_review_rule_ids:
-            missing_rule_ids = ", ".join(roadmap_missing_review_rule_ids[:8])
-            extra_count = max(0, len(roadmap_missing_review_rule_ids) - 8)
-            suffix = f", and {extra_count} more" if extra_count else ""
-            return (
-                "The roadmap rule catalog is already loaded in this Review Agent "
-                "session. Start this pass by calling analyze_project_structure with "
-                "Action Input: {} to refresh the unified category_probe "
-                "semantic_audit_plan. Ensure the plan covers these missing "
-                f"roadmap review rule IDs as focused probes: {missing_rule_ids}{suffix}. "
-                "Do not fall back to a broad category query; use probe-level "
-                "queries and read only source chunks needed for evidence-backed issues."
-            )
-        return (
-            "The roadmap rule catalog is already loaded in this Review Agent "
-            "session. Start this pass by calling analyze_project_structure with "
-            "Action Input: {} to refresh the unified category_probe "
-            "semantic_audit_plan, then continue only with remaining AI source-code "
-            "evidence work."
-        )
-    if roadmap_required:
-        return (
-            "The additional KB checklist is enabled and the backend catalog loader "
-            "will load the applicable rule set automatically. Continue AI source-code "
-            "evidence work for the highest-risk roadmap review categories. Retrieve exact "
-            "doc_type=roadmap_rule details only when grounding a specific issue, "
-            "and do not guess profile_id, weeks, or rule ids. Generate normal "
-            "source=KB issues only for violations backed by code evidence and "
-            "confidence >= 0.7. Missing or ambiguous evidence produces no issue."
-        )
-    return "The additional KB checklist is disabled; do not retrieve roadmap rules."
-
-
-def _semantic_audit_retry_instruction(missing_audit_plan_items: list[str]) -> str:
-    if not missing_audit_plan_items:
-        return ""
-
-    missing_items = ", ".join(missing_audit_plan_items[:8])
-    extra_count = max(0, len(missing_audit_plan_items) - 8)
-    suffix = f", and {extra_count} more" if extra_count else ""
-    return (
-        "Before stopping, source-search these remaining category_probe "
-        f"audit_plan_item_id values exactly once: {missing_items}{suffix}. "
-        "Use the matching semantic_audit_plan query and pass audit_plan_item_id; "
-        "do not replace them with a broad category-level search."
-    )
 
 
 async def _load_roadmap_catalog_state(job_id: UUID) -> tuple[bool, bool]:
@@ -580,112 +293,6 @@ async def _load_roadmap_catalog_state(job_id: UUID) -> tuple[bool, bool]:
     )
     loaded_rule_ids = _loaded_roadmap_rule_ids(documents)
     return True, applicable_rule_ids.issubset(loaded_rule_ids)
-
-
-async def _load_roadmap_review_rule_state(
-    job_id: UUID,
-) -> tuple[bool, list[str]]:
-    runtime = get_ai_tool_runtime()
-    result = await runtime.postgres_session.execute(
-        select(ReviewJob.options).where(ReviewJob.id == job_id)
-    )
-    options = result.scalar_one_or_none()
-    profile = parse_roadmap_profile(options if isinstance(options, dict) else None)
-    if profile is None:
-        return False, []
-
-    required_rule_ids = [
-        requirement.rule_id
-        for requirement in _roadmap_requirements_for_profile(profile)
-    ]
-    if not required_rule_ids:
-        return False, []
-
-    plan_documents = (
-        await runtime.mongodb_database[TOOL_CALL_LOGS_COLLECTION]
-        .find(
-            {
-                "job_id": str(job_id),
-                "agent_type": "review",
-                "tool_name": "analyze_project_structure",
-            }
-        )
-        .to_list(length=None)
-    )
-    planned_rule_ids = _planned_roadmap_rule_ids(plan_documents)
-    if planned_rule_ids:
-        missing_rule_ids = [
-            rule_id
-            for rule_id in required_rule_ids
-            if rule_id.upper() not in planned_rule_ids
-        ]
-        return True, missing_rule_ids
-
-    documents = (
-        await runtime.mongodb_database[TOOL_CALL_LOGS_COLLECTION]
-        .find(
-            {
-                "job_id": str(job_id),
-                "agent_type": "review",
-                "tool_name": "search_code",
-                "output.status": {"$in": ["ok", "no_new_evidence", "duplicate_query"]},
-            }
-        )
-        .to_list(length=None)
-    )
-    searched_rule_ids = _searched_roadmap_rule_ids(documents)
-    missing_rule_ids = [
-        rule_id
-        for rule_id in required_rule_ids
-        if rule_id.upper() not in searched_rule_ids
-    ]
-    return True, missing_rule_ids
-
-
-async def _load_semantic_audit_plan_coverage(job_id: UUID) -> list[str]:
-    """Return category-review plan item ids not yet searched by source tools."""
-
-    runtime = get_ai_tool_runtime()
-    plan_documents = (
-        await runtime.mongodb_database[TOOL_CALL_LOGS_COLLECTION]
-        .find(
-            {
-                "job_id": str(job_id),
-                "agent_type": "review",
-                "tool_name": "analyze_project_structure",
-            }
-        )
-        .sort("sequence", -1)
-        .to_list(length=1)
-    )
-    planned_items = _planned_semantic_category_items(plan_documents)
-    if not planned_items:
-        return []
-
-    search_documents = (
-        await runtime.mongodb_database[TOOL_CALL_LOGS_COLLECTION]
-        .find(
-            {
-                "job_id": str(job_id),
-                "agent_type": "review",
-                "tool_name": "search_code",
-                "output.status": {
-                    "$in": [
-                        "ok",
-                        "no_new_evidence",
-                        "duplicate_query",
-                        "budget_exhausted",
-                    ]
-                },
-            }
-        )
-        .to_list(length=None)
-    )
-    searched_item_ids = _searched_semantic_audit_item_ids(
-        documents=search_documents,
-        planned_items=planned_items,
-    )
-    return [item_id for item_id in planned_items if item_id not in searched_item_ids]
 
 
 async def _materialize_roadmap_rule_catalog(
@@ -819,124 +426,6 @@ def _loaded_roadmap_rule_ids(documents: list[object]) -> set[str]:
     return loaded_rule_ids
 
 
-def _planned_roadmap_rule_ids(documents: list[object]) -> set[str]:
-    """Return roadmap rule ids covered by semantic category-review plans."""
-
-    planned_rule_ids: set[str] = set()
-    for document in documents:
-        if not isinstance(document, dict):
-            continue
-        output = document.get("output")
-        if not isinstance(output, dict):
-            continue
-        semantic_plan = output.get("semantic_audit_plan")
-        if not isinstance(semantic_plan, list):
-            continue
-        for item in semantic_plan:
-            if (
-                not isinstance(item, dict)
-                or item.get("reason") not in SEMANTIC_AUDIT_COVERAGE_REASONS
-            ):
-                continue
-            related_rule_ids = item.get("related_rule_ids")
-            if not isinstance(related_rule_ids, list):
-                continue
-            for rule_id in related_rule_ids:
-                if isinstance(rule_id, str):
-                    planned_rule_ids.add(rule_id.upper())
-
-    return planned_rule_ids
-
-
-def _planned_semantic_category_items(documents: list[object]) -> dict[str, str]:
-    """Return category-review audit item ids mapped to normalized queries."""
-
-    planned_items: dict[str, str] = {}
-    for document in documents:
-        if not isinstance(document, dict):
-            continue
-        output = document.get("output")
-        if not isinstance(output, dict):
-            continue
-        semantic_plan = output.get("semantic_audit_plan")
-        if not isinstance(semantic_plan, list):
-            continue
-        for item in semantic_plan:
-            if (
-                not isinstance(item, dict)
-                or item.get("reason") not in SEMANTIC_AUDIT_COVERAGE_REASONS
-            ):
-                continue
-            item_id = item.get("audit_plan_item_id")
-            query = item.get("query")
-            if isinstance(item_id, str) and item_id.strip():
-                planned_items[item_id.strip()] = _normalize_trace_text(query)
-
-    return planned_items
-
-
-def _searched_semantic_audit_item_ids(
-    *,
-    documents: list[object],
-    planned_items: dict[str, str],
-) -> set[str]:
-    """Return category-review audit item ids already attempted by search_code."""
-
-    query_to_item_id = {
-        normalized_query: item_id
-        for item_id, normalized_query in planned_items.items()
-        if normalized_query
-    }
-    searched_item_ids: set[str] = set()
-    for document in documents:
-        if not isinstance(document, dict):
-            continue
-        tool_input = document.get("input")
-        if not isinstance(tool_input, dict):
-            continue
-
-        raw_item_id = tool_input.get("audit_plan_item_id")
-        if isinstance(raw_item_id, str) and raw_item_id.strip() in planned_items:
-            searched_item_ids.add(raw_item_id.strip())
-            continue
-
-        normalized_query = _normalize_trace_text(tool_input.get("query"))
-        item_id = query_to_item_id.get(normalized_query)
-        if item_id is not None:
-            searched_item_ids.add(item_id)
-
-    return searched_item_ids
-
-
-def _normalize_trace_text(value: object) -> str:
-    return " ".join(value.strip().lower().split()) if isinstance(value, str) else ""
-
-
-def _searched_roadmap_rule_ids(documents: list[object]) -> set[str]:
-    """Return roadmap rule ids that were actually passed through source search."""
-
-    searched_rule_ids: set[str] = set()
-    for document in documents:
-        if not isinstance(document, dict):
-            continue
-        tool_input = document.get("input")
-        if not isinstance(tool_input, dict):
-            continue
-        for value in (
-            tool_input.get("query"),
-            tool_input.get("investigation_id"),
-            tool_input.get("rule_id"),
-        ):
-            if not isinstance(value, str):
-                continue
-            searched_rule_ids.update(
-                match.group(0).upper()
-                for match in ROADMAP_RULE_ID_PATTERN.finditer(value)
-            )
-
-    return searched_rule_ids
-
-
 async def _load_review_coverage(
     job_id: UUID,
     *,
@@ -945,20 +434,6 @@ async def _load_review_coverage(
     from app.ai.tools.generate_report import _load_chunk_review_coverage
 
     return await _load_chunk_review_coverage(job_id, missing_limit=missing_limit)
-
-
-async def _load_completed_review_coverage(
-    job_id: UUID,
-) -> tuple[int, int, list[dict[str, object]]]:
-    reviewed_chunks, total_chunks, missing_chunks = await _load_review_coverage(job_id)
-    if reviewed_chunks < total_chunks:
-        raise RuntimeError(
-            "AI review phase finished before target chunk coverage completed: "
-            f"{reviewed_chunks}/{total_chunks} target chunks read; "
-            f"missing preview={missing_chunks}"
-        )
-
-    return reviewed_chunks, total_chunks, missing_chunks
 
 
 async def _build_report_context(
@@ -1044,17 +519,9 @@ def _get_react_output_parser_base() -> type[Any]:
 
 
 class MarkdownSafeReActOutputParser(_get_react_output_parser_base()):  # type: ignore[misc]
-    """Normalize common LLM formatting drift before tool lookup."""
-
-    _handled_multi_action_payloads: set[str] = PrivateAttr(default_factory=set)
-    _issue_action_attempts: dict[str, int] = PrivateAttr(default_factory=dict)
-    _search_action_attempts: dict[str, int] = PrivateAttr(default_factory=dict)
+    """Normalize common final-report formatting drift before tool lookup."""
 
     def parse(self, text: str) -> Any:
-        multi_action = self._parse_multi_action_output(text)
-        if multi_action is not None:
-            return multi_action
-
         try:
             parsed_output = super().parse(text)
         except OutputParserException:
@@ -1073,20 +540,6 @@ class MarkdownSafeReActOutputParser(_get_react_output_parser_base()):  # type: i
 
         tool_name = normalize_tool_name(parsed_output.tool)
         tool_input = _normalize_structured_tool_input(parsed_output.tool_input)
-        repeated_issue = self._stop_repeated_issue_action(
-            tool_name=tool_name,
-            tool_input=tool_input,
-            text=text,
-        )
-        if repeated_issue is not None:
-            return repeated_issue
-        repeated_search = self._stop_repeated_search_action(
-            tool_name=tool_name,
-            tool_input=tool_input,
-            text=text,
-        )
-        if repeated_search is not None:
-            return repeated_search
         if tool_name == parsed_output.tool and tool_input is parsed_output.tool_input:
             return parsed_output
 
@@ -1095,96 +548,6 @@ class MarkdownSafeReActOutputParser(_get_react_output_parser_base()):  # type: i
             tool_input=tool_input,
             log=parsed_output.log,
         )
-
-    def _parse_multi_action_output(self, text: str) -> AgentAction | AgentFinish | None:
-        payloads = [
-            payload
-            for payload in _extract_json_objects(text)
-            if _infer_tool_name_from_payload(payload, text=text) == "generate_issue"
-        ]
-        if len(payloads) < 2:
-            return None
-
-        for payload in payloads:
-            fingerprint = json.dumps(payload, sort_keys=True, ensure_ascii=False)
-            if fingerprint in self._handled_multi_action_payloads:
-                continue
-            self._handled_multi_action_payloads.add(fingerprint)
-            return AgentAction(tool="generate_issue", tool_input=payload, log=text)
-
-        return AgentFinish(
-            return_values={"output": _multi_action_handoff(text)},
-            log=text,
-        )
-
-    def _stop_repeated_issue_action(
-        self,
-        *,
-        tool_name: str,
-        tool_input: object,
-        text: str,
-    ) -> AgentFinish | None:
-        if tool_name != "generate_issue":
-            return None
-
-        if isinstance(tool_input, str):
-            issue_payload = _parse_json_object_prefix(tool_input)
-        elif isinstance(tool_input, dict):
-            issue_payload = tool_input
-        else:
-            issue_payload = None
-        if issue_payload is None:
-            return None
-
-        fingerprint = _issue_action_fingerprint(issue_payload)
-        max_attempts = 1 if _is_incomplete_generate_issue_payload(issue_payload) else 3
-        attempts = self._issue_action_attempts.get(fingerprint, 0)
-        if attempts >= max_attempts:
-            return AgentFinish(
-                return_values={
-                    "output": (
-                        "Stopped retrying the same generate_issue payload; "
-                        "continuing would not add a distinct finding."
-                    )
-                },
-                log=text,
-            )
-        self._issue_action_attempts[fingerprint] = attempts + 1
-        return None
-
-    def _stop_repeated_search_action(
-        self,
-        *,
-        tool_name: str,
-        tool_input: object,
-        text: str,
-    ) -> AgentFinish | None:
-        if tool_name != "search_code":
-            return None
-
-        if isinstance(tool_input, str):
-            search_payload = _parse_json_object_prefix(tool_input)
-        elif isinstance(tool_input, dict):
-            search_payload = tool_input
-        else:
-            search_payload = None
-        if search_payload is None:
-            return None
-
-        fingerprint = _search_action_fingerprint(search_payload)
-        attempts = self._search_action_attempts.get(fingerprint, 0)
-        if attempts >= 2:
-            return AgentFinish(
-                return_values={
-                    "output": (
-                        "Stopped repeating the same search_code action; "
-                        "the repeated query would not add distinct evidence."
-                    )
-                },
-                log=text,
-            )
-        self._search_action_attempts[fingerprint] = attempts + 1
-        return None
 
 
 def _normalize_structured_tool_input(
@@ -1228,68 +591,6 @@ def _extract_first_json_object(text: str) -> dict[str, object] | None:
         return None
 
     return _parse_json_object_prefix(text[object_start:])
-
-
-def _extract_json_objects(text: str) -> list[dict[str, object]]:
-    payloads: list[dict[str, object]] = []
-    for match in re.finditer(r"```(?:json)?\s*(.*?)```", text, re.DOTALL):
-        payload = _parse_json_object_prefix(match.group(1))
-        if payload is not None:
-            payloads.append(payload)
-    return payloads
-
-
-def _multi_action_handoff(text: str) -> str:
-    for marker in ("### Final Review Handoff", "Final Answer:"):
-        if marker in text:
-            handoff = text.split(marker, 1)[1].strip()
-            if handoff:
-                return handoff
-    return "Processed all distinct issue actions from the model response."
-
-
-def _issue_action_fingerprint(payload: dict[str, object]) -> str:
-    canonical_payload = dict(payload)
-    canonical_payload.pop("investigation_id", None)
-    return json.dumps(
-        canonical_payload, sort_keys=True, ensure_ascii=False, default=str
-    )
-
-
-def _search_action_fingerprint(payload: dict[str, object]) -> str:
-    canonical_payload = {
-        key: payload.get(key)
-        for key in (
-            "query",
-            "mode",
-            "file_path",
-            "rule_id",
-            "audit_plan_item_id",
-            "language",
-            "risk_area",
-        )
-    }
-    return json.dumps(
-        canonical_payload, sort_keys=True, ensure_ascii=False, default=str
-    )
-
-
-def _is_incomplete_generate_issue_payload(payload: dict[str, object]) -> bool:
-    required_fields = {
-        "severity",
-        "category",
-        "title",
-        "description",
-        "confidence",
-        "file_path",
-        "line_start",
-        "line_end",
-    }
-    for field in required_fields:
-        value = payload.get(field)
-        if value is None or value == "":
-            return True
-    return False
 
 
 def _parse_json_object_prefix(text: str) -> dict[str, object] | None:
@@ -1346,29 +647,11 @@ def _infer_tool_name_from_payload(
     *,
     text: str,
 ) -> str | None:
-    if "file_path" in payload:
-        return "read_file_chunk"
-    if "executive_summary" in payload or "overall_score" in payload:
+    _ = text
+    if FINAL_REPORT_PAYLOAD_FIELDS.intersection(payload):
         return "generate_final_report"
-    if "severity" in payload or "category" in payload or "confidence" in payload:
-        return "generate_issue"
-    if "query" in payload and (
-        "mode" in payload or "investigation_id" in payload or "job_id" in payload
-    ):
-        return "search_code"
-    if "query" in payload:
-        return "search_knowledge_base"
-    if not payload and _mentions_project_structure_analysis(text):
-        return "analyze_project_structure"
 
     return None
-
-
-def _mentions_project_structure_analysis(text: str) -> bool:
-    normalized_text = text.lower().replace("_", " ")
-    return "project structure" in normalized_text and any(
-        verb in normalized_text for verb in ("analyze", "analyse", "understand")
-    )
 
 
 def _coerce_freeform_final_answer(text: str) -> str | None:
@@ -1611,12 +894,7 @@ def _redact_source_tool_output(
     tool_name: str,
     output: dict[str, object],
 ) -> dict[str, object]:
-    if tool_name not in {
-        "read_file_chunk",
-        "read_next_review_chunk",
-        "search_code",
-        "search_code_semantic",
-    }:
+    if tool_name not in LEGACY_SOURCE_TOOL_NAMES:
         return output
 
     if tool_name in {"search_code", "search_code_semantic"}:

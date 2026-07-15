@@ -272,14 +272,6 @@ def get_ai_tool_runtime() -> AIToolRuntime:
     return runtime
 
 
-def reset_source_search_pass_budget() -> None:
-    """Reset the per-pass source-search counter when a runtime is active."""
-
-    runtime = _runtime.get()
-    if runtime is not None:
-        runtime.source_search_count = 0
-
-
 async def ensure_ai_job_active() -> None:
     """Stop tool execution if the backing review job was canceled/deleted."""
 
