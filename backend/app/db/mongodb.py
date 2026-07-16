@@ -99,6 +99,10 @@ async def ensure_mongodb_indexes() -> None:
         [("job_id", ASCENDING), ("module", ASCENDING), ("risk_area", ASCENDING)],
         name="idx_chunk_metadata_job_module_risk",
     )
+    await database[CHUNK_METADATA_COLLECTION].create_index(
+        [("repo_branch_key", ASCENDING), ("file_path", ASCENDING)],
+        name="idx_chunk_metadata_repo_branch_file",
+    )
 
     await database[REPO_SUMMARY_RESULTS_COLLECTION].create_index(
         [("repository_id", ASCENDING)],

@@ -82,6 +82,10 @@ class ChunkMetadataDocument(BaseModel):
     """Metadata for one AST-derived code chunk used by repository retrieval."""
 
     job_id: UUID
+    repository_id: UUID | str | None = None
+    branch: str | None = None
+    commit_sha: str | None = None
+    repo_branch_key: str | None = None
     file_path: str
     language: str
     chunk_type: str
@@ -97,6 +101,10 @@ class ChunkMetadataDocument(BaseModel):
     has_static_issues: bool = False
     token_count: int = Field(ge=0)
     chunk_text: str | None = None
+    content_hash: str | None = None
+    embedding_cache_id: str | None = None
+    occurrence_index: int | None = Field(default=None, ge=0)
+    chunker_version: str | None = None
 
 
 class RepoSummaryResultDocument(RepoSummary):

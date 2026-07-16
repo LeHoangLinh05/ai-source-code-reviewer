@@ -16,6 +16,12 @@ LANGUAGE_BY_EXTENSION = {
     ".py": "python",
     ".ts": "typescript",
     ".tsx": "typescript",
+    ".md": "markdown",
+    ".markdown": "markdown",
+    ".json": "json",
+    ".toml": "toml",
+    ".yaml": "yaml",
+    ".yml": "yaml",
 }
 
 

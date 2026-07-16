@@ -432,10 +432,12 @@ async def _retrieve_results(
     semantic_results: list[CodeSearchResult] = []
     strategies: list[str] = []
     if mode in {"auto", "semantic"} and get_settings().enable_code_semantic_search:
+        repo_branch_key = await _repo_branch_key_for_job(job_id)
         retrieved = await asyncio.to_thread(
             get_code_retriever().search,
             query=query,
             job_id=job_id,
+            repo_branch_key=repo_branch_key,
             top_k=top_k,
             language=language,
             risk_area=risk_area,
@@ -528,6 +530,21 @@ async def _exact_search(
     return sorted(scored, key=lambda item: item.final_score, reverse=True)[:top_k]
 
 
+async def _repo_branch_key_for_job(job_id: str) -> str | None:
+    runtime = get_ai_tool_runtime()
+    try:
+        document = await runtime.mongodb_database[CHUNK_METADATA_COLLECTION].find_one(
+            {"job_id": job_id},
+        )
+    except (AttributeError, TypeError):
+        return None
+    if not isinstance(document, dict):
+        return None
+
+    repo_branch_key = document.get("repo_branch_key")
+    return repo_branch_key if isinstance(repo_branch_key, str) else None
+
+
 def _is_allowed_search_result(
     metadata: dict[str, object],
     *,
@@ -599,10 +616,12 @@ async def _validate_and_serialize_result(
     metadata = result.metadata
     file_path = _required_string(metadata, "file_path")
     chunk_index = _required_int(metadata, "chunk_index")
-    runtime = get_ai_tool_runtime()
-    persisted_chunk = await runtime.mongodb_database[
-        CHUNK_METADATA_COLLECTION
-    ].find_one({"job_id": job_id, "file_path": file_path, "chunk_index": chunk_index})
+    persisted_chunk = await _find_persisted_result_chunk(
+        job_id=job_id,
+        metadata=metadata,
+        file_path=file_path,
+        chunk_index=chunk_index,
+    )
     if persisted_chunk is None:
         raise ValueError(
             "Search result metadata does not belong to the active review job"
@@ -635,6 +654,28 @@ async def _validate_and_serialize_result(
         "preview_truncated": len(result.content) > SEMANTIC_PREVIEW_MAX_CHARS,
         "evidence_status": "preview_only",
     }
+
+
+async def _find_persisted_result_chunk(
+    *,
+    job_id: str,
+    metadata: dict[str, object],
+    file_path: str,
+    chunk_index: int,
+) -> dict[str, object] | None:
+    runtime = get_ai_tool_runtime()
+    embedding_cache_id = metadata.get("embedding_cache_id")
+    if isinstance(embedding_cache_id, str) and embedding_cache_id:
+        document = await runtime.mongodb_database[CHUNK_METADATA_COLLECTION].find_one(
+            {"job_id": job_id, "embedding_cache_id": embedding_cache_id}
+        )
+        if isinstance(document, dict):
+            return document
+
+    document = await runtime.mongodb_database[CHUNK_METADATA_COLLECTION].find_one(
+        {"job_id": job_id, "file_path": file_path, "chunk_index": chunk_index}
+    )
+    return document if isinstance(document, dict) else None
 
 
 def _stopped_search_response(

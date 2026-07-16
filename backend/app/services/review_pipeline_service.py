@@ -15,11 +15,19 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai.agent import run_ai_review
-from app.ai.rag.code_embedding import CodeEmbeddingStore
+from app.ai.rag.code_embedding import (
+    CodeEmbeddingStore,
+    code_embedding_model_version,
+    prepare_code_embedding_chunks,
+)
 from app.ai.rag.vectorstore import validate_rag_dependencies
 from app.ai.review_plan import get_review_mode
 from app.ai.roadmap.selection import parse_roadmap_profile
-from app.analyzers.code_chunker import count_tokens, detect_risk_area, chunk_python_file
+from app.analyzers.code_chunker import (
+    CodeChunk,
+    chunk_plain_text_file,
+    chunk_python_file,
+)
 from app.analyzers.file_filter import filter_files, to_relative_posix_path
 from app.analyzers.secret_scanner import scan_secrets
 from app.analyzers.static_analysis.bandit_analyzer import run_bandit
@@ -120,8 +128,6 @@ class ReviewPipelineService:
             logger.info("Review job %s was canceled during worker execution", job_id)
         except Exception as error:
             await self._handle_failure(job_id, error)
-        finally:
-            await self._cleanup_code_chunks(job_id)
 
     async def _run_pipeline_steps(
         self,
@@ -323,7 +329,7 @@ class ReviewPipelineService:
             file_path for file_path in filtered_files if file_path.suffix == ".py"
         ]
         python_file_set = set(python_files)
-        chunks_to_embed: list[ChunkMetadataDocument] = []
+        chunk_documents: list[ChunkMetadataDocument] = []
         logger.info(
             "Review job %s chunking started: %d filtered files, %d Python files",
             review_job.id,
@@ -362,21 +368,36 @@ class ReviewPipelineService:
                     token_count=metadata.token_count,
                     chunk_text=chunk.content,
                 )
-                await self.chunk_metadata_repository.insert_one(chunk_document)
-                chunks_to_embed.append(chunk_document)
+                chunk_documents.append(chunk_document)
 
         for file_path in filtered_files:
             if file_path in python_file_set:
                 continue
 
-            plain_metadata = build_plain_file_chunk_metadata(
+            plain_chunks = build_plain_file_chunk_metadata_documents(
                 job_id=review_job.id,
                 sandbox_path=sandbox_path,
                 file_path=file_path,
                 issues=issues,
             )
-            await self.chunk_metadata_repository.insert_one(plain_metadata)
-            chunks_to_embed.append(plain_metadata)
+            for plain_metadata in plain_chunks:
+                chunk_documents.append(plain_metadata)
+
+        branch = review_branch(review_job)
+        chunks_to_embed = prepare_code_embedding_chunks(
+            chunk_documents,
+            repository_id=review_job.repository_id,
+            branch=branch,
+            commit_sha=review_job.commit_sha,
+            provider=self.settings.code_embedding_provider,
+            model_name=self.settings.code_embedding_model,
+            model_version=code_embedding_model_version(
+                self.settings.code_embedding_provider
+            ),
+            dimension=self.settings.code_embedding_dimension,
+        )
+        for chunk_document in chunks_to_embed:
+            await self.chunk_metadata_repository.insert_one(chunk_document)
 
         logger.info(
             "Review job %s persisted %d source chunks to MongoDB in %.2fs",
@@ -393,6 +414,9 @@ class ReviewPipelineService:
         embedding_summary = await asyncio.to_thread(
             self.code_embedding_store.index_chunks,
             chunks_to_embed,
+            repository_id=review_job.repository_id,
+            branch=branch,
+            commit_sha=review_job.commit_sha,
         )
         await self._write_embedding_trace_events(review_job.id, embedding_summary)
         logger.info(
@@ -413,7 +437,7 @@ class ReviewPipelineService:
         embedding_summary: object,
     ) -> None:
         batches = getattr(embedding_summary, "batches", None)
-        if not isinstance(batches, list) or not batches:
+        if not isinstance(batches, list):
             return
 
         database = cast(
@@ -422,6 +446,47 @@ class ReviewPipelineService:
         )
         repository = ToolCallLogRepository(database)
         session_id = uuid4()
+        if not batches:
+            await repository.insert_one(
+                ToolCallLogDocument(
+                    job_id=job_id,
+                    session_id=session_id,
+                    agent_type="review",
+                    sequence=1,
+                    tool_name="code_embedding_cache_summary",
+                    called_at=datetime.now(UTC),
+                    duration_ms=max(
+                        0,
+                        int(getattr(embedding_summary, "duration_ms", 0)),
+                    ),
+                    input={
+                        "total_current_count": int(
+                            getattr(embedding_summary, "total_current_count", 0)
+                        ),
+                    },
+                    output={
+                        "status": "ok",
+                        "embedded_count": int(
+                            getattr(embedding_summary, "embedded_count", 0)
+                        ),
+                        "cache_hit_count": int(
+                            getattr(embedding_summary, "cache_hit_count", 0)
+                        ),
+                        "pruned_count": int(
+                            getattr(embedding_summary, "pruned_count", 0)
+                        ),
+                    },
+                    event_type="embedding",
+                    provider=self.settings.code_embedding_provider,
+                    model=self.settings.code_embedding_model,
+                    phase="code_embedding",
+                    token_usage=None,
+                    status="ok",
+                    metadata={"source": "review_pipeline"},
+                )
+            )
+            return
+
         for sequence, batch in enumerate(batches, start=1):
             token_usage = {
                 "estimated_input_tokens": getattr(
@@ -450,6 +515,18 @@ class ReviewPipelineService:
                     output={
                         "status": "ok",
                         "chunk_count": int(getattr(batch, "chunk_count", 0)),
+                        "embedded_count": int(
+                            getattr(embedding_summary, "embedded_count", 0)
+                        ),
+                        "cache_hit_count": int(
+                            getattr(embedding_summary, "cache_hit_count", 0)
+                        ),
+                        "pruned_count": int(
+                            getattr(embedding_summary, "pruned_count", 0)
+                        ),
+                        "total_current_count": int(
+                            getattr(embedding_summary, "total_current_count", 0)
+                        ),
                     },
                     event_type="embedding",
                     provider=self.settings.code_embedding_provider,
@@ -538,18 +615,6 @@ class ReviewPipelineService:
             },
         )
 
-    async def _cleanup_code_chunks(self, job_id: UUID) -> None:
-        try:
-            await asyncio.to_thread(
-                self.code_embedding_store.delete_job,
-                str(job_id),
-            )
-        except Exception:
-            logger.exception(
-                "Failed to clean code_chunks for review job %s",
-                job_id,
-            )
-
     async def _transition(
         self,
         review_job: ReviewJob,
@@ -631,6 +696,13 @@ def clone_repository(review_job: ReviewJob, sandbox_path: Path) -> None:
     if completed_process.returncode != 0:
         detail = completed_process.stderr.strip() or completed_process.stdout.strip()
         raise ReviewPipelineError(f"Git clone failed: {detail}")
+
+
+def review_branch(review_job: ReviewJob) -> str:
+    """Return the exact branch name used for this review."""
+
+    branch = review_job.branch or review_job.repository.default_branch
+    return branch.strip()
 
 
 def validate_repo_size(sandbox_path: Path, *, max_size_bytes: int) -> None:
@@ -802,28 +874,76 @@ def build_plain_file_chunk_metadata(
     file_path: Path,
     issues: list[NormalizedIssue],
 ) -> ChunkMetadataDocument:
-    """Represent a non-Python text source file as one reviewable AI chunk."""
+    """Return the first generated plain-file chunk for compatibility tests."""
 
-    relative_path = to_relative_posix_path(file_path, sandbox_path)
-    content = file_path.read_text(encoding="utf-8", errors="ignore")
-    line_count = max(1, len(content.splitlines()))
-    module_path = Path(relative_path)
+    chunks = build_plain_file_chunk_metadata_documents(
+        job_id=job_id,
+        sandbox_path=sandbox_path,
+        file_path=file_path,
+        issues=issues,
+    )
+    if not chunks:
+        raise ValueError(f"Plain file is not reviewable: {file_path}")
+
+    return chunks[0]
+
+
+def build_plain_file_chunk_metadata_documents(
+    *,
+    job_id: UUID,
+    sandbox_path: Path,
+    file_path: Path,
+    issues: list[NormalizedIssue],
+) -> list[ChunkMetadataDocument]:
+    """Represent a non-Python text source file as reviewable AI chunks."""
+
+    if not should_chunk_plain_file(file_path):
+        return []
+
     language = LANGUAGE_BY_EXTENSION.get(file_path.suffix.lower()) or "text"
+    chunks = chunk_plain_text_file(
+        file_path,
+        language=language,
+        project_root=sandbox_path,
+        static_issues=issues,
+    )
+    return [
+        _chunk_metadata_document(job_id=job_id, chunk=chunk)
+        for chunk in chunks
+        if chunk.content.strip()
+    ]
+
+
+def should_chunk_plain_file(file_path: Path) -> bool:
+    """Return True when a non-Python file should enter semantic code chunks."""
+
+    if file_path.suffix.lower() != ".md":
+        return True
+
+    return file_path.name.lower() in {"readme.md", "readme.markdown"}
+
+
+def _chunk_metadata_document(
+    *, job_id: UUID, chunk: CodeChunk
+) -> ChunkMetadataDocument:
+    metadata = chunk.metadata
     return ChunkMetadataDocument(
         job_id=job_id,
-        file_path=relative_path,
-        language=language,
-        chunk_type="file",
-        chunk_index=0,
-        total_chunks=1,
-        line_start=1,
-        line_end=line_count,
-        imports=[],
-        module=module_path.parent.name or "root",
-        risk_area=detect_risk_area(relative_path, []),
-        has_static_issues=any(issue.file_path == relative_path for issue in issues),
-        token_count=count_tokens(content),
-        chunk_text=content,
+        file_path=metadata.file_path,
+        language=metadata.language,
+        chunk_type=metadata.chunk_type,
+        chunk_index=metadata.chunk_index,
+        total_chunks=metadata.total_chunks,
+        function_name=metadata.function_name,
+        class_name=metadata.class_name,
+        line_start=metadata.line_start,
+        line_end=metadata.line_end,
+        imports=metadata.imports,
+        module=metadata.module,
+        risk_area=metadata.risk_area,
+        has_static_issues=metadata.has_static_issues,
+        token_count=metadata.token_count,
+        chunk_text=chunk.content,
     )
 
 

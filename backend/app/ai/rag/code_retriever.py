@@ -49,16 +49,19 @@ class CodeSemanticRetriever:
         *,
         query: str,
         job_id: str | UUID,
+        repo_branch_key: str | None = None,
         top_k: int = 3,
         language: str | None = None,
         risk_area: str | None = None,
     ) -> list[RetrievedCodeChunk]:
-        """Search code with a mandatory job filter and optional metadata filters."""
+        """Search code with a mandatory repo-branch or legacy job filter."""
 
         normalized_job_id = _require_job_id(job_id)
+        normalized_repo_branch_key = _normalize_repo_branch_key(repo_branch_key)
         requested_top_k = min(max(top_k, 1), self.MAX_TOP_K)
         where = _build_where_filter(
             job_id=normalized_job_id,
+            repo_branch_key=normalized_repo_branch_key,
             language=language,
             risk_area=risk_area,
         )
@@ -78,7 +81,11 @@ class CodeSemanticRetriever:
                 semantic_score=result.score,
             )
             for result in results
-            if result.metadata.get("job_id") == normalized_job_id
+            if _metadata_matches_scope(
+                result.metadata,
+                job_id=normalized_job_id,
+                repo_branch_key=normalized_repo_branch_key,
+            )
         ]
         ranked = sorted(
             job_results,
@@ -154,13 +161,36 @@ def _require_job_id(job_id: str | UUID) -> str:
     return normalized_job_id
 
 
+def _normalize_repo_branch_key(repo_branch_key: str | None) -> str | None:
+    if repo_branch_key is None:
+        return None
+
+    normalized = repo_branch_key.strip()
+    return normalized or None
+
+
+def _metadata_matches_scope(
+    metadata: dict[str, object],
+    *,
+    job_id: str,
+    repo_branch_key: str | None,
+) -> bool:
+    if repo_branch_key is not None:
+        return metadata.get("repo_branch_key") == repo_branch_key
+
+    return metadata.get("job_id") == job_id
+
+
 def _build_where_filter(
     *,
     job_id: str,
+    repo_branch_key: str | None,
     language: str | None,
     risk_area: str | None,
 ) -> dict[str, object]:
-    filters: list[dict[str, object]] = [{"job_id": job_id}]
+    filters: list[dict[str, object]] = [
+        {"repo_branch_key": repo_branch_key} if repo_branch_key else {"job_id": job_id}
+    ]
     if language:
         filters.append({"language": language})
     if risk_area:

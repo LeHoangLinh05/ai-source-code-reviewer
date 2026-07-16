@@ -16,6 +16,7 @@ from app.services.review_pipeline_service import (
     ReviewPipelineService,
     StructureAnalysisResult,
     build_plain_file_chunk_metadata,
+    build_plain_file_chunk_metadata_documents,
     get_rule_profile,
 )
 import app.services.review_pipeline_service as review_pipeline_service
@@ -57,12 +58,124 @@ def test_plain_text_files_are_chunked_for_ai_coverage(tmp_path: Path) -> None:
     assert metadata.file_path == "frontend/app.tsx"
     assert metadata.chunk_index == 0
     assert metadata.total_chunks == 1
-    assert metadata.chunk_text == "export function App() {\n  return null\n}\n"
+    assert metadata.chunk_text == "export function App() {\n  return null\n}"
+
+
+def test_large_plain_text_files_are_split_for_embedding_limits(tmp_path: Path) -> None:
+    source_path = tmp_path / "backend" / "app" / "rules.yaml"
+    source_path.parent.mkdir(parents=True)
+    source_path.write_text(
+        "\n".join(
+            f"rule_{line_number}: "
+            + " ".join(f"requirement_{index}" for index in range(40))
+            for line_number in range(120)
+        ),
+        encoding="utf-8",
+    )
+
+    chunks = build_plain_file_chunk_metadata_documents(
+        job_id=uuid4(),
+        sandbox_path=tmp_path,
+        file_path=source_path,
+        issues=[],
+    )
+
+    assert len(chunks) > 1
+    assert {chunk.file_path for chunk in chunks} == {"backend/app/rules.yaml"}
+    assert [chunk.chunk_index for chunk in chunks] == list(range(len(chunks)))
+    assert all(chunk.total_chunks == len(chunks) for chunk in chunks)
+    assert all(chunk.token_count <= 1500 for chunk in chunks)
+
+
+def test_markdown_plain_chunks_skip_non_readme_files(tmp_path: Path) -> None:
+    docs_path = tmp_path / "docs" / "guide.md"
+    docs_path.parent.mkdir(parents=True)
+    docs_path.write_text("# Guide\n\nDetails\n", encoding="utf-8")
+
+    chunks = build_plain_file_chunk_metadata_documents(
+        job_id=uuid4(),
+        sandbox_path=tmp_path,
+        file_path=docs_path,
+        issues=[],
+    )
+
+    assert chunks == []
+
+
+def test_markdown_plain_chunks_keep_readme_files(tmp_path: Path) -> None:
+    readme_path = tmp_path / "README.md"
+    readme_path.write_text("# Project\n\nSetup instructions\n", encoding="utf-8")
+
+    chunks = build_plain_file_chunk_metadata_documents(
+        job_id=uuid4(),
+        sandbox_path=tmp_path,
+        file_path=readme_path,
+        issues=[],
+    )
+
+    assert len(chunks) == 1
+    assert chunks[0].file_path == "README.md"
+    assert chunks[0].language == "markdown"
+
+
+@pytest.mark.asyncio
+async def test_chunk_code_persists_cache_metadata_and_indexes_repo_branch(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "app" / "service.py"
+    source_path.parent.mkdir(parents=True)
+    source_path.write_text("def create_user():\n    return True\n", encoding="utf-8")
+    repository_id = uuid4()
+    job = SimpleNamespace(
+        id=uuid4(),
+        repository_id=repository_id,
+        branch="feature/cache",
+        commit_sha="abc123",
+        repository=SimpleNamespace(default_branch="main"),
+    )
+    code_store = _RecordingCodeStore()
+    chunk_repository = _RecordingChunkRepository()
+    service: Any = ReviewPipelineService.__new__(ReviewPipelineService)
+    service.settings = SimpleNamespace(
+        code_embedding_provider="local",
+        code_embedding_model="jinaai/jina-embeddings-v2-base-code",
+        code_embedding_dimension=768,
+    )
+    service.chunk_metadata_repository = chunk_repository
+    service.code_embedding_store = code_store
+    service.review_job_repository = _ExistingJobRepository()
+
+    async def noop(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr(service, "_transition", noop)
+    monkeypatch.setattr(service, "_publish_status", noop)
+    monkeypatch.setattr(service, "_write_embedding_trace_events", noop)
+
+    await service._chunk_code(job, tmp_path, [source_path], [])
+
+    assert len(chunk_repository.documents) == 1
+    document = chunk_repository.documents[0]
+    assert document.repository_id == repository_id
+    assert document.branch == "feature/cache"
+    assert document.commit_sha == "abc123"
+    assert document.content_hash is not None
+    assert document.embedding_cache_id is not None
+    assert document.repo_branch_key is not None
+    assert code_store.index_calls == [
+        {
+            "chunk_count": 1,
+            "repository_id": repository_id,
+            "branch": "feature/cache",
+            "commit_sha": "abc123",
+        }
+    ]
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("outcome", ["completed", "failed", "cancelled"])
-async def test_pipeline_always_cleans_code_chunks_for_terminal_outcome(
+async def test_pipeline_keeps_code_embedding_cache_for_terminal_outcome(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     outcome: str,
@@ -88,7 +201,7 @@ async def test_pipeline_always_cleans_code_chunks_for_terminal_outcome(
 
     await service.run(job_id)
 
-    assert code_store.deleted_job_ids == [str(job_id)]
+    assert code_store.deleted_job_ids == []
 
 
 @pytest.mark.asyncio
@@ -319,9 +432,45 @@ class _ExistingJobRepository:
 class _RecordingCodeStore:
     def __init__(self) -> None:
         self.deleted_job_ids: list[str] = []
+        self.index_calls: list[dict[str, object]] = []
+
+    def index_chunks(
+        self,
+        chunks: list[object],
+        *,
+        repository_id: object = None,
+        branch: str | None = None,
+        commit_sha: str | None = None,
+    ) -> object:
+        self.index_calls.append(
+            {
+                "chunk_count": len(chunks),
+                "repository_id": repository_id,
+                "branch": branch,
+                "commit_sha": commit_sha,
+            }
+        )
+        return SimpleNamespace(
+            indexed_count=len(chunks),
+            duration_ms=0,
+            batches=[],
+            embedded_count=len(chunks),
+            cache_hit_count=0,
+            pruned_count=0,
+            total_current_count=len(chunks),
+        )
 
     def delete_job(self, job_id: str) -> None:
         self.deleted_job_ids.append(job_id)
+
+
+class _RecordingChunkRepository:
+    def __init__(self) -> None:
+        self.documents: list[Any] = []
+
+    async def insert_one(self, document: Any) -> str:
+        self.documents.append(document)
+        return "chunk-id"
 
 
 class _RecordingRepoSummaryRepository:

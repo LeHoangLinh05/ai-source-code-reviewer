@@ -444,21 +444,112 @@ async def test_exact_search_finds_literal_without_semantic_retrieval(
     assert results[0]["evidence_status"] == "preview_only"
 
 
+@pytest.mark.asyncio
+async def test_search_code_semantic_validates_repo_branch_cached_result(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    job_id = uuid4()
+    file_path = "app/services/user.py"
+    full_content = "def create_user():\n    return True\n"
+    source_path = tmp_path / file_path
+    source_path.parent.mkdir(parents=True)
+    source_path.write_text(full_content, encoding="utf-8")
+    embedding_cache_id = "cache-id-1"
+    repo_branch_key = "repo-branch-key"
+    result = RetrievedCodeChunk(
+        content=full_content,
+        metadata={
+            "repo_branch_key": repo_branch_key,
+            "embedding_cache_id": embedding_cache_id,
+            "file_path": file_path,
+            "chunk_index": 0,
+            "line_start": 1,
+            "line_end": 2,
+            "function_name": "create_user",
+            "class_name": "",
+            "language": "python",
+            "risk_area": "general",
+        },
+        semantic_score=0.9,
+    )
+    retriever = _FakeRetriever([result])
+    database = _FakeMongoDatabase(
+        {
+            "job_id": str(job_id),
+            "repo_branch_key": repo_branch_key,
+            "embedding_cache_id": embedding_cache_id,
+            "file_path": file_path,
+            "chunk_index": 0,
+            "total_chunks": 1,
+            "line_start": 1,
+            "line_end": 2,
+            "language": "python",
+            "chunk_type": "function",
+            "function_name": "create_user",
+            "class_name": None,
+            "module": "app.services.user",
+            "risk_area": "general",
+            "imports": [],
+            "token_count": 8,
+            "chunk_text": full_content,
+        }
+    )
+
+    async def active_job() -> None:
+        return None
+
+    monkeypatch.setattr(search_code_module, "ensure_ai_job_active", active_job)
+    monkeypatch.setattr(search_code_module, "get_code_retriever", lambda: retriever)
+    monkeypatch.setattr(
+        search_code_module,
+        "get_settings",
+        lambda: SimpleNamespace(enable_code_semantic_search=True),
+    )
+    runtime = AIToolRuntime(
+        job_id=job_id,
+        session_id=uuid4(),
+        sandbox_path=tmp_path,
+        postgres_session=cast(AsyncSession, object()),
+        mongodb_database=cast(AsyncIOMotorDatabase, database),
+    )
+
+    with ai_tool_runtime(runtime):
+        response = await _search_code_semantic_impl(
+            job_id=str(job_id),
+            query="create user",
+            top_k=3,
+            language=None,
+            risk_area=None,
+        )
+
+    assert response["status"] == "ok"
+    assert retriever.repo_branch_key == repo_branch_key
+    assert database.collection.find_one_queries[-1] == {
+        "job_id": str(job_id),
+        "embedding_cache_id": embedding_cache_id,
+    }
+
+
 class _FakeRetriever:
     def __init__(self, results: list[RetrievedCodeChunk]) -> None:
         self.results = results
         self.job_id: object = None
+        self.repo_branch_key: object = None
 
     def search(self, **kwargs: object) -> list[RetrievedCodeChunk]:
         self.job_id = kwargs["job_id"]
+        self.repo_branch_key = kwargs.get("repo_branch_key")
         return self.results
 
 
 class _FakeMongoCollection:
     def __init__(self, document: dict[str, object]) -> None:
         self.document = document
+        self.find_one_queries: list[dict[str, object]] = []
 
     async def find_one(self, query: dict[str, object]) -> dict[str, object] | None:
+        self.find_one_queries.append(query)
         if all(self.document.get(key) == value for key, value in query.items()):
             return self.document
         return None

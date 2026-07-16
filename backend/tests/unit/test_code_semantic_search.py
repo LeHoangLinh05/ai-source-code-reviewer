@@ -51,6 +51,8 @@ def test_code_embedder_uses_allowlisted_jina_model(
     store = CodeEmbeddingStore(
         persist_path=tmp_path,
         model_name=JINA_CODE_MODEL,
+        provider="local",
+        dimension=CODE_EMBEDDING_DIMENSION,
     )
 
     assert store.model_name == JINA_CODE_MODEL
@@ -71,6 +73,7 @@ def test_code_embedder_rejects_non_allowlisted_model(
         CodeEmbeddingStore(
             persist_path=tmp_path,
             model_name=MINILM_KNOWLEDGE_MODEL,
+            provider="local",
         )
 
 
@@ -106,6 +109,100 @@ def test_knowledge_and_code_embedding_defaults_are_separate() -> None:
     assert Settings.model_fields["code_embedding_model"].default == JINA_CODE_MODEL
     assert Settings.model_fields["code_embedding_batch_size"].default == 4
     assert Settings.model_fields["code_embedding_max_sequence_length"].default == 1024
+
+
+def test_mistral_code_embedder_sends_output_dimension(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    posted_payloads: list[dict[str, Any]] = []
+
+    class FakeResponse:
+        status_code = 200
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, object]:
+            return {
+                "data": [
+                    {
+                        "index": 0,
+                        "embedding": [0.1] * 1536,
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 3,
+                    "total_tokens": 3,
+                },
+            }
+
+    class FakeClient:
+        def __init__(self, *, timeout: float) -> None:
+            self.timeout = timeout
+
+        def __enter__(self) -> "FakeClient":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def post(
+            self,
+            url: str,
+            *,
+            headers: dict[str, str],
+            json: dict[str, Any],
+        ) -> FakeResponse:
+            posted_payloads.append(
+                {
+                    "url": url,
+                    "headers": headers,
+                    "json": json,
+                }
+            )
+            return FakeResponse()
+
+    monkeypatch.setitem(
+        sys.modules,
+        "httpx",
+        SimpleNamespace(
+            Client=FakeClient,
+            HTTPStatusError=RuntimeError,
+        ),
+    )
+    embedder = code_embedding_module._OpenAICompatibleCodeEmbedder(
+        provider="mistral",
+        model_name="codestral-embed-2505",
+        api_key="mistral-key",
+        base_url="https://api.mistral.ai/v1",
+        output_dimension=1536,
+        max_retries=0,
+        retry_base_delay_seconds=2.0,
+    )
+
+    embeddings = embedder.embed_documents(["def read_user(): pass"])
+
+    assert len(embeddings[0]) == 1536
+    assert posted_payloads == [
+        {
+            "url": "https://api.mistral.ai/v1/embeddings",
+            "headers": {
+                "Authorization": "Bearer mistral-key",
+                "Content-Type": "application/json",
+            },
+            "json": {
+                "model": "codestral-embed-2505",
+                "input": ["def read_user(): pass"],
+                "encoding_format": "float",
+                "output_dimension": 1536,
+                "output_dtype": "float",
+            },
+        }
+    ]
+    assert embedder.last_token_usage == {
+        "input_tokens": 3,
+        "total_tokens": 3,
+    }
 
 
 def test_code_embedder_indexes_full_chunk_content_and_metadata(
@@ -146,6 +243,8 @@ def test_code_embedder_indexes_full_chunk_content_and_metadata(
     store = CodeEmbeddingStore(
         persist_path=tmp_path,
         model_name=JINA_CODE_MODEL,
+        provider="local",
+        dimension=CODE_EMBEDDING_DIMENSION,
     )
 
     store.index_chunks([chunk])
@@ -206,6 +305,8 @@ def test_code_embedder_upserts_each_embedding_batch(
     store = CodeEmbeddingStore(
         persist_path=tmp_path,
         model_name=JINA_CODE_MODEL,
+        provider="local",
+        dimension=CODE_EMBEDDING_DIMENSION,
         batch_size=2,
     )
 
@@ -218,6 +319,93 @@ def test_code_embedder_upserts_each_embedding_batch(
     ]
 
 
+def test_code_embedder_reuses_cached_repo_branch_chunks(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    collection = _FakeCollection()
+    model = _FakeModel()
+    monkeypatch.setattr(
+        code_embedding_module,
+        "_build_sentence_transformer",
+        lambda _model_name: model,
+    )
+    monkeypatch.setattr(
+        code_embedding_module,
+        "_build_chroma_client",
+        lambda _path: _FakeChromaClient(collection),
+    )
+    repository_id = uuid4()
+    chunks = [
+        _chunk(file_path="app/a.py", chunk_text="def a(): pass"),
+        _chunk(file_path="app/b.py", chunk_text="def b(): pass"),
+    ]
+    store = CodeEmbeddingStore(
+        persist_path=tmp_path,
+        model_name=JINA_CODE_MODEL,
+        provider="local",
+        dimension=CODE_EMBEDDING_DIMENSION,
+    )
+
+    first = store.index_chunks(chunks, repository_id=repository_id, branch="main")
+    second = store.index_chunks(chunks, repository_id=repository_id, branch="main")
+
+    assert first.embedded_count == 2
+    assert first.cache_hit_count == 0
+    assert second.embedded_count == 0
+    assert second.cache_hit_count == 2
+    assert model.encode_call_count == 1
+    assert len(collection.upsert_payloads) == 1
+    assert len(collection.update_payloads) == 1
+
+
+def test_code_embedder_embeds_changed_chunk_and_prunes_stale_cache_ids(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    collection = _FakeCollection()
+    model = _FakeModel()
+    monkeypatch.setattr(
+        code_embedding_module,
+        "_build_sentence_transformer",
+        lambda _model_name: model,
+    )
+    monkeypatch.setattr(
+        code_embedding_module,
+        "_build_chroma_client",
+        lambda _path: _FakeChromaClient(collection),
+    )
+    repository_id = uuid4()
+    store = CodeEmbeddingStore(
+        persist_path=tmp_path,
+        model_name=JINA_CODE_MODEL,
+        provider="local",
+        dimension=CODE_EMBEDDING_DIMENSION,
+    )
+
+    store.index_chunks(
+        [
+            _chunk(file_path="app/a.py", chunk_text="def a(): return 1"),
+            _chunk(file_path="app/b.py", chunk_text="def b(): pass"),
+        ],
+        repository_id=repository_id,
+        branch="main",
+    )
+    summary = store.index_chunks(
+        [
+            _chunk(file_path="app/a.py", chunk_text="def a(): return 2"),
+        ],
+        repository_id=repository_id,
+        branch="main",
+    )
+
+    assert summary.embedded_count == 1
+    assert summary.cache_hit_count == 0
+    assert summary.pruned_count == 2
+    assert model.encode_call_count == 2
+    assert len(collection.deleted_ids) == 2
+
+
 def test_code_retriever_requires_and_filters_by_job_id() -> None:
     job_id = uuid4()
     vectorstore = _FakeVectorStore([])
@@ -228,6 +416,34 @@ def test_code_retriever_requires_and_filters_by_job_id() -> None:
     assert vectorstore.where == {"job_id": str(job_id)}
     with pytest.raises(ValueError, match="job_id is required"):
         retriever.search(query="database query", job_id=None)  # type: ignore[arg-type]
+
+
+def test_code_retriever_filters_by_repo_branch_key() -> None:
+    job_id = uuid4()
+    repo_branch_key = "repo-branch-a"
+    vectorstore = _FakeVectorStore(
+        [
+            _vector_result(
+                job_id=job_id,
+                repo_branch_key=repo_branch_key,
+                file_path="app/a.py",
+            ),
+            _vector_result(
+                job_id=job_id,
+                repo_branch_key="repo-branch-b",
+                file_path="app/b.py",
+            ),
+        ]
+    )
+
+    results = CodeSemanticRetriever(vectorstore).search(
+        query="database query",
+        job_id=job_id,
+        repo_branch_key=repo_branch_key,
+    )
+
+    assert vectorstore.where == {"repo_branch_key": repo_branch_key}
+    assert [result.metadata["file_path"] for result in results] == ["app/a.py"]
 
 
 def test_job_a_never_retrieves_job_b_chunk() -> None:
@@ -332,6 +548,8 @@ def test_code_chunks_reject_incompatible_model_metadata(
         CodeEmbeddingStore(
             persist_path=tmp_path,
             model_name=JINA_CODE_MODEL,
+            provider="local",
+            dimension=CODE_EMBEDDING_DIMENSION,
         )
 
 
@@ -353,6 +571,8 @@ def test_code_chunks_cleanup_is_scoped_to_job(
     store = CodeEmbeddingStore(
         persist_path=tmp_path,
         model_name=JINA_CODE_MODEL,
+        provider="local",
+        dimension=CODE_EMBEDDING_DIMENSION,
     )
 
     store.delete_job("job-a")
@@ -369,7 +589,11 @@ class _FakeEmbedding:
 
 
 class _FakeModel:
+    def __init__(self) -> None:
+        self.encode_call_count = 0
+
     def encode(self, texts: list[str], **_kwargs: object) -> _FakeEmbedding:
+        self.encode_call_count += 1
         return _FakeEmbedding([[0.1] * CODE_EMBEDDING_DIMENSION for _text in texts])
 
 
@@ -381,13 +605,62 @@ class _FakeCollection:
         }
         self.upsert_payload: dict[str, Any] = {}
         self.upsert_payloads: list[dict[str, Any]] = []
+        self.update_payloads: list[dict[str, Any]] = []
         self.delete_where: dict[str, object] | None = None
+        self.deleted_ids: list[str] = []
+        self.records: dict[str, dict[str, Any]] = {}
 
     def upsert(self, **payload: Any) -> None:
         self.upsert_payload = payload
         self.upsert_payloads.append(payload)
+        ids = payload.get("ids", [])
+        documents = payload.get("documents", [])
+        metadatas = payload.get("metadatas", [])
+        for item_id, document, metadata in zip(ids, documents, metadatas, strict=True):
+            self.records[str(item_id)] = {
+                "document": document,
+                "metadata": metadata,
+            }
 
-    def delete(self, *, where: dict[str, object]) -> None:
+    def get(
+        self,
+        *,
+        where: dict[str, object],
+        include: list[str],
+    ) -> dict[str, list[object]]:
+        _ = include
+        ids: list[object] = [
+            item_id
+            for item_id, record in self.records.items()
+            if all(record["metadata"].get(key) == value for key, value in where.items())
+        ]
+        return {"ids": ids}
+
+    def update(self, **payload: Any) -> None:
+        self.update_payloads.append(payload)
+        ids = payload.get("ids", [])
+        documents = payload.get("documents")
+        metadatas = payload.get("metadatas", [])
+        for index, (item_id, metadata) in enumerate(
+            zip(ids, metadatas, strict=True)
+        ):
+            record = self.records.setdefault(str(item_id), {})
+            if isinstance(documents, list):
+                record["document"] = documents[index]
+            record["metadata"] = metadata
+
+    def delete(
+        self,
+        *,
+        where: dict[str, object] | None = None,
+        ids: list[str] | None = None,
+    ) -> None:
+        if ids is not None:
+            self.deleted_ids.extend(ids)
+            for item_id in ids:
+                self.records.pop(item_id, None)
+            return
+
         self.delete_where = where
 
 
@@ -400,7 +673,9 @@ class _FakeChromaClient:
         *,
         name: str,
         metadata: dict[str, object],
+        embedding_function: object | None = None,
     ) -> _FakeCollection:
+        _ = embedding_function
         self.collection.name = name
         self.collection.metadata = metadata
         return self.collection
@@ -415,8 +690,9 @@ class _ExistingCollectionClient:
         *,
         name: str,
         metadata: dict[str, object],
+        embedding_function: object | None = None,
     ) -> _FakeCollection:
-        _ = name, metadata
+        _ = name, metadata, embedding_function
         return self.collection
 
 
@@ -443,15 +719,38 @@ def _vector_result(
     *,
     job_id: object,
     file_path: str,
+    repo_branch_key: str | None = None,
     content: str | None = None,
     score: float = 0.9,
 ) -> CodeVectorSearchResult:
+    metadata: dict[str, object] = {
+        "job_id": str(job_id),
+        "file_path": file_path,
+        "chunk_index": 0,
+    }
+    if repo_branch_key is not None:
+        metadata["repo_branch_key"] = repo_branch_key
     return CodeVectorSearchResult(
         content=content or f"# {file_path}",
-        metadata={
-            "job_id": str(job_id),
-            "file_path": file_path,
-            "chunk_index": 0,
-        },
+        metadata=metadata,
         score=score,
+    )
+
+
+def _chunk(*, file_path: str, chunk_text: str) -> ChunkMetadataDocument:
+    return ChunkMetadataDocument(
+        job_id=uuid4(),
+        file_path=file_path,
+        language="python",
+        chunk_type="function",
+        chunk_index=0,
+        total_chunks=1,
+        function_name=None,
+        line_start=1,
+        line_end=1,
+        imports=[],
+        module="app",
+        risk_area="general",
+        token_count=3,
+        chunk_text=chunk_text,
     )

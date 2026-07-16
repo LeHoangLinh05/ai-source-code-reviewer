@@ -115,14 +115,26 @@ class Settings(BaseSettings):
     nvidia_model: str = "deepseek-ai/deepseek-v4-flash"
     nvidia_max_retries: int = 0
     nvidia_timeout_seconds: float = 45.0
+    mistral_api_key: SecretStr | None = None
+    mistral_base_url: str = "https://api.mistral.ai/v1"
+    openrouter_api_key: SecretStr | None = None
+    openrouter_base_url: str = "https://openrouter.ai/api/v1"
     rag_chroma_path: str = str(PROJECT_ROOT / ".chroma")
     rag_embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
-    code_embedding_provider: Literal["local", "openai", "nvidia"] = "local"
+    code_embedding_provider: Literal[
+        "local",
+        "openai",
+        "nvidia",
+        "mistral",
+        "openrouter",
+    ] = "local"
     code_embedding_model: str = "jinaai/jina-embeddings-v2-base-code"
     code_embedding_base_url: str | None = None
     code_embedding_dimension: int = 768
     code_embedding_batch_size: int = 4
     code_embedding_max_sequence_length: int = 1024
+    code_embedding_max_retries: int = Field(default=4, ge=0, le=10)
+    code_embedding_retry_base_delay_seconds: float = Field(default=2.0, ge=0.1, le=60.0)
     enable_code_semantic_search: bool = True
 
     @field_validator("debug", mode="before")

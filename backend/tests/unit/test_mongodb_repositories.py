@@ -169,6 +169,10 @@ async def test_ensure_mongodb_indexes_creates_expected_indexes(
         for _keys, name in database["chunk_metadata"].indexes
     )
     assert any(
+        name == "idx_chunk_metadata_repo_branch_file"
+        for _keys, name in database["chunk_metadata"].indexes
+    )
+    assert any(
         name == "idx_repo_summary_repository"
         for _keys, name in database["repo_summary_results"].indexes
     )

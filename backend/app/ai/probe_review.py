@@ -200,12 +200,14 @@ class ProbeRetrievalService:
         """Run hybrid retrieval for every probe and write redacted traces."""
 
         chunk_documents = await _load_chunk_documents(self.database, job_id)
+        repo_branch_key = _repo_branch_key_from_documents(chunk_documents)
         bm25_index = _build_bm25_index(chunk_documents)
         bundles: list[ProbeEvidenceBundle] = []
         for probe in probes:
             started_at = time.perf_counter()
             bundle = await self._retrieve_probe(
                 job_id=job_id,
+                repo_branch_key=repo_branch_key,
                 probe=probe,
                 chunk_documents=chunk_documents,
                 bm25_index=bm25_index,
@@ -224,6 +226,7 @@ class ProbeRetrievalService:
         self,
         *,
         job_id: UUID,
+        repo_branch_key: str | None,
         probe: dict[str, object],
         chunk_documents: list[dict[str, Any]],
         bm25_index: BM25Index,
@@ -241,6 +244,7 @@ class ProbeRetrievalService:
                 semantic_results = await _semantic_search(
                     retriever=self._code_retriever(),
                     job_id=job_id,
+                    repo_branch_key=repo_branch_key,
                     query=query,
                     top_k=max(top_k * 4, self.chunks_per_probe),
                 )
@@ -656,6 +660,15 @@ async def _load_chunk_documents(
     return [document for document in documents if isinstance(document, dict)]
 
 
+def _repo_branch_key_from_documents(documents: list[dict[str, Any]]) -> str | None:
+    for document in documents:
+        repo_branch_key = document.get("repo_branch_key")
+        if isinstance(repo_branch_key, str) and repo_branch_key:
+            return repo_branch_key
+
+    return None
+
+
 def _build_bm25_index(chunk_documents: list[dict[str, Any]]) -> BM25Index:
     documents: list[BM25Document] = []
     for document in chunk_documents:
@@ -689,6 +702,7 @@ async def _semantic_search(
     *,
     retriever: CodeSemanticRetriever,
     job_id: UUID,
+    repo_branch_key: str | None,
     query: str,
     top_k: int,
 ) -> list[Any]:
@@ -696,6 +710,7 @@ async def _semantic_search(
         retriever,
         query=query,
         job_id=job_id,
+        repo_branch_key=repo_branch_key,
         top_k=top_k,
     )
 
@@ -705,6 +720,7 @@ async def _to_thread_search(
     *,
     query: str,
     job_id: UUID,
+    repo_branch_key: str | None,
     top_k: int,
 ) -> list[Any]:
     import asyncio
@@ -713,6 +729,7 @@ async def _to_thread_search(
         retriever.search,
         query=query,
         job_id=job_id,
+        repo_branch_key=repo_branch_key,
         top_k=top_k,
     )
 
