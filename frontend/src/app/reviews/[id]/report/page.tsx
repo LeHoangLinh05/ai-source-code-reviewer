@@ -206,7 +206,7 @@ export default function ReviewReportPage() {
                   </CardDescription>
                 </CardHeader>
                 <CardContent>
-                  <TopRiskyFiles files={report.top_risky_files ?? []} />
+                  <TopRiskyFiles files={report.top_risky_files ?? []} jobId={jobId} />
                 </CardContent>
               </Card>
             </section>
@@ -359,7 +359,13 @@ function CategoryBars({
   );
 }
 
-function TopRiskyFiles({ files }: { files: TopRiskyFile[] }) {
+function TopRiskyFiles({
+  files,
+  jobId,
+}: {
+  files: TopRiskyFile[];
+  jobId: string;
+}) {
   if (files.length === 0) {
     return (
       <p className="text-[15px] text-muted-foreground">No risky files available.</p>
@@ -369,8 +375,9 @@ function TopRiskyFiles({ files }: { files: TopRiskyFile[] }) {
   return (
     <div className="grid gap-3">
       {files.map((file) => (
-        <div
-          className="rounded-md border border-border bg-background p-3"
+        <Link
+          className="block rounded-md border border-border bg-background p-3 transition-colors hover:bg-muted/35"
+          href={`/reviews/${jobId}/issues?file_path=${encodeURIComponent(file.path)}`}
           key={file.path}
         >
           <div className="flex items-start justify-between gap-3">
@@ -382,7 +389,7 @@ function TopRiskyFiles({ files }: { files: TopRiskyFile[] }) {
           <p className="mt-2 text-xs capitalize text-muted-foreground">
             Max severity: {file.max_severity ?? "unknown"}
           </p>
-        </div>
+        </Link>
       ))}
     </div>
   );
@@ -452,5 +459,7 @@ function buildCategoryData(issues: ReviewIssue[]) {
 }
 
 function countCategory(issues: ReviewIssue[], category: IssueCategory) {
-  return issues.filter((issue) => issue.category === category).length;
+  return issues
+    .filter((issue) => issue.category === category)
+    .reduce((sum, issue) => sum + issue.occurrence_count, 0);
 }

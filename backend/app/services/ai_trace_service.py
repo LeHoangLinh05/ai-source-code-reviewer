@@ -29,11 +29,11 @@ from app.schemas.ai_trace import (
     AITraceCoverage,
     AITraceResponse,
     AITraceStage,
+    AITokenTotals,
     AIToolCallTrace,
 )
 from app.services.report_generation_service import AI_REPORT_MODEL, STATIC_REPORT_MODEL
 
-MAX_RECENT_TOOL_CALLS = 8
 MAX_TEXT_PREVIEW = 700
 MAX_LIST_PREVIEW_ITEMS = 6
 MAX_DICT_PREVIEW_ITEMS = 10
@@ -54,10 +54,15 @@ class AITraceService:
     async def get_trace(self, job_id: UUID) -> AITraceResponse:
         """Return the latest AI trace snapshot for a review job."""
 
+        tool_filter = {
+            "job_id": str(job_id),
+            "$or": [{"event_type": "tool"}, {"event_type": {"$exists": False}}],
+        }
         tool_call_count = await self.mongodb_database[
             TOOL_CALL_LOGS_COLLECTION
-        ].count_documents({"job_id": str(job_id)})
-        recent_tool_calls = await self._load_recent_tool_calls(job_id)
+        ].count_documents(tool_filter)
+        events = await self._load_trace_events(job_id)
+        tool_calls = [event for event in events if event.event_type == "tool"]
         issue_counts = await self._load_issue_counts(job_id)
         job = await self._load_job(job_id)
         report = await self._load_report(job_id)
@@ -67,7 +72,7 @@ class AITraceService:
             job=job,
             report=report,
         )
-        latest_tool_call = recent_tool_calls[0] if recent_tool_calls else None
+        latest_tool_call = tool_calls[-1] if tool_calls else None
 
         return AITraceResponse(
             job_id=job_id,
@@ -95,15 +100,16 @@ class AITraceService:
                 latest_tool_call=latest_tool_call,
                 report=report,
             ),
-            recent_tool_calls=list(reversed(recent_tool_calls)),
+            recent_tool_calls=tool_calls,
+            events=events,
+            token_totals=_token_totals(events),
         )
 
-    async def _load_recent_tool_calls(self, job_id: UUID) -> list[AIToolCallTrace]:
+    async def _load_trace_events(self, job_id: UUID) -> list[AIToolCallTrace]:
         cursor = (
             self.mongodb_database[TOOL_CALL_LOGS_COLLECTION]
             .find({"job_id": str(job_id)})
-            .sort("sequence", -1)
-            .limit(MAX_RECENT_TOOL_CALLS)
+            .sort([("called_at", 1), ("sequence", 1)])
         )
         documents = cast(list[dict[str, Any]], await cursor.to_list(length=None))
         return [self._to_tool_call_trace(document) for document in documents]
@@ -357,8 +363,46 @@ class AITraceService:
             duration_ms=int(document.get("duration_ms", 0)),
             input=tool_input,
             output=output_dict,
-            status=_tool_call_status(tool_name, output_dict),
+            status=str(document.get("status") or _tool_call_status(tool_name, output_dict)),
+            event_type=str(document.get("event_type") or "tool"),
+            provider=_optional_str(document.get("provider")),
+            model=_optional_str(document.get("model")),
+            phase=_optional_str(document.get("phase")),
+            token_usage=_token_usage_dict(document.get("token_usage")),
+            metadata=_preview_dict(document.get("metadata", {})),
         )
+
+
+def _token_totals(events: list[AIToolCallTrace]) -> AITokenTotals:
+    totals = AITokenTotals()
+    for event in events:
+        usage = event.token_usage or {}
+        totals.input_tokens += _safe_int(usage.get("input_tokens"))
+        totals.output_tokens += _safe_int(usage.get("output_tokens"))
+        totals.total_tokens += _safe_int(usage.get("total_tokens"))
+        totals.estimated_input_tokens += _safe_int(usage.get("estimated_input_tokens"))
+    return totals
+
+
+def _token_usage_dict(value: object) -> dict[str, int] | None:
+    if not isinstance(value, dict):
+        return None
+
+    usage: dict[str, int] = {}
+    for key in (
+        "input_tokens",
+        "output_tokens",
+        "total_tokens",
+        "estimated_input_tokens",
+    ):
+        item = value.get(key)
+        if isinstance(item, int) and item >= 0:
+            usage[key] = item
+    return usage or None
+
+
+def _optional_str(value: object) -> str | None:
+    return value if isinstance(value, str) else None
 
 
 def _preview_dict(value: object) -> dict[str, object]:

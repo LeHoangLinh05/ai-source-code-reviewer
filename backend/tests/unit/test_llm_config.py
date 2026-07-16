@@ -331,3 +331,60 @@ def test_unrelated_503_is_not_treated_as_provider_limit() -> None:
     error.status_code = 503  # type: ignore[attr-defined]
 
     assert not llm_config._is_rate_limit_error(error)
+
+
+def test_extract_token_usage_from_usage_metadata() -> None:
+    result = SimpleNamespace(
+        usage_metadata={
+            "input_tokens": 21,
+            "output_tokens": 8,
+            "total_tokens": 29,
+        }
+    )
+
+    assert llm_config._extract_token_usage(result) == {
+        "input_tokens": 21,
+        "output_tokens": 8,
+        "total_tokens": 29,
+    }
+
+
+def test_extract_token_usage_from_response_metadata() -> None:
+    result = SimpleNamespace(
+        response_metadata={
+            "token_usage": {
+                "prompt_tokens": 30,
+                "completion_tokens": 12,
+            }
+        }
+    )
+
+    assert llm_config._extract_token_usage(result) == {
+        "input_tokens": 30,
+        "output_tokens": 12,
+        "total_tokens": 42,
+    }
+
+
+def test_llm_trace_summarizes_messages_without_empty_payloads() -> None:
+    trace = llm_config._llm_input_trace(
+        [
+            ("system", "You are reviewing code."),
+            ("user", "Find hardcoded secrets in auth.py"),
+        ]
+    )
+
+    assert trace["kind"] == "messages"
+    assert trace["message_count"] == 2
+    messages = trace["messages"]
+    assert isinstance(messages, list)
+    assert messages[0]["role"] == "system"
+    assert messages[0]["content"]["size_chars"] > 0
+    assert messages[1]["content"]["preview"] == "Find hardcoded secrets in auth.py"
+
+
+def test_llm_trace_summarizes_output_content() -> None:
+    trace = llm_config._llm_output_trace(SimpleNamespace(content="review result"))
+
+    assert trace["kind"] == "SimpleNamespace"
+    assert trace["content"]["preview"] == "review result"

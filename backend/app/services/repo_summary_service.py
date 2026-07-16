@@ -4,7 +4,7 @@ import logging
 from pathlib import Path
 import re
 
-from app.ai.llm_config import get_openai_llm
+from app.ai.llm_config import run_with_configured_llm
 from app.analyzers.file_filter import filter_files
 from app.analyzers.secret_scanner import mask_secret_values
 from app.analyzers.structure_analyzer import analyze_structure
@@ -117,9 +117,12 @@ class RepoSummaryService:
 async def invoke_repo_summary_llm(prompt: str) -> RepoSummary:
     """Run one structured-output LLM call for RepoSummary."""
 
-    llm = get_openai_llm()
-    structured_llm = llm.with_structured_output(RepoSummary)
-    result = await structured_llm.ainvoke(prompt)
+    async def invoke(llm: object) -> RepoSummary:
+        structured_llm = llm.with_structured_output(RepoSummary)  # type: ignore[attr-defined]
+        result = await structured_llm.ainvoke(prompt)
+        return coerce_repo_summary(result)
+
+    result = await run_with_configured_llm(invoke, allow_fallback=True)
     return coerce_repo_summary(result)
 
 

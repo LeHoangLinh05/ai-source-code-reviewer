@@ -89,6 +89,27 @@ class ReportRepository:
         result = await self.session.execute(statement)
         return list(result.scalars().all())
 
+    async def list_filtered_issues(
+        self,
+        *,
+        job_id: UUID,
+        severity: IssueSeverity | None,
+        category: IssueCategory | None,
+        source: IssueSource | None,
+        file_path: str | None,
+    ) -> list[ReviewIssue]:
+        """Return all issues matching report filters."""
+
+        statement = self._issue_filter_statement(
+            job_id=job_id,
+            severity=severity,
+            category=category,
+            source=source,
+            file_path=file_path,
+        )
+        result = await self.session.execute(statement)
+        return list(result.scalars().all())
+
     async def list_all_issues(self, job_id: UUID) -> list[ReviewIssue]:
         """Return every issue attached to a review job."""
 

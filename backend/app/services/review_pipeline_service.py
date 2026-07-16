@@ -9,7 +9,7 @@ import shutil
 import subprocess
 import time
 from typing import cast
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -38,6 +38,7 @@ from app.repositories.mongodb_repository import (
     FileAnalysisResultRepository,
     RawStaticAnalysisOutputRepository,
     RepoSummaryResultRepository,
+    ToolCallLogRepository,
 )
 from app.repositories.report_repository import ReportRepository
 from app.repositories.repository_repository import RepositoryRepository
@@ -49,6 +50,7 @@ from app.schemas.mongodb import (
     ParsedStaticIssue,
     RawStaticAnalysisOutputDocument,
     RepoSummaryResultDocument,
+    ToolCallLogDocument,
 )
 from app.schemas.normalized_issue import NormalizedIssue
 from app.services.notification_service import publish_job_progress
@@ -388,10 +390,11 @@ class ReviewPipelineService:
             review_job.id,
             len(chunks_to_embed),
         )
-        await asyncio.to_thread(
+        embedding_summary = await asyncio.to_thread(
             self.code_embedding_store.index_chunks,
             chunks_to_embed,
         )
+        await self._write_embedding_trace_events(review_job.id, embedding_summary)
         logger.info(
             "Review job %s semantic code indexing finished in %.2fs",
             review_job.id,
@@ -403,6 +406,60 @@ class ReviewPipelineService:
             84,
             "Source chunks ready",
         )
+
+    async def _write_embedding_trace_events(
+        self,
+        job_id: UUID,
+        embedding_summary: object,
+    ) -> None:
+        batches = getattr(embedding_summary, "batches", None)
+        if not isinstance(batches, list) or not batches:
+            return
+
+        database = cast(
+            AsyncIOMotorDatabase,
+            self.chunk_metadata_repository.collection.database,
+        )
+        repository = ToolCallLogRepository(database)
+        session_id = uuid4()
+        for sequence, batch in enumerate(batches, start=1):
+            token_usage = {
+                "estimated_input_tokens": getattr(
+                    batch,
+                    "estimated_input_tokens",
+                    0,
+                )
+            }
+            actual_usage = getattr(batch, "token_usage", None)
+            if isinstance(actual_usage, dict):
+                token_usage.update(actual_usage)
+            await repository.insert_one(
+                ToolCallLogDocument(
+                    job_id=job_id,
+                    session_id=session_id,
+                    agent_type="review",
+                    sequence=sequence,
+                    tool_name="code_embedding_batch",
+                    called_at=datetime.now(UTC),
+                    duration_ms=max(0, int(getattr(batch, "duration_ms", 0))),
+                    input={
+                        "batch_number": int(getattr(batch, "batch_number", sequence)),
+                        "total_batches": int(getattr(batch, "total_batches", 0)),
+                        "file_paths": list(getattr(batch, "file_paths", [])),
+                    },
+                    output={
+                        "status": "ok",
+                        "chunk_count": int(getattr(batch, "chunk_count", 0)),
+                    },
+                    event_type="embedding",
+                    provider=self.settings.code_embedding_provider,
+                    model=self.settings.code_embedding_model,
+                    phase="code_embedding",
+                    token_usage=token_usage,
+                    status="ok",
+                    metadata={"source": "review_pipeline"},
+                )
+            )
 
     async def _persist_pre_agent_report(
         self,

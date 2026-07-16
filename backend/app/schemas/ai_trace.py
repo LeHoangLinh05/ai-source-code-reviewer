@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 
 
 class AIToolCallTrace(BaseModel):
-    """One logged AI tool call."""
+    """One logged AI or pipeline trace event."""
 
     sequence: int = Field(ge=1)
     tool_name: str
@@ -16,6 +16,21 @@ class AIToolCallTrace(BaseModel):
     input: dict[str, object]
     output: dict[str, object]
     status: str
+    event_type: str = "tool"
+    provider: str | None = None
+    model: str | None = None
+    phase: str | None = None
+    token_usage: dict[str, int] | None = None
+    metadata: dict[str, object] = Field(default_factory=dict)
+
+
+class AITokenTotals(BaseModel):
+    """Aggregated token usage visible in the trace UI."""
+
+    input_tokens: int = Field(default=0, ge=0)
+    output_tokens: int = Field(default=0, ge=0)
+    total_tokens: int = Field(default=0, ge=0)
+    estimated_input_tokens: int = Field(default=0, ge=0)
 
 
 class AITraceCoverage(BaseModel):
@@ -67,3 +82,5 @@ class AITraceResponse(BaseModel):
     coverage: AITraceCoverage
     stages: list[AITraceStage]
     recent_tool_calls: list[AIToolCallTrace]
+    events: list[AIToolCallTrace]
+    token_totals: AITokenTotals

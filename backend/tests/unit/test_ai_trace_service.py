@@ -1,11 +1,15 @@
 """Tests for AI trace coverage/status helpers."""
 
+from datetime import UTC, datetime
+
 from app.models.review_job import ReviewJobStatus
-from app.schemas.ai_trace import AITraceCoverage
+from app.schemas.ai_trace import AITraceCoverage, AIToolCallTrace
 from app.services.ai_trace_service import (
     _ai_stage_status,
     _read_chunk_coverage,
     _report_stage_status,
+    _token_totals,
+    _token_usage_dict,
 )
 from app.services.report_generation_service import AI_REPORT_MODEL
 
@@ -93,3 +97,55 @@ def test_ai_report_without_full_chunk_coverage_is_completed() -> None:
     assert _report_stage_status(
         ReviewJobStatus.COMPLETED, coverage, AI_REPORT_MODEL
     ) == ("completed")
+
+
+def test_trace_token_totals_include_llm_and_embedding_estimates() -> None:
+    events = [
+        AIToolCallTrace(
+            sequence=1,
+            tool_name="llm_call",
+            called_at=datetime.now(UTC),
+            duration_ms=10,
+            input={},
+            output={},
+            status="ok",
+            event_type="llm",
+            token_usage={
+                "input_tokens": 100,
+                "output_tokens": 40,
+                "total_tokens": 140,
+            },
+        ),
+        AIToolCallTrace(
+            sequence=2,
+            tool_name="code_embedding_batch",
+            called_at=datetime.now(UTC),
+            duration_ms=5,
+            input={},
+            output={},
+            status="ok",
+            event_type="embedding",
+            token_usage={"estimated_input_tokens": 75},
+        ),
+    ]
+
+    totals = _token_totals(events)
+
+    assert totals.input_tokens == 100
+    assert totals.output_tokens == 40
+    assert totals.total_tokens == 140
+    assert totals.estimated_input_tokens == 75
+
+
+def test_token_usage_dict_drops_unknown_fields() -> None:
+    assert _token_usage_dict(
+        {
+            "input_tokens": 12,
+            "prompt_tokens": 99,
+            "estimated_input_tokens": 7,
+            "bad": "value",
+        }
+    ) == {
+        "input_tokens": 12,
+        "estimated_input_tokens": 7,
+    }

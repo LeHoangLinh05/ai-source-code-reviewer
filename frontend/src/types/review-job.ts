@@ -34,6 +34,12 @@ export type AIToolCallTrace = {
   input: Record<string, unknown>;
   output: Record<string, unknown>;
   status: "ok" | "error" | string;
+  event_type: "tool" | "llm" | "embedding" | "pipeline" | string;
+  provider: string | null;
+  model: string | null;
+  phase: string | null;
+  token_usage: Record<string, number> | null;
+  metadata: Record<string, unknown>;
 };
 
 export type AITraceCoverage = {
@@ -79,6 +85,13 @@ export type AITrace = {
   coverage: AITraceCoverage;
   stages: AITraceStage[];
   recent_tool_calls: AIToolCallTrace[];
+  events: AIToolCallTrace[];
+  token_totals: {
+    input_tokens: number;
+    output_tokens: number;
+    total_tokens: number;
+    estimated_input_tokens: number;
+  };
 };
 
 export type CreateReviewJobPayload = {

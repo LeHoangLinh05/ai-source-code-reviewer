@@ -9,6 +9,7 @@ export type TopRiskyFile = {
   path: string;
   issue_count: number;
   max_severity?: string;
+  job_id?: string;
 };
 
 export type ReviewReport = {

@@ -32,6 +32,7 @@ import {
   getReviewJob,
   getReviewJobAiTrace,
 } from "@/lib/review-jobs";
+import { TraceEventList, TraceTokenSummary } from "@/components/reviews/ai-trace-log";
 import { useAppDispatch, useAppSelector } from "@/store/hooks";
 import {
   setCurrentJob,
@@ -44,7 +45,6 @@ import {
 import type {
   AITraceStage,
   AITrace,
-  AIToolCallTrace,
   ReviewJob,
   ReviewJobStatus,
 } from "@/types/review-job";
@@ -179,6 +179,11 @@ export default function ReviewJobDetailPage() {
                 <Link href={`/reviews/${jobId}/issues`}>Issues</Link>
               </Button>
             </>
+          ) : null}
+          {currentJob ? (
+            <Button asChild variant="secondary">
+              <Link href={`/reviews/${jobId}/trace`}>Trace</Link>
+            </Button>
           ) : null}
           <Button
             disabled={isLoading}
@@ -341,19 +346,13 @@ function AITracePanel({
 
         {trace ? (
           <>
+            <TraceTokenSummary trace={trace} />
             <StageTimeline stages={trace.stages} />
           </>
         ) : null}
 
-        {trace?.recent_tool_calls.length ? (
-          <ol className="grid gap-3">
-            {trace.recent_tool_calls.map((toolCall, index) => (
-              <ToolCallRow
-                key={`${toolCall.sequence}-${toolCall.tool_name}-${toolCall.called_at}-${index}`}
-                call={toolCall}
-              />
-            ))}
-          </ol>
+        {trace ? (
+          <TraceEventList events={trace.events} isCompact />
         ) : null}
       </CardContent>
     </Card>
@@ -490,37 +489,6 @@ function getStageStatusClass(status: string) {
   };
 }
 
-function ToolCallRow({ call }: { call: AIToolCallTrace }) {
-  const statusTone = getToolStatusTone(call.status);
-
-  return (
-    <li className="rounded-md border border-border p-4">
-      <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
-        <div className="min-w-0">
-          <p className="text-sm font-semibold text-foreground">
-            #{call.sequence} {call.tool_name}
-          </p>
-          <p className="mt-1 text-xs text-muted-foreground">
-            {formatDate(call.called_at)} · {call.duration_ms}ms
-          </p>
-        </div>
-        <span
-          className={[
-            "inline-flex h-8 items-center rounded-md px-2 text-xs font-semibold",
-            statusTone.badge,
-          ].join(" ")}
-        >
-          {call.status}
-        </span>
-      </div>
-      <div className="mt-3 grid gap-3 md:grid-cols-2">
-        <TraceJsonBlock label="Input" value={call.input} />
-        <TraceJsonBlock label="Output" value={call.output} />
-      </div>
-    </li>
-  );
-}
-
 function getToolStatusTone(status: string) {
   if (status === "error") {
     return {
@@ -545,25 +513,6 @@ function getToolStatusTone(status: string) {
     badge: "bg-muted text-muted-foreground",
     container: "border-border bg-muted text-muted-foreground",
   };
-}
-
-function TraceJsonBlock({
-  label,
-  value,
-}: {
-  label: string;
-  value: Record<string, unknown>;
-}) {
-  return (
-    <div className="min-w-0 rounded-md bg-background p-3">
-      <p className="mb-2 text-xs font-semibold uppercase text-muted-foreground">
-        {label}
-      </p>
-      <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words text-xs leading-5 text-muted-foreground">
-        {formatTraceJson(value)}
-      </pre>
-    </div>
-  );
 }
 
 function InfoCard({ label, value }: { label: string; value: string }) {
@@ -653,6 +602,3 @@ function isStaticAnalysisEnabled(options: Record<string, unknown> | null) {
   return options?.run_static_analysis !== false;
 }
 
-function formatTraceJson(value: Record<string, unknown>) {
-  return JSON.stringify(value, null, 2);
-}

@@ -549,9 +549,14 @@ function RiskyFiles({ files }: { files: TopRiskyFile[] }) {
   return (
     <div className="grid gap-3">
       {files.map((file) => (
-        <div
-          className="rounded-md border border-border bg-background p-4"
-          key={file.path}
+        <Link
+          className="block rounded-md border border-border bg-background p-4 transition-colors hover:bg-muted/35"
+          href={
+            file.job_id
+              ? `/reviews/${file.job_id}/issues?file_path=${encodeURIComponent(file.path)}`
+              : "/reviews"
+          }
+          key={`${file.job_id ?? "unknown"}-${file.path}`}
         >
           <div className="flex items-start justify-between gap-4">
             <p className="break-all text-[15px] font-semibold">{file.path}</p>
@@ -562,7 +567,7 @@ function RiskyFiles({ files }: { files: TopRiskyFile[] }) {
           <p className="mt-2 text-sm capitalize text-muted-foreground">
             Max severity: {file.max_severity ?? "unknown"}
           </p>
-        </div>
+        </Link>
       ))}
     </div>
   );
@@ -673,6 +678,7 @@ function buildRiskyFiles(reports: ReviewReport[]) {
         path: file.path,
         issue_count: (existingFile?.issue_count ?? 0) + file.issue_count,
         max_severity: existingFile?.max_severity ?? file.max_severity,
+        job_id: existingFile?.job_id ?? report.job_id,
       });
     }
   }

@@ -3,7 +3,7 @@
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.models.review_issue import IssueCategory, IssueSeverity, IssueSource
 
@@ -50,6 +50,18 @@ class ReportSummaryResponse(BaseModel):
     scores: ReportScores
 
 
+class IssueOccurrenceResponse(BaseModel):
+    """One concrete source location for a grouped issue."""
+
+    issue_id: UUID
+    file_path: str
+    line_start: int
+    line_end: int
+    confidence: float | None
+    raw_output: dict[str, object] | None
+    created_at: datetime
+
+
 class IssueResponse(BaseModel):
     """Normalized review issue returned by report endpoints."""
 
@@ -69,6 +81,11 @@ class IssueResponse(BaseModel):
     confidence: float | None
     raw_output: dict[str, object] | None
     created_at: datetime
+    group_key: str | None = None
+    occurrence_count: int = 1
+    affected_files: list[str] = Field(default_factory=list)
+    primary_issue_id: UUID | None = None
+    occurrences: list[IssueOccurrenceResponse] = Field(default_factory=list)
 
 
 class IssueFilters(BaseModel):

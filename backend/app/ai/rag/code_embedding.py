@@ -33,6 +33,28 @@ class CodeVectorSearchResult:
     score: float
 
 
+@dataclass(slots=True, frozen=True)
+class CodeEmbeddingBatchTrace:
+    """Timing and token metadata for one embedding batch."""
+
+    batch_number: int
+    total_batches: int
+    file_paths: list[str]
+    chunk_count: int
+    duration_ms: int
+    estimated_input_tokens: int
+    token_usage: dict[str, int] | None = None
+
+
+@dataclass(slots=True, frozen=True)
+class CodeEmbeddingIndexSummary:
+    """Summary returned after indexing source-code chunks."""
+
+    indexed_count: int
+    duration_ms: int
+    batches: list[CodeEmbeddingBatchTrace]
+
+
 class CodeEmbedder(Protocol):
     """Embedding adapter used by the source-code vector store."""
 
@@ -84,7 +106,10 @@ class CodeEmbeddingStore:
             api_key=api_key,
         )
 
-    def index_chunks(self, chunks: list[ChunkMetadataDocument]) -> None:
+    def index_chunks(
+        self,
+        chunks: list[ChunkMetadataDocument],
+    ) -> CodeEmbeddingIndexSummary:
         """Embed and upsert exact, full chunk documents."""
 
         indexable_chunks = [
@@ -92,7 +117,11 @@ class CodeEmbeddingStore:
         ]
         if not indexable_chunks:
             logger.info("No source chunks available for semantic code indexing")
-            return
+            return CodeEmbeddingIndexSummary(
+                indexed_count=0,
+                duration_ms=0,
+                batches=[],
+            )
 
         started_at = time.perf_counter()
         logger.info(
@@ -107,22 +136,31 @@ class CodeEmbeddingStore:
 
         total_batches = _count_batches(len(indexable_chunks), self.batch_size)
         indexed_count = 0
+        batch_traces: list[CodeEmbeddingBatchTrace] = []
         for batch_number, batch_chunks in enumerate(
             _batched(indexable_chunks, self.batch_size),
             start=1,
         ):
-            indexed_count += self._index_chunk_batch(
+            batch_trace = self._index_chunk_batch(
                 batch_chunks,
                 batch_number=batch_number,
                 total_batches=total_batches,
             )
+            indexed_count += batch_trace.chunk_count
+            batch_traces.append(batch_trace)
 
+        duration_ms = _duration_ms(started_at)
         logger.info(
             "Semantic code indexing finished for %d chunks in Chroma collection %s "
             "in %.2fs",
             indexed_count,
             self._collection_name(),
-            time.perf_counter() - started_at,
+            duration_ms / 1000,
+        )
+        return CodeEmbeddingIndexSummary(
+            indexed_count=indexed_count,
+            duration_ms=duration_ms,
+            batches=batch_traces,
         )
 
     def query(
@@ -249,7 +287,7 @@ class CodeEmbeddingStore:
         *,
         batch_number: int,
         total_batches: int,
-    ) -> int:
+    ) -> CodeEmbeddingBatchTrace:
         documents = [str(chunk.chunk_text) for chunk in chunks]
         batch_started_at = time.perf_counter()
         logger.info(
@@ -262,6 +300,7 @@ class CodeEmbeddingStore:
             self._embedder.embed_documents(documents),
             expected_dimension=self._expected_dimension(),
         )
+        token_usage = getattr(self._embedder, "last_token_usage", None)
         if len(embeddings) != len(chunks):
             raise RuntimeError("Code embedding model returned an unexpected batch size")
 
@@ -284,11 +323,19 @@ class CodeEmbeddingStore:
             total_batches,
             time.perf_counter() - upsert_started_at,
         )
-        indexed_count = len(chunks)
+        batch_trace = CodeEmbeddingBatchTrace(
+            batch_number=batch_number,
+            total_batches=total_batches,
+            file_paths=sorted({chunk.file_path for chunk in chunks}),
+            chunk_count=len(chunks),
+            duration_ms=_duration_ms(batch_started_at),
+            estimated_input_tokens=sum(chunk.token_count for chunk in chunks),
+            token_usage=token_usage if isinstance(token_usage, dict) else None,
+        )
         del embeddings
         del documents
         gc.collect()
-        return indexed_count
+        return batch_trace
 
     def _collection_name(self) -> str:
         if self.provider == "local":
@@ -334,13 +381,17 @@ class DisabledCodeEmbeddingStore(CodeEmbeddingStore):
     def __init__(self) -> None:
         """Avoid loading Chroma or embedding models when semantic search is off."""
 
-    def index_chunks(self, chunks: list[ChunkMetadataDocument]) -> None:
+    def index_chunks(
+        self,
+        chunks: list[ChunkMetadataDocument],
+    ) -> CodeEmbeddingIndexSummary:
         """Skip source-code embedding while preserving normal chunk persistence."""
 
         logger.info(
             "Semantic code search disabled; skipping vector indexing for %d chunks",
             len(chunks),
         )
+        return CodeEmbeddingIndexSummary(indexed_count=0, duration_ms=0, batches=[])
 
     def query(
         self,
@@ -404,6 +455,7 @@ class _OpenAICompatibleCodeEmbedder:
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
         }
+        self.last_token_usage: dict[str, int] | None = None
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
         return self._embed(texts, input_type="passage")
@@ -444,7 +496,9 @@ class _OpenAICompatibleCodeEmbedder:
                 f"HTTP {response.status_code}"
             ) from error
 
-        return _embeddings_from_response(response.json())
+        response_payload = response.json()
+        self.last_token_usage = _token_usage_from_response(response_payload)
+        return _embeddings_from_response(response_payload)
 
 
 def _build_sentence_transformer(model_name: str) -> Any:
@@ -558,6 +612,35 @@ def _batched(
 
 def _count_batches(item_count: int, batch_size: int) -> int:
     return (item_count + batch_size - 1) // batch_size
+
+
+def _duration_ms(started_at: float) -> int:
+    return max(0, int((time.perf_counter() - started_at) * 1000))
+
+
+def _token_usage_from_response(response_payload: object) -> dict[str, int] | None:
+    if not isinstance(response_payload, dict):
+        return None
+    usage = response_payload.get("usage")
+    if not isinstance(usage, dict):
+        return None
+    input_tokens = _usage_int(usage, ("input_tokens", "prompt_tokens"))
+    total_tokens = _usage_int(usage, ("total_tokens",))
+    if total_tokens == 0:
+        total_tokens = input_tokens
+    result = {
+        "input_tokens": input_tokens,
+        "total_tokens": total_tokens,
+    }
+    return result if any(result.values()) else None
+
+
+def _usage_int(value: dict[str, object], keys: tuple[str, ...]) -> int:
+    for key in keys:
+        item = value.get(key)
+        if isinstance(item, int) and item >= 0:
+            return item
+    return 0
 
 
 def _validated_embeddings(

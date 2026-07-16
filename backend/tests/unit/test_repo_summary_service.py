@@ -75,7 +75,11 @@ async def test_generate_summary_calls_structured_output(
     )
     before_validate = build_summary()
     fake_llm = FakeStructuredLLM([before_validate])
-    monkeypatch.setattr(repo_summary_service, "get_openai_llm", lambda: fake_llm)
+    monkeypatch.setattr(
+        repo_summary_service,
+        "run_with_configured_llm",
+        _run_with_fake_llm(fake_llm),
+    )
 
     summary = await RepoSummaryService().generate_summary(prompt)
 
@@ -100,7 +104,11 @@ async def test_generate_summary_retries_once_then_raises(
         ]
     )
     fake_llm = FakeStructuredLLM([RuntimeError("timeout"), RuntimeError("parse error")])
-    monkeypatch.setattr(repo_summary_service, "get_openai_llm", lambda: fake_llm)
+    monkeypatch.setattr(
+        repo_summary_service,
+        "run_with_configured_llm",
+        _run_with_fake_llm(fake_llm),
+    )
 
     with pytest.raises(RepoSummaryGenerationError):
         await RepoSummaryService().generate_summary(prompt)
@@ -148,6 +156,14 @@ class FakeStructuredLLM:
             raise response
 
         return response
+
+
+def _run_with_fake_llm(fake_llm: FakeStructuredLLM):
+    async def run(call, *, allow_fallback: bool = False):  # type: ignore[no-untyped-def]
+        _ = allow_fallback
+        return await call(fake_llm)
+
+    return run
 
 
 def build_summary() -> RepoSummary:

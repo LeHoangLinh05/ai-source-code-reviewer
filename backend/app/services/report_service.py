@@ -1,6 +1,8 @@
 """Report aggregation, scoring, and issue query workflows."""
 
+from collections.abc import Sequence
 from uuid import UUID
+import re
 
 from app.core.exceptions import AuthorizationError, BadRequestError, NotFoundError
 from app.models.review_issue import (
@@ -18,6 +20,7 @@ from app.schemas.normalized_issue import NormalizedIssue
 from app.schemas.report import (
     IssueFilters,
     IssueListResponse,
+    IssueOccurrenceResponse,
     IssueResponse,
     ReportScores,
     ReportSummaryResponse,
@@ -31,6 +34,14 @@ ALLOWED_ISSUE_SORT_FIELDS = {
     "created_at",
     "severity",
     "file_path",
+}
+ISSUE_RULE_ID_FIELDS = ("code", "test_id", "ruleId")
+SEVERITY_SORT_ORDER = {
+    IssueSeverity.CRITICAL: 0,
+    IssueSeverity.HIGH: 1,
+    IssueSeverity.MEDIUM: 2,
+    IssueSeverity.LOW: 3,
+    IssueSeverity.INFO: 4,
 }
 
 
@@ -92,26 +103,22 @@ class ReportService:
         review_job = await self._ensure_job_access(job_id, current_user)
         await self._get_existing_report(job_id, review_job.status)
         sort_field, is_descending = self._parse_sort(sort)
-        total = await self.report_repository.count_issues(
+        issues = await self.report_repository.list_filtered_issues(
             job_id=job_id,
             severity=severity,
             category=category,
             source=source,
             file_path=file_path,
         )
-        issues = await self.report_repository.list_issues(
-            job_id=job_id,
-            severity=severity,
-            category=category,
-            source=source,
-            file_path=file_path,
-            page=page,
-            per_page=per_page,
+        groups = _group_issues(issues)
+        sorted_groups = _sort_issue_groups(
+            groups,
             sort_field=sort_field,
             is_descending=is_descending,
         )
+        paginated_groups = sorted_groups[(page - 1) * per_page : page * per_page]
         return IssueListResponse(
-            total=total,
+            total=len(groups),
             page=page,
             per_page=per_page,
             sort=sort,
@@ -121,7 +128,10 @@ class ReportService:
                 source=source,
                 file_path=file_path,
             ),
-            issues=[IssueResponse.model_validate(issue) for issue in issues],
+            issues=[
+                _issue_group_response(group_key, grouped_issues)
+                for group_key, grouped_issues in paginated_groups
+            ],
         )
 
     async def get_issue(
@@ -142,12 +152,26 @@ class ReportService:
         if issue is None:
             raise NotFoundError("Review issue not found")
 
+        group_key = _issue_group_key(issue)
+        all_issues = await self.report_repository.list_all_issues(job_id)
+        grouped_issues = [
+            grouped_issue
+            for grouped_issue in all_issues
+            if _issue_group_key(grouped_issue) == group_key
+        ]
+        enriched_issues = [
+            await self._issue_with_source_context(grouped_issue)
+            for grouped_issue in grouped_issues
+        ]
+        return _issue_group_response(group_key, enriched_issues, include_occurrences=True)
+
+    async def _issue_with_source_context(self, issue: ReviewIssue) -> IssueResponse:
         response = IssueResponse.model_validate(issue)
         if _has_source_context(response.raw_output):
             return response
 
         chunk = await self.chunk_metadata_repository.find_containing_line(
-            job_id=job_id,
+            job_id=issue.job_id,
             file_path=issue.file_path,
             line_start=issue.line_start,
             line_end=issue.line_end,
@@ -230,6 +254,143 @@ def _has_source_context(raw_output: dict[str, object] | None) -> bool:
     return isinstance(raw_output, dict) and isinstance(
         raw_output.get("source_context"), dict
     )
+
+
+def _group_issues(issues: list[ReviewIssue]) -> dict[str, list[ReviewIssue]]:
+    groups: dict[str, list[ReviewIssue]] = {}
+    for issue in issues:
+        groups.setdefault(_issue_group_key(issue), []).append(issue)
+    return groups
+
+
+def _sort_issue_groups(
+    groups: dict[str, list[ReviewIssue]],
+    *,
+    sort_field: str,
+    is_descending: bool,
+) -> list[tuple[str, list[ReviewIssue]]]:
+    return sorted(
+        groups.items(),
+        key=lambda item: (
+            _issue_group_sort_key(item[1], sort_field),
+            _representative_issue(item[1]).created_at,
+        ),
+        reverse=is_descending,
+    )
+
+
+def _issue_group_sort_key(issues: list[ReviewIssue], sort_field: str) -> object:
+    representative = _representative_issue(issues)
+    if sort_field == "severity":
+        return SEVERITY_SORT_ORDER[representative.severity]
+    return getattr(representative, sort_field)
+
+
+def _representative_issue(issues: list[ReviewIssue]) -> ReviewIssue:
+    return sorted(
+        issues,
+        key=lambda issue: (
+            SEVERITY_SORT_ORDER[issue.severity],
+            issue.created_at,
+            issue.file_path,
+            issue.line_start,
+        ),
+    )[0]
+
+
+def _issue_group_response(
+    group_key: str,
+    issues: Sequence[ReviewIssue | IssueResponse],
+    *,
+    include_occurrences: bool = False,
+) -> IssueResponse:
+    representative = _representative_issue([
+        _review_issue_from_response(issue) if isinstance(issue, IssueResponse) else issue
+        for issue in issues
+    ])
+    response = IssueResponse.model_validate(representative)
+    sorted_issues = sorted(
+        issues,
+        key=lambda issue: (
+            issue.file_path,
+            issue.line_start,
+            issue.line_end,
+            issue.created_at,
+        ),
+    )
+    response.group_key = group_key
+    response.occurrence_count = len(issues)
+    response.affected_files = sorted({issue.file_path for issue in issues})
+    response.primary_issue_id = representative.id
+    if include_occurrences:
+        response.occurrences = [
+            IssueOccurrenceResponse(
+                issue_id=issue.id,
+                file_path=issue.file_path,
+                line_start=issue.line_start,
+                line_end=issue.line_end,
+                confidence=issue.confidence,
+                raw_output=issue.raw_output,
+                created_at=issue.created_at,
+            )
+            for issue in sorted_issues
+        ]
+    return response
+
+
+def _review_issue_from_response(issue: IssueResponse) -> ReviewIssue:
+    return ReviewIssue(
+        id=issue.id,
+        job_id=issue.job_id,
+        file_path=issue.file_path,
+        line_start=issue.line_start,
+        line_end=issue.line_end,
+        severity=issue.severity,
+        category=issue.category,
+        title=issue.title,
+        description=issue.description,
+        suggestion=issue.suggestion,
+        source=issue.source,
+        confidence=issue.confidence,
+        raw_output=issue.raw_output,
+        created_at=issue.created_at,
+    )
+
+
+def _issue_group_key(issue: ReviewIssue) -> str:
+    rule_id = _issue_rule_id(issue.raw_output)
+    if rule_id is not None:
+        return "|".join(
+            [
+                issue.source.value,
+                issue.category.value,
+                issue.severity.value,
+                _normalize_group_text(rule_id),
+            ]
+        )
+
+    return "|".join(
+        [
+            issue.source.value,
+            issue.category.value,
+            issue.severity.value,
+            _normalize_group_text(issue.title),
+        ]
+    )
+
+
+def _issue_rule_id(raw_output: dict[str, object] | None) -> str | None:
+    if raw_output is None:
+        return None
+    for field in ISSUE_RULE_ID_FIELDS:
+        value = raw_output.get(field)
+        if value is not None and str(value).strip():
+            return str(value)
+    return None
+
+
+def _normalize_group_text(value: str) -> str:
+    return re.sub(r"\s+", " ", value.strip().lower())
 
 
 def _to_normalized_issue(review_issue: ReviewIssue) -> NormalizedIssue:

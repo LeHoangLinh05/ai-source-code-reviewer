@@ -785,6 +785,7 @@ class MongoToolCallLogger(AsyncCallbackHandler):
         )
         output = _redact_source_tool_output(tool_name=tool_name, output=output)
         sequence = self.sequence_by_run_id.pop(run_id, self.sequence)
+        status = _tool_log_status(output)
         await self.repository.insert_one(
             ToolCallLogDocument(
                 job_id=self.job_id,
@@ -796,6 +797,7 @@ class MongoToolCallLogger(AsyncCallbackHandler):
                 duration_ms=max(0, duration_ms),
                 input=tool_input,
                 output=output,
+                status=status,
             )
         )
 
@@ -809,6 +811,8 @@ class MongoToolCallLogger(AsyncCallbackHandler):
         """Write a backend-produced trace entry using the same sequence stream."""
 
         self.sequence += 1
+        duration_ms = output.get("duration_ms")
+        status = _tool_log_status(output)
         await self.repository.insert_one(
             ToolCallLogDocument(
                 job_id=self.job_id,
@@ -817,9 +821,10 @@ class MongoToolCallLogger(AsyncCallbackHandler):
                 sequence=self.sequence,
                 tool_name=tool_name,
                 called_at=datetime.now(UTC),
-                duration_ms=0,
+                duration_ms=duration_ms if isinstance(duration_ms, int) else 0,
                 input=tool_input,
                 output=output,
+                status=status,
             )
         )
 
@@ -887,6 +892,15 @@ def _normalize_tool_output(value: Any) -> dict[str, object]:
         return {"output": parsed}
 
     return {"output": _json_safe(value)}
+
+
+def _tool_log_status(output: dict[str, object]) -> str:
+    if "error" in output:
+        return "error"
+    status = output.get("status")
+    if isinstance(status, str) and status:
+        return status
+    return "ok"
 
 
 def _redact_source_tool_output(

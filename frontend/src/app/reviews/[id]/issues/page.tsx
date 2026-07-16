@@ -10,8 +10,8 @@ import {
   X,
 } from "lucide-react";
 import Link from "next/link";
-import { useParams } from "next/navigation";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useParams, useSearchParams } from "next/navigation";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 
 import { Button } from "@/components/ui/button";
@@ -37,6 +37,7 @@ import {
 } from "@/store/slices/filterSlice";
 import type {
   IssueCategory,
+  IssueOccurrence,
   IssueListResponse,
   IssueSeverity,
   IssueSort,
@@ -71,6 +72,8 @@ const SORT_OPTIONS: IssueSort[] = ["-created_at", "created_at", "severity", "fil
 
 export default function ReviewIssuesPage() {
   const params = useParams<{ id: string }>();
+  const searchParams = useSearchParams();
+  const appliedFilePathRef = useRef<string | null>(null);
   const jobId = params.id;
   const dispatch = useAppDispatch();
   const filters = useAppSelector((state) => state.filters.issues);
@@ -87,6 +90,19 @@ export default function ReviewIssuesPage() {
 
     return Math.max(1, Math.ceil(issueList.total / issueList.per_page));
   }, [issueList]);
+
+  useEffect(() => {
+    const filePath = searchParams.get("file_path") ?? "";
+    if (
+      filePath &&
+      filePath !== filters.filePath &&
+      appliedFilePathRef.current !== filePath
+    ) {
+      appliedFilePathRef.current = filePath;
+      dispatch(setIssueFilePath(filePath));
+      dispatch(setIssuePage(1));
+    }
+  }, [dispatch, filters.filePath, searchParams]);
 
   const loadIssues = useCallback(async () => {
     setIsLoading(true);
@@ -232,8 +248,8 @@ export default function ReviewIssuesPage() {
           <CardTitle>Issue List</CardTitle>
           <CardDescription>
             {issueList
-              ? `${issueList.total} issues found`
-              : "Issues will appear here after analysis."}
+              ? `${issueList.total} issue groups found`
+              : "Issue groups will appear here after analysis."}
           </CardDescription>
         </CardHeader>
         <CardContent className="p-0">
@@ -245,7 +261,7 @@ export default function ReviewIssuesPage() {
           ) : null}
           {!isLoading && !error && issueList?.issues.length === 0 ? (
             <div className="border-t border-border p-6 text-sm text-muted-foreground">
-              No issues match the current filters.
+              No issue groups match the current filters.
             </div>
           ) : null}
           {!isLoading && !error && issueList && issueList.issues.length > 0 ? (
@@ -322,6 +338,8 @@ function IssueTable({
             <th className="px-6 py-3 font-medium">Source</th>
             <th className="px-6 py-3 font-medium">File</th>
             <th className="px-6 py-3 font-medium">Title</th>
+            <th className="px-6 py-3 font-medium">Occurrences</th>
+            <th className="px-6 py-3 font-medium">Affected files</th>
             <th className="px-6 py-3 font-medium">Confidence</th>
           </tr>
         </thead>
@@ -345,6 +363,12 @@ function IssueTable({
                 {formatIssuePath(issue.file_path)}
               </td>
               <td className="px-6 py-4 font-medium">{issue.title}</td>
+              <td className="px-6 py-4 text-muted-foreground">
+                {issue.occurrence_count}
+              </td>
+              <td className="px-6 py-4 text-muted-foreground">
+                {issue.affected_files.length}
+              </td>
               <td className="px-6 py-4 text-muted-foreground">
                 {issue.confidence ? `${Math.round(issue.confidence * 100)}%` : "-"}
               </td>
@@ -437,8 +461,11 @@ function IssueDrawer({
               {issue.title}
             </h2>
             <p className="mt-2 break-all text-sm text-muted-foreground">
-              {formatIssuePath(issue.file_path)}
-              {issue.line_start ? `:${issue.line_start}` : ""}
+            {formatIssuePath(issue.file_path)}
+            {issue.line_start ? `:${issue.line_start}` : ""}
+            {issue.occurrence_count > 1
+              ? ` · ${issue.occurrence_count} occurrences`
+              : ""}
             </p>
           </div>
           <Button
@@ -460,7 +487,18 @@ function IssueDrawer({
             <DetailSection title="Suggestion">{issue.suggestion}</DetailSection>
           ) : null}
           <DetailSection title="Code Context">
-            <CodeSnippetViewer issue={issue} />
+            <div className="grid gap-4">
+              {issue.occurrences.length > 0 ? (
+                issue.occurrences.map((occurrence) => (
+                  <CodeSnippetViewer
+                    key={occurrence.issue_id}
+                    occurrence={occurrence}
+                  />
+                ))
+              ) : (
+                <CodeSnippetViewer occurrence={issueToOccurrence(issue)} />
+              )}
+            </div>
           </DetailSection>
         </div>
       </aside>
@@ -468,9 +506,13 @@ function IssueDrawer({
   );
 }
 
-function CodeSnippetViewer({ issue }: { issue: ReviewIssue }) {
-  const lineStart = issue.line_start ?? 1;
-  const sourceContext = getSourceContext(issue);
+function CodeSnippetViewer({
+  occurrence,
+}: {
+  occurrence: IssueOccurrence;
+}) {
+  const lineStart = occurrence.line_start ?? 1;
+  const sourceContext = getSourceContext(occurrence);
 
   if (sourceContext === null) {
     return (
@@ -481,8 +523,8 @@ function CodeSnippetViewer({ issue }: { issue: ReviewIssue }) {
   }
 
   const { lines, startLine } = sourceContext;
-  const lineEnd = issue.line_end ?? lineStart;
-  const displayPath = formatIssuePath(issue.file_path);
+  const lineEnd = occurrence.line_end ?? lineStart;
+  const displayPath = formatIssuePath(occurrence.file_path);
 
   return (
     <div className="overflow-hidden rounded-md border border-border bg-background font-mono text-xs">
@@ -536,8 +578,8 @@ type SourceContext = {
   startLine: number;
 };
 
-function getSourceContext(issue: ReviewIssue): SourceContext | null {
-  const rawOutput = issue.raw_output;
+function getSourceContext(occurrence: IssueOccurrence): SourceContext | null {
+  const rawOutput = occurrence.raw_output;
   if (rawOutput === null) {
     return null;
   }
@@ -555,7 +597,7 @@ function getSourceContext(issue: ReviewIssue): SourceContext | null {
   }
 
   const code =
-    issue.source === "bandit" && typeof rawOutput.code === "string"
+    typeof rawOutput.code === "string"
       ? rawOutput.code
       : null;
 
@@ -565,7 +607,19 @@ function getSourceContext(issue: ReviewIssue): SourceContext | null {
 
   return {
     lines: code.replaceAll("\r\n", "\n").split("\n"),
-    startLine: issue.line_start ?? 1,
+    startLine: occurrence.line_start ?? 1,
+  };
+}
+
+function issueToOccurrence(issue: ReviewIssue): IssueOccurrence {
+  return {
+    issue_id: issue.id,
+    file_path: issue.file_path,
+    line_start: issue.line_start,
+    line_end: issue.line_end,
+    confidence: issue.confidence,
+    raw_output: issue.raw_output,
+    created_at: issue.created_at,
   };
 }
 
@@ -605,7 +659,7 @@ function IssueTableSkeleton() {
     <div className="border-t border-border">
       {Array.from({ length: 5 }).map((_, index) => (
         <div
-          className="grid grid-cols-1 gap-3 border-b border-border px-6 py-4 md:grid-cols-[0.6fr_0.8fr_0.6fr_1fr_1.2fr_0.5fr]"
+          className="grid grid-cols-1 gap-3 border-b border-border px-6 py-4 md:grid-cols-[0.6fr_0.8fr_0.6fr_1fr_1.2fr_0.5fr_0.5fr_0.5fr]"
           key={index}
         >
           <div className="h-5 w-20 animate-pulse rounded bg-muted" />
@@ -613,6 +667,8 @@ function IssueTableSkeleton() {
           <div className="h-5 w-20 animate-pulse rounded bg-muted" />
           <div className="h-5 w-40 animate-pulse rounded bg-muted" />
           <div className="h-5 w-56 animate-pulse rounded bg-muted" />
+          <div className="h-5 w-16 animate-pulse rounded bg-muted" />
+          <div className="h-5 w-16 animate-pulse rounded bg-muted" />
           <div className="h-5 w-12 animate-pulse rounded bg-muted" />
         </div>
       ))}

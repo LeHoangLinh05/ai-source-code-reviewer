@@ -69,6 +69,13 @@ class ToolCallLogDocument(BaseModel):
     duration_ms: int = Field(ge=0)
     input: dict[str, object]
     output: dict[str, object]
+    event_type: Literal["tool", "llm", "embedding", "pipeline"] = "tool"
+    provider: str | None = None
+    model: str | None = None
+    phase: str | None = None
+    token_usage: dict[str, int] | None = None
+    metadata: dict[str, object] = Field(default_factory=dict)
+    status: str | None = None
 
 
 class ChunkMetadataDocument(BaseModel):
