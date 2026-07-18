@@ -2,74 +2,73 @@
 
 from pathlib import Path
 import sys
-from typing import Any
 from types import SimpleNamespace
+from typing import Any
 from uuid import uuid4
 
 import pytest
 
 import app.ai.rag.code_embedding as code_embedding_module
 from app.ai.rag.code_embedding import (
-    ALLOWED_CODE_EMBEDDING_MODELS,
-    CODE_CHUNKS_COLLECTION,
     CODE_EMBEDDING_DIMENSION,
     CODE_EMBEDDING_MODEL_VERSION,
+    CODE_CHUNKS_COLLECTION,
     CodeEmbeddingStore,
     CodeVectorSearchResult,
-    _build_sentence_transformer,
+    build_index_generation_key,
+    build_repo_branch_key,
+    prepare_code_embedding_chunks,
 )
 from app.ai.rag.code_retriever import CodeSemanticRetriever
 from app.core.config import Settings
 from app.schemas.mongodb import ChunkMetadataDocument
 
-JINA_CODE_MODEL = "jinaai/jina-embeddings-v2-base-code"
+CODE_EMBEDDING_PROVIDER = "mistral"
+CODE_EMBEDDING_MODEL = "codestral-embed-2505"
 MINILM_KNOWLEDGE_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 
 
-def test_code_embedder_uses_allowlisted_jina_model(
+def test_code_embedder_uses_remote_provider_metadata(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    model_calls: list[tuple[str, str, bool]] = []
     collection = _FakeCollection()
+    embedder = _FakeRemoteEmbedder()
 
-    def build_model(model_name: str) -> _FakeModel:
-        model_calls.append((model_name, "cpu", True))
-        return _FakeModel()
-
-    monkeypatch.setattr(
-        code_embedding_module,
-        "_build_sentence_transformer",
-        build_model,
-    )
     monkeypatch.setattr(
         code_embedding_module,
         "_build_chroma_client",
         lambda _path: _FakeChromaClient(collection),
     )
+    monkeypatch.setattr(
+        code_embedding_module,
+        "_OpenAICompatibleCodeEmbedder",
+        lambda **_kwargs: embedder,
+    )
 
     store = CodeEmbeddingStore(
         persist_path=tmp_path,
-        model_name=JINA_CODE_MODEL,
-        provider="local",
+        model_name=CODE_EMBEDDING_MODEL,
+        provider=CODE_EMBEDDING_PROVIDER,
+        api_key="test-key",
         dimension=CODE_EMBEDDING_DIMENSION,
     )
 
-    assert store.model_name == JINA_CODE_MODEL
-    assert model_calls == [(JINA_CODE_MODEL, "cpu", True)]
-    assert JINA_CODE_MODEL in ALLOWED_CODE_EMBEDDING_MODELS
-    assert collection.name == CODE_CHUNKS_COLLECTION
-    assert collection.metadata["embedding_model"] == JINA_CODE_MODEL
+    assert store.provider == CODE_EMBEDDING_PROVIDER
+    assert store.model_name == CODE_EMBEDDING_MODEL
+    assert collection.name == f"{CODE_CHUNKS_COLLECTION}_mistral_codestral_embed_2505"
+    assert collection.metadata["embedding_provider"] == CODE_EMBEDDING_PROVIDER
+    assert collection.metadata["embedding_model"] == CODE_EMBEDDING_MODEL
     assert (
         collection.metadata["embedding_model_version"] == CODE_EMBEDDING_MODEL_VERSION
     )
     assert collection.metadata["embedding_dimension"] == CODE_EMBEDDING_DIMENSION
 
 
-def test_code_embedder_rejects_non_allowlisted_model(
+def test_code_embedder_rejects_local_provider(
     tmp_path: Path,
 ) -> None:
-    with pytest.raises(ValueError, match="not allowlisted"):
+    with pytest.raises(ValueError, match="Unsupported code embedding provider"):
         CodeEmbeddingStore(
             persist_path=tmp_path,
             model_name=MINILM_KNOWLEDGE_MODEL,
@@ -77,38 +76,15 @@ def test_code_embedder_rejects_non_allowlisted_model(
         )
 
 
-def test_jina_sentence_transformer_enables_remote_code_only_for_allowlisted_model(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    calls: list[tuple[str, str, bool]] = []
-
-    def sentence_transformer(
-        model_name: str,
-        *,
-        device: str,
-        trust_remote_code: bool,
-    ) -> object:
-        calls.append((model_name, device, trust_remote_code))
-        return object()
-
-    monkeypatch.setitem(
-        sys.modules,
-        "sentence_transformers",
-        SimpleNamespace(SentenceTransformer=sentence_transformer),
-    )
-
-    _build_sentence_transformer(JINA_CODE_MODEL)
-
-    assert calls == [(JINA_CODE_MODEL, "cpu", True)]
-
-
 def test_knowledge_and_code_embedding_defaults_are_separate() -> None:
     assert Settings.model_fields["rag_embedding_model"].default == (
         MINILM_KNOWLEDGE_MODEL
     )
-    assert Settings.model_fields["code_embedding_model"].default == JINA_CODE_MODEL
-    assert Settings.model_fields["code_embedding_batch_size"].default == 4
-    assert Settings.model_fields["code_embedding_max_sequence_length"].default == 1024
+    assert Settings.model_fields["code_embedding_provider"].default == (
+        CODE_EMBEDDING_PROVIDER
+    )
+    assert Settings.model_fields["code_embedding_model"].default == CODE_EMBEDDING_MODEL
+    assert Settings.model_fields["code_embedding_batch_size"].default == 16
 
 
 def test_mistral_code_embedder_sends_output_dimension(
@@ -210,10 +186,11 @@ def test_code_embedder_indexes_full_chunk_content_and_metadata(
     tmp_path: Path,
 ) -> None:
     collection = _FakeCollection()
+    embedder = _FakeRemoteEmbedder()
     monkeypatch.setattr(
         code_embedding_module,
-        "_build_sentence_transformer",
-        lambda _model_name: _FakeModel(),
+        "_OpenAICompatibleCodeEmbedder",
+        lambda **_kwargs: embedder,
     )
     monkeypatch.setattr(
         code_embedding_module,
@@ -242,8 +219,9 @@ def test_code_embedder_indexes_full_chunk_content_and_metadata(
     )
     store = CodeEmbeddingStore(
         persist_path=tmp_path,
-        model_name=JINA_CODE_MODEL,
-        provider="local",
+        model_name=CODE_EMBEDDING_MODEL,
+        provider=CODE_EMBEDDING_PROVIDER,
+        api_key="test-key",
         dimension=CODE_EMBEDDING_DIMENSION,
     )
 
@@ -272,10 +250,11 @@ def test_code_embedder_upserts_each_embedding_batch(
     tmp_path: Path,
 ) -> None:
     collection = _FakeCollection()
+    embedder = _FakeRemoteEmbedder()
     monkeypatch.setattr(
         code_embedding_module,
-        "_build_sentence_transformer",
-        lambda _model_name: _FakeModel(),
+        "_OpenAICompatibleCodeEmbedder",
+        lambda **_kwargs: embedder,
     )
     monkeypatch.setattr(
         code_embedding_module,
@@ -304,8 +283,9 @@ def test_code_embedder_upserts_each_embedding_batch(
     ]
     store = CodeEmbeddingStore(
         persist_path=tmp_path,
-        model_name=JINA_CODE_MODEL,
-        provider="local",
+        model_name=CODE_EMBEDDING_MODEL,
+        provider=CODE_EMBEDDING_PROVIDER,
+        api_key="test-key",
         dimension=CODE_EMBEDDING_DIMENSION,
         batch_size=2,
     )
@@ -324,11 +304,11 @@ def test_code_embedder_reuses_cached_repo_branch_chunks(
     tmp_path: Path,
 ) -> None:
     collection = _FakeCollection()
-    model = _FakeModel()
+    embedder = _FakeRemoteEmbedder()
     monkeypatch.setattr(
         code_embedding_module,
-        "_build_sentence_transformer",
-        lambda _model_name: model,
+        "_OpenAICompatibleCodeEmbedder",
+        lambda **_kwargs: embedder,
     )
     monkeypatch.setattr(
         code_embedding_module,
@@ -342,8 +322,9 @@ def test_code_embedder_reuses_cached_repo_branch_chunks(
     ]
     store = CodeEmbeddingStore(
         persist_path=tmp_path,
-        model_name=JINA_CODE_MODEL,
-        provider="local",
+        model_name=CODE_EMBEDDING_MODEL,
+        provider=CODE_EMBEDDING_PROVIDER,
+        api_key="test-key",
         dimension=CODE_EMBEDDING_DIMENSION,
     )
 
@@ -354,7 +335,7 @@ def test_code_embedder_reuses_cached_repo_branch_chunks(
     assert first.cache_hit_count == 0
     assert second.embedded_count == 0
     assert second.cache_hit_count == 2
-    assert model.encode_call_count == 1
+    assert embedder.embed_documents_call_count == 1
     assert len(collection.upsert_payloads) == 1
     assert len(collection.update_payloads) == 1
 
@@ -364,11 +345,11 @@ def test_code_embedder_embeds_changed_chunk_and_prunes_stale_cache_ids(
     tmp_path: Path,
 ) -> None:
     collection = _FakeCollection()
-    model = _FakeModel()
+    embedder = _FakeRemoteEmbedder()
     monkeypatch.setattr(
         code_embedding_module,
-        "_build_sentence_transformer",
-        lambda _model_name: model,
+        "_OpenAICompatibleCodeEmbedder",
+        lambda **_kwargs: embedder,
     )
     monkeypatch.setattr(
         code_embedding_module,
@@ -378,8 +359,9 @@ def test_code_embedder_embeds_changed_chunk_and_prunes_stale_cache_ids(
     repository_id = uuid4()
     store = CodeEmbeddingStore(
         persist_path=tmp_path,
-        model_name=JINA_CODE_MODEL,
-        provider="local",
+        model_name=CODE_EMBEDDING_MODEL,
+        provider=CODE_EMBEDDING_PROVIDER,
+        api_key="test-key",
         dimension=CODE_EMBEDDING_DIMENSION,
     )
 
@@ -402,8 +384,45 @@ def test_code_embedder_embeds_changed_chunk_and_prunes_stale_cache_ids(
     assert summary.embedded_count == 1
     assert summary.cache_hit_count == 0
     assert summary.pruned_count == 2
-    assert model.encode_call_count == 2
+    assert embedder.embed_documents_call_count == 2
     assert len(collection.deleted_ids) == 2
+
+
+def test_code_embedding_generation_key_changes_by_commit() -> None:
+    repository_id = uuid4()
+    repo_branch_key = build_repo_branch_key(
+        repository_id=repository_id,
+        branch="main",
+    )
+
+    first = prepare_code_embedding_chunks(
+        [_chunk(file_path="app/a.py", chunk_text="def a(): pass")],
+        repository_id=repository_id,
+        branch="main",
+        commit_sha="commit-a",
+        provider=CODE_EMBEDDING_PROVIDER,
+        model_name=CODE_EMBEDDING_MODEL,
+        model_version=CODE_EMBEDDING_MODEL_VERSION,
+        dimension=CODE_EMBEDDING_DIMENSION,
+    )[0]
+    second = prepare_code_embedding_chunks(
+        [_chunk(file_path="app/a.py", chunk_text="def a(): pass")],
+        repository_id=repository_id,
+        branch="main",
+        commit_sha="commit-b",
+        provider=CODE_EMBEDDING_PROVIDER,
+        model_name=CODE_EMBEDDING_MODEL,
+        model_version=CODE_EMBEDDING_MODEL_VERSION,
+        dimension=CODE_EMBEDDING_DIMENSION,
+    )[0]
+
+    assert first.repo_branch_key == repo_branch_key
+    assert first.index_generation_key == build_index_generation_key(
+        repo_branch_key=repo_branch_key,
+        commit_sha="commit-a",
+    )
+    assert second.index_generation_key != first.index_generation_key
+    assert second.embedding_cache_id != first.embedding_cache_id
 
 
 def test_code_retriever_requires_and_filters_by_job_id() -> None:
@@ -443,6 +462,36 @@ def test_code_retriever_filters_by_repo_branch_key() -> None:
     )
 
     assert vectorstore.where == {"repo_branch_key": repo_branch_key}
+    assert [result.metadata["file_path"] for result in results] == ["app/a.py"]
+
+
+def test_code_retriever_filters_by_index_generation_key() -> None:
+    job_id = uuid4()
+    vectorstore = _FakeVectorStore(
+        [
+            _vector_result(
+                job_id=job_id,
+                repo_branch_key="repo-branch-a",
+                index_generation_key="generation-a",
+                file_path="app/a.py",
+            ),
+            _vector_result(
+                job_id=job_id,
+                repo_branch_key="repo-branch-a",
+                index_generation_key="generation-b",
+                file_path="app/b.py",
+            ),
+        ]
+    )
+
+    results = CodeSemanticRetriever(vectorstore).search(
+        query="database query",
+        job_id=job_id,
+        repo_branch_key="repo-branch-a",
+        index_generation_key="generation-a",
+    )
+
+    assert vectorstore.where == {"index_generation_key": "generation-a"}
     assert [result.metadata["file_path"] for result in results] == ["app/a.py"]
 
 
@@ -533,7 +582,8 @@ def test_code_chunks_reject_incompatible_model_metadata(
 ) -> None:
     collection = _FakeCollection()
     collection.metadata = {
-        "embedding_model": JINA_CODE_MODEL,
+        "embedding_provider": CODE_EMBEDDING_PROVIDER,
+        "embedding_model": CODE_EMBEDDING_MODEL,
         "embedding_model_version": CODE_EMBEDDING_MODEL_VERSION,
         "embedding_dimension": CODE_EMBEDDING_DIMENSION,
     }
@@ -547,8 +597,9 @@ def test_code_chunks_reject_incompatible_model_metadata(
     with pytest.raises(RuntimeError, match="rebuild the collection"):
         CodeEmbeddingStore(
             persist_path=tmp_path,
-            model_name=JINA_CODE_MODEL,
-            provider="local",
+            model_name=CODE_EMBEDDING_MODEL,
+            provider=CODE_EMBEDDING_PROVIDER,
+            api_key="test-key",
             dimension=CODE_EMBEDDING_DIMENSION,
         )
 
@@ -558,10 +609,11 @@ def test_code_chunks_cleanup_is_scoped_to_job(
     tmp_path: Path,
 ) -> None:
     collection = _FakeCollection()
+    embedder = _FakeRemoteEmbedder()
     monkeypatch.setattr(
         code_embedding_module,
-        "_build_sentence_transformer",
-        lambda _model_name: _FakeModel(),
+        "_OpenAICompatibleCodeEmbedder",
+        lambda **_kwargs: embedder,
     )
     monkeypatch.setattr(
         code_embedding_module,
@@ -570,8 +622,9 @@ def test_code_chunks_cleanup_is_scoped_to_job(
     )
     store = CodeEmbeddingStore(
         persist_path=tmp_path,
-        model_name=JINA_CODE_MODEL,
-        provider="local",
+        model_name=CODE_EMBEDDING_MODEL,
+        provider=CODE_EMBEDDING_PROVIDER,
+        api_key="test-key",
         dimension=CODE_EMBEDDING_DIMENSION,
     )
 
@@ -580,28 +633,28 @@ def test_code_chunks_cleanup_is_scoped_to_job(
     assert collection.delete_where == {"job_id": "job-a"}
 
 
-class _FakeEmbedding:
-    def __init__(self, values: list[list[float]]) -> None:
-        self.values = values
-
-    def tolist(self) -> list[list[float]]:
-        return self.values
-
-
-class _FakeModel:
+class _FakeRemoteEmbedder:
     def __init__(self) -> None:
-        self.encode_call_count = 0
+        self.embed_documents_call_count = 0
+        self.last_token_usage: dict[str, int] | None = None
 
-    def encode(self, texts: list[str], **_kwargs: object) -> _FakeEmbedding:
-        self.encode_call_count += 1
-        return _FakeEmbedding([[0.1] * CODE_EMBEDDING_DIMENSION for _text in texts])
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        self.embed_documents_call_count += 1
+        return [[0.1] * CODE_EMBEDDING_DIMENSION for _text in texts]
+
+    def embed_query(self, text: str) -> list[float]:
+        _ = text
+        return [0.1] * CODE_EMBEDDING_DIMENSION
 
 
 class _FakeCollection:
     def __init__(self) -> None:
         self.name = ""
         self.metadata: dict[str, object] = {
-            "embedding_model": JINA_CODE_MODEL,
+            "embedding_provider": CODE_EMBEDDING_PROVIDER,
+            "embedding_model": CODE_EMBEDDING_MODEL,
+            "embedding_model_version": CODE_EMBEDDING_MODEL_VERSION,
+            "embedding_dimension": CODE_EMBEDDING_DIMENSION,
         }
         self.upsert_payload: dict[str, Any] = {}
         self.upsert_payloads: list[dict[str, Any]] = []
@@ -641,9 +694,7 @@ class _FakeCollection:
         ids = payload.get("ids", [])
         documents = payload.get("documents")
         metadatas = payload.get("metadatas", [])
-        for index, (item_id, metadata) in enumerate(
-            zip(ids, metadatas, strict=True)
-        ):
+        for index, (item_id, metadata) in enumerate(zip(ids, metadatas, strict=True)):
             record = self.records.setdefault(str(item_id), {})
             if isinstance(documents, list):
                 record["document"] = documents[index]
@@ -720,6 +771,7 @@ def _vector_result(
     job_id: object,
     file_path: str,
     repo_branch_key: str | None = None,
+    index_generation_key: str | None = None,
     content: str | None = None,
     score: float = 0.9,
 ) -> CodeVectorSearchResult:
@@ -730,6 +782,8 @@ def _vector_result(
     }
     if repo_branch_key is not None:
         metadata["repo_branch_key"] = repo_branch_key
+    if index_generation_key is not None:
+        metadata["index_generation_key"] = index_generation_key
     return CodeVectorSearchResult(
         content=content or f"# {file_path}",
         metadata=metadata,

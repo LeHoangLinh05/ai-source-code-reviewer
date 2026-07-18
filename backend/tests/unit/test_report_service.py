@@ -2,10 +2,12 @@
 
 from datetime import UTC, datetime
 from types import SimpleNamespace
+from typing import cast
 from uuid import uuid4
 
 import pytest
 
+from app.models.review_issue import ReviewIssue
 from app.models.review_issue import IssueCategory, IssueSeverity, IssueSource
 from app.services.report_service import ReportService
 from app.services.report_service import (
@@ -91,7 +93,9 @@ def test_issue_group_key_prefers_static_rule_id() -> None:
         raw_output={"test_id": "B105"},
     )
 
-    assert _issue_group_key(first_issue) == _issue_group_key(second_issue)
+    assert _issue_group_key(cast(ReviewIssue, first_issue)) == _issue_group_key(
+        cast(ReviewIssue, second_issue)
+    )
 
 
 def test_issue_group_response_counts_occurrences_and_files() -> None:
@@ -112,7 +116,7 @@ def test_issue_group_response_counts_occurrences_and_files() -> None:
             raw_output={"test_id": "B105"},
         ),
     ]
-    groups = _group_issues(issues)
+    groups = _group_issues(cast(list[ReviewIssue], issues))
     group_key, grouped_issues = next(iter(groups.items()))
 
     response = _issue_group_response(

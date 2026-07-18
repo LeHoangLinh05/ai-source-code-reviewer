@@ -16,7 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai.rag.bm25_index import BM25Document, BM25Index, tokenize
-from app.ai.rag.code_retriever import CodeSemanticRetriever
+from app.ai.rag.code_retriever import CodeSemanticRetriever, CodeSemanticSearchRequest
 from app.ai.roadmap.knowledge import RoadmapRequirement, load_roadmap_requirements
 from app.ai.roadmap.selection import build_roadmap_context
 from app.ai.semantic_audit_plan import build_semantic_audit_plan
@@ -59,6 +59,7 @@ PATH_HINTS_BY_CATEGORY = {
     "style": ("api", "schema", "model", "config"),
     "requirement": ("app", "src", "backend", "frontend", "config"),
 }
+RRF_K = 60
 
 
 class SyntheticTraceWriter(Protocol):
@@ -201,14 +202,24 @@ class ProbeRetrievalService:
 
         chunk_documents = await _load_chunk_documents(self.database, job_id)
         repo_branch_key = _repo_branch_key_from_documents(chunk_documents)
+        index_generation_key = _index_generation_key_from_documents(chunk_documents)
         bm25_index = _build_bm25_index(chunk_documents)
+        semantic_by_probe = await self._semantic_results_for_probes(
+            job_id=job_id,
+            repo_branch_key=repo_branch_key,
+            index_generation_key=index_generation_key,
+            probes=probes,
+        )
         bundles: list[ProbeEvidenceBundle] = []
-        for probe in probes:
+        for probe_index, probe in enumerate(probes):
             started_at = time.perf_counter()
             bundle = await self._retrieve_probe(
                 job_id=job_id,
                 repo_branch_key=repo_branch_key,
+                index_generation_key=index_generation_key,
                 probe=probe,
+                semantic_results=semantic_by_probe.get(probe_index),
+                semantic_attempted=probe_index in semantic_by_probe,
                 chunk_documents=chunk_documents,
                 bm25_index=bm25_index,
             )
@@ -222,12 +233,68 @@ class ProbeRetrievalService:
 
         return _trim_bundles(bundles, max_chunks=self.max_chunks)
 
+    async def _semantic_results_for_probes(
+        self,
+        *,
+        job_id: UUID,
+        repo_branch_key: str | None,
+        index_generation_key: str | None,
+        probes: list[dict[str, object]],
+    ) -> dict[int, list[Any]]:
+        if not self.enable_semantic_search:
+            return {}
+
+        requests: list[CodeSemanticSearchRequest] = []
+        request_indexes: list[int] = []
+        for index, probe in enumerate(probes):
+            query = str(probe.get("query") or "").strip()
+            if not query:
+                continue
+            top_k = min(
+                max(_optional_int(probe.get("top_k")) or self.chunks_per_probe, 1),
+                10,
+            )
+            requests.append(
+                CodeSemanticSearchRequest(
+                    query=query,
+                    job_id=job_id,
+                    repo_branch_key=repo_branch_key,
+                    index_generation_key=index_generation_key,
+                    top_k=max(top_k * 4, self.chunks_per_probe),
+                )
+            )
+            request_indexes.append(index)
+
+        if not requests:
+            return {}
+
+        try:
+            results_by_request = await _semantic_search_many(
+                retriever=self._code_retriever(),
+                requests=requests,
+            )
+        except Exception as error:
+            logger.warning("Probe semantic retrieval batch failed: %s", error)
+            return {probe_index: [] for probe_index in request_indexes}
+
+        return {
+            probe_index: results
+            for probe_index, results in zip(
+                request_indexes,
+                results_by_request,
+                strict=True,
+            )
+        }
+
     async def _retrieve_probe(
         self,
         *,
         job_id: UUID,
         repo_branch_key: str | None,
+        index_generation_key: str | None,
         probe: dict[str, object],
+        semantic_results: list[Any] | None,
+        semantic_attempted: bool,
         chunk_documents: list[dict[str, Any]],
         bm25_index: BM25Index,
     ) -> ProbeEvidenceBundle:
@@ -235,16 +302,20 @@ class ProbeRetrievalService:
         top_k = min(
             max(_optional_int(probe.get("top_k")) or self.chunks_per_probe, 1), 10
         )
-        candidate_by_key: dict[tuple[str, int], ProbeCandidateChunk] = {}
+        semantic_candidates: list[ProbeCandidateChunk] = []
+        bm25_candidates: list[ProbeCandidateChunk] = []
         strategies: list[str] = []
 
-        semantic_results = []
-        if query and self.enable_semantic_search:
+        semantic_results = semantic_results or []
+        if semantic_attempted:
+            strategies.append("semantic")
+        if query and self.enable_semantic_search and not semantic_attempted:
             try:
                 semantic_results = await _semantic_search(
                     retriever=self._code_retriever(),
                     job_id=job_id,
                     repo_branch_key=repo_branch_key,
+                    index_generation_key=index_generation_key,
                     query=query,
                     top_k=max(top_k * 4, self.chunks_per_probe),
                 )
@@ -258,7 +329,7 @@ class ProbeRetrievalService:
         for result in semantic_results:
             chunk = _candidate_from_semantic_result(result, probe=probe, query=query)
             if chunk is not None:
-                candidate_by_key[chunk.key] = chunk
+                semantic_candidates.append(chunk)
 
         lexical_results = bm25_index.search(query, top_k=max(top_k * 8, 20))
         strategies.append("bm25")
@@ -270,11 +341,8 @@ class ProbeRetrievalService:
                 semantic_score=0.0,
                 lexical_score=result.score,
             )
-            if chunk is None:
-                continue
-            previous = candidate_by_key.get(chunk.key)
-            if previous is None or chunk.final_score > previous.final_score:
-                candidate_by_key[chunk.key] = chunk
+            if chunk is not None:
+                bm25_candidates.append(chunk)
 
         exact_candidates = _exact_candidates(
             chunk_documents=chunk_documents,
@@ -283,16 +351,14 @@ class ProbeRetrievalService:
             top_k=max(top_k * 4, 12),
         )
         strategies.append("exact")
-        for chunk in exact_candidates:
-            previous = candidate_by_key.get(chunk.key)
-            if previous is None or chunk.final_score > previous.final_score:
-                candidate_by_key[chunk.key] = chunk
-
-        selected = sorted(
-            candidate_by_key.values(),
-            key=lambda candidate: candidate.final_score,
-            reverse=True,
-        )[: self.chunks_per_probe]
+        selected = _fuse_probe_candidates(
+            semantic_candidates=semantic_candidates,
+            bm25_candidates=bm25_candidates,
+            exact_candidates=exact_candidates,
+            probe=probe,
+            query=query,
+            top_k=self.chunks_per_probe,
+        )
         status = "ok" if selected else "no_candidate_evidence"
         return ProbeEvidenceBundle(
             probe=probe,
@@ -513,6 +579,7 @@ async def run_backend_directed_probe_review(
     max_chunks: int,
     max_probes_per_batch: int,
     max_chunks_per_batch: int,
+    code_retriever: CodeSemanticRetriever | None = None,
 ) -> ProbeReviewResult:
     """Run the default backend-directed review path."""
 
@@ -523,6 +590,7 @@ async def run_backend_directed_probe_review(
     )
     retrieval_service = ProbeRetrievalService(
         database=mongodb_database,
+        code_retriever=code_retriever,
         enable_semantic_search=enable_semantic_search,
         chunks_per_probe=chunks_per_probe,
         max_chunks=max_chunks,
@@ -669,6 +737,17 @@ def _repo_branch_key_from_documents(documents: list[dict[str, Any]]) -> str | No
     return None
 
 
+def _index_generation_key_from_documents(
+    documents: list[dict[str, Any]],
+) -> str | None:
+    for document in documents:
+        index_generation_key = document.get("index_generation_key")
+        if isinstance(index_generation_key, str) and index_generation_key:
+            return index_generation_key
+
+    return None
+
+
 def _build_bm25_index(chunk_documents: list[dict[str, Any]]) -> BM25Index:
     documents: list[BM25Document] = []
     for document in chunk_documents:
@@ -703,6 +782,7 @@ async def _semantic_search(
     retriever: CodeSemanticRetriever,
     job_id: UUID,
     repo_branch_key: str | None,
+    index_generation_key: str | None,
     query: str,
     top_k: int,
 ) -> list[Any]:
@@ -711,8 +791,27 @@ async def _semantic_search(
         query=query,
         job_id=job_id,
         repo_branch_key=repo_branch_key,
+        index_generation_key=index_generation_key,
         top_k=top_k,
     )
+
+
+async def _semantic_search_many(
+    *,
+    retriever: CodeSemanticRetriever,
+    requests: list[CodeSemanticSearchRequest],
+) -> list[list[Any]]:
+    return await _to_thread_search_many(retriever, requests=requests)
+
+
+async def _to_thread_search_many(
+    retriever: CodeSemanticRetriever,
+    *,
+    requests: list[CodeSemanticSearchRequest],
+) -> list[list[Any]]:
+    import asyncio
+
+    return await asyncio.to_thread(retriever.search_many, requests)
 
 
 async def _to_thread_search(
@@ -721,6 +820,7 @@ async def _to_thread_search(
     query: str,
     job_id: UUID,
     repo_branch_key: str | None,
+    index_generation_key: str | None,
     top_k: int,
 ) -> list[Any]:
     import asyncio
@@ -730,6 +830,7 @@ async def _to_thread_search(
         query=query,
         job_id=job_id,
         repo_branch_key=repo_branch_key,
+        index_generation_key=index_generation_key,
         top_k=top_k,
     )
 
@@ -833,6 +934,164 @@ def _exact_candidates(
             candidates.append(candidate)
 
     return sorted(candidates, key=lambda item: item.final_score, reverse=True)[:top_k]
+
+
+def _fuse_probe_candidates(
+    *,
+    semantic_candidates: list[ProbeCandidateChunk],
+    bm25_candidates: list[ProbeCandidateChunk],
+    exact_candidates: list[ProbeCandidateChunk],
+    probe: dict[str, object],
+    query: str,
+    top_k: int,
+) -> list[ProbeCandidateChunk]:
+    """Fuse dense, BM25 and exact ranks with small bounded code priors."""
+
+    candidate_by_key: dict[tuple[str, int], ProbeCandidateChunk] = {}
+    rrf_scores: dict[tuple[str, int], float] = {}
+    weights = _adaptive_rrf_weights(probe=probe, query=query)
+
+    for strategy, candidates in (
+        ("semantic", semantic_candidates),
+        ("bm25", bm25_candidates),
+        ("exact", exact_candidates),
+    ):
+        for rank, candidate in enumerate(_unique_candidates(candidates), start=1):
+            candidate_by_key[candidate.key] = _merge_candidate(
+                candidate_by_key.get(candidate.key),
+                candidate,
+            )
+            rrf_scores[candidate.key] = rrf_scores.get(candidate.key, 0.0) + (
+                weights[strategy] / (RRF_K + rank)
+            )
+
+    ranked = [
+        replace(
+            candidate,
+            final_score=rrf_scores.get(key, 0.0) + _bounded_code_prior(candidate),
+        )
+        for key, candidate in candidate_by_key.items()
+    ]
+    ranked.sort(key=lambda candidate: candidate.final_score, reverse=True)
+    return _select_diverse_probe_candidates(ranked, top_k=top_k)
+
+
+def _unique_candidates(
+    candidates: list[ProbeCandidateChunk],
+) -> list[ProbeCandidateChunk]:
+    seen: set[tuple[str, int]] = set()
+    unique: list[ProbeCandidateChunk] = []
+    for candidate in sorted(
+        candidates,
+        key=lambda item: item.final_score,
+        reverse=True,
+    ):
+        if candidate.key in seen:
+            continue
+        seen.add(candidate.key)
+        unique.append(candidate)
+    return unique
+
+
+def _merge_candidate(
+    current: ProbeCandidateChunk | None,
+    incoming: ProbeCandidateChunk,
+) -> ProbeCandidateChunk:
+    if current is None:
+        return incoming
+
+    return replace(
+        current,
+        semantic_score=max(current.semantic_score, incoming.semantic_score),
+        lexical_score=max(current.lexical_score, incoming.lexical_score),
+        path_score=max(current.path_score, incoming.path_score),
+        static_score=max(current.static_score, incoming.static_score),
+    )
+
+
+def _adaptive_rrf_weights(
+    *,
+    probe: dict[str, object],
+    query: str,
+) -> dict[str, float]:
+    category = str(probe.get("category") or probe.get("review_category") or "")
+    if _looks_like_symbol_query(query):
+        return {"semantic": 0.3, "bm25": 0.45, "exact": 0.25}
+    if category in {"security", "requirement"}:
+        return {"semantic": 0.4, "bm25": 0.35, "exact": 0.25}
+    return {"semantic": 0.45, "bm25": 0.35, "exact": 0.2}
+
+
+def _looks_like_symbol_query(query: str) -> bool:
+    terms = re.findall(r"[A-Za-z_][A-Za-z0-9_:.]*", query)
+    if not terms:
+        return False
+    symbolish_terms = sum(
+        1
+        for term in terms
+        if (
+            "::" in term
+            or "." in term
+            or "_" in term
+            or (
+                any(char.islower() for char in term)
+                and any(char.isupper() for char in term)
+            )
+        )
+    )
+    return symbolish_terms >= max(1, len(terms) // 2)
+
+
+def _bounded_code_prior(candidate: ProbeCandidateChunk) -> float:
+    return max(
+        -0.12,
+        min(
+            0.18,
+            candidate.path_score * 0.25
+            + candidate.static_score * 0.5
+            + min(candidate.semantic_score, 1.0) * 0.02
+            + min(candidate.lexical_score, 1.0) * 0.02,
+        ),
+    )
+
+
+def _select_diverse_probe_candidates(
+    ranked: list[ProbeCandidateChunk],
+    *,
+    top_k: int,
+) -> list[ProbeCandidateChunk]:
+    if top_k <= 0:
+        return []
+
+    max_per_file = max(1, top_k // 2)
+    selected: list[ProbeCandidateChunk] = []
+    selected_keys: set[tuple[str, int]] = set()
+    per_file_count: dict[str, int] = {}
+    deferred: list[ProbeCandidateChunk] = []
+
+    for candidate in ranked:
+        if len(selected) >= top_k:
+            return selected
+        if candidate.key in selected_keys:
+            continue
+        if per_file_count.get(candidate.file_path, 0) >= max_per_file:
+            deferred.append(candidate)
+            continue
+        selected.append(candidate)
+        selected_keys.add(candidate.key)
+        per_file_count[candidate.file_path] = (
+            per_file_count.get(candidate.file_path, 0) + 1
+        )
+
+    for candidate in deferred:
+        if len(selected) >= top_k:
+            return selected
+        if candidate.key in selected_keys:
+            continue
+        selected.append(candidate)
+        selected_keys.add(candidate.key)
+
+    return selected
 
 
 def _exact_score(query: str, content: str, file_path: str) -> float:
@@ -1180,15 +1439,30 @@ def _supporting_bundle_chunk(
     assert candidate.file_path is not None
     assert candidate.line_start is not None
     assert candidate.line_end is not None
+    if not candidate.supporting_evidence:
+        return None
+
+    candidate_range = range(candidate.line_start, candidate.line_end + 1)
     for bundle in bundles:
         for chunk in bundle.candidate_chunks:
-            if (
-                chunk.file_path == candidate.file_path
-                and chunk.line_start <= candidate.line_start
-                and chunk.line_end >= candidate.line_end
-            ):
-                return chunk
+            for evidence in candidate.supporting_evidence:
+                evidence_range = range(evidence.line_start, evidence.line_end + 1)
+                if (
+                    chunk.file_path == candidate.file_path
+                    and evidence.file_path == candidate.file_path
+                    and evidence.chunk_index == chunk.chunk_index
+                    and chunk.line_start <= candidate.line_start
+                    and chunk.line_end >= candidate.line_end
+                    and chunk.line_start <= evidence.line_start
+                    and chunk.line_end >= evidence.line_end
+                    and _ranges_overlap(candidate_range, evidence_range)
+                ):
+                    return chunk
     return None
+
+
+def _ranges_overlap(left: range, right: range) -> bool:
+    return left.start <= right.stop - 1 and right.start <= left.stop - 1
 
 
 def _candidate_has_required_fields(candidate: ProbeJudgeIssueCandidate) -> bool:

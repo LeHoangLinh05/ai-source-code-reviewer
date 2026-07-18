@@ -11,6 +11,7 @@ from typing import Any, Literal
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field, model_validator
 
+from app.ai.rag.bm25_index import BM25Document, BM25Index
 from app.ai.rag.code_retriever import CodeSemanticRetriever, RetrievedCodeChunk
 from app.ai.tool_runtime import (
     MAX_DISTINCT_SEARCHES_PER_INVESTIGATION,
@@ -125,6 +126,14 @@ class CodeSearchResult:
     semantic_score: float | None
     lexical_score: float | None
     final_score: float
+
+
+@dataclass(slots=True)
+class JobCodeCorpus:
+    """In-memory source corpus shared by code search calls in one review pass."""
+
+    documents: list[dict[str, object]]
+    bm25_index: BM25Index
 
 
 class SearchCodeInput(BaseModel):
@@ -432,12 +441,13 @@ async def _retrieve_results(
     semantic_results: list[CodeSearchResult] = []
     strategies: list[str] = []
     if mode in {"auto", "semantic"} and get_settings().enable_code_semantic_search:
-        repo_branch_key = await _repo_branch_key_for_job(job_id)
+        index_scope = await _index_scope_for_job(job_id)
         retrieved = await asyncio.to_thread(
             get_code_retriever().search,
             query=query,
             job_id=job_id,
-            repo_branch_key=repo_branch_key,
+            repo_branch_key=index_scope.repo_branch_key,
+            index_generation_key=index_scope.index_generation_key,
             top_k=top_k,
             language=language,
             risk_area=risk_area,
@@ -481,7 +491,6 @@ async def _exact_search(
     risk_area: str | None,
     top_k: int,
 ) -> list[CodeSearchResult]:
-    runtime = get_ai_tool_runtime()
     filters: dict[str, object] = {"job_id": job_id}
     if file_path:
         filters["file_path"] = file_path
@@ -489,11 +498,12 @@ async def _exact_search(
         filters["language"] = language
     if risk_area:
         filters["risk_area"] = risk_area
-    documents = (
-        await runtime.mongodb_database[CHUNK_METADATA_COLLECTION]
-        .find(filters)
-        .to_list(length=None)
-    )
+    corpus = await _job_code_corpus(job_id)
+    documents = [
+        document
+        for document in corpus.documents
+        if _document_matches_filters(document, filters)
+    ]
     terms = _query_terms(query)
     if not terms:
         return []
@@ -511,7 +521,7 @@ async def _exact_search(
                 str(document.get("module") or ""),
                 str(document.get("function_name") or ""),
                 str(document.get("class_name") or ""),
-                " ".join(str(value) for value in document.get("imports", [])),
+                _imports_text(document.get("imports")),
             ]
         ).lower()
         matched = sum(term in searchable for term in terms)
@@ -530,19 +540,95 @@ async def _exact_search(
     return sorted(scored, key=lambda item: item.final_score, reverse=True)[:top_k]
 
 
-async def _repo_branch_key_for_job(job_id: str) -> str | None:
+async def _job_code_corpus(job_id: str) -> JobCodeCorpus:
+    runtime = get_ai_tool_runtime()
+    corpus = runtime.code_corpus
+    if isinstance(corpus, JobCodeCorpus):
+        return corpus
+
+    documents = (
+        await runtime.mongodb_database[CHUNK_METADATA_COLLECTION]
+        .find({"job_id": job_id})
+        .to_list(length=None)
+    )
+    normalized_documents = [
+        dict(document) for document in documents if isinstance(document, dict)
+    ]
+    bm25_documents: list[BM25Document] = []
+    for document in normalized_documents:
+        content = document.get("chunk_text")
+        if not isinstance(content, str) or not content:
+            continue
+        bm25_documents.append(
+            BM25Document(
+                id=(f"{document.get('file_path')}:{document.get('chunk_index')}"),
+                content=_document_searchable_text(document, content),
+                metadata=document,
+            )
+        )
+
+    bm25_index = BM25Index()
+    bm25_index.add_documents(bm25_documents)
+    runtime.code_corpus = JobCodeCorpus(
+        documents=normalized_documents,
+        bm25_index=bm25_index,
+    )
+    return runtime.code_corpus
+
+
+def _document_matches_filters(
+    document: dict[str, object],
+    filters: dict[str, object],
+) -> bool:
+    return all(document.get(key) == value for key, value in filters.items())
+
+
+def _document_searchable_text(
+    document: dict[str, object],
+    content: str,
+) -> str:
+    return " ".join(
+        [
+            content,
+            str(document.get("module") or ""),
+            str(document.get("function_name") or ""),
+            str(document.get("class_name") or ""),
+            _imports_text(document.get("imports")),
+        ]
+    )
+
+
+def _imports_text(value: object) -> str:
+    if not isinstance(value, list):
+        return ""
+    return " ".join(str(item) for item in value)
+
+
+@dataclass(slots=True, frozen=True)
+class _IndexScope:
+    repo_branch_key: str | None
+    index_generation_key: str | None
+
+
+async def _index_scope_for_job(job_id: str) -> _IndexScope:
     runtime = get_ai_tool_runtime()
     try:
         document = await runtime.mongodb_database[CHUNK_METADATA_COLLECTION].find_one(
             {"job_id": job_id},
         )
     except (AttributeError, TypeError):
-        return None
+        return _IndexScope(repo_branch_key=None, index_generation_key=None)
     if not isinstance(document, dict):
-        return None
+        return _IndexScope(repo_branch_key=None, index_generation_key=None)
 
     repo_branch_key = document.get("repo_branch_key")
-    return repo_branch_key if isinstance(repo_branch_key, str) else None
+    index_generation_key = document.get("index_generation_key")
+    return _IndexScope(
+        repo_branch_key=repo_branch_key if isinstance(repo_branch_key, str) else None,
+        index_generation_key=(
+            index_generation_key if isinstance(index_generation_key, str) else None
+        ),
+    )
 
 
 def _is_allowed_search_result(
@@ -730,6 +816,13 @@ def _remaining_budget(runtime: Any, investigation_id: str) -> dict[str, int]:
 
 def get_code_retriever() -> CodeSemanticRetriever:
     """Return the lazy semantic retriever used by unified search."""
+
+    try:
+        runtime_retriever = get_ai_tool_runtime().code_retriever
+    except RuntimeError:
+        runtime_retriever = None
+    if isinstance(runtime_retriever, CodeSemanticRetriever):
+        return runtime_retriever
 
     global _retriever
     if _retriever is None:

@@ -7,6 +7,7 @@ from motor.motor_asyncio import AsyncIOMotorCollection, AsyncIOMotorDatabase
 from pydantic import BaseModel
 
 from app.db.mongodb import (
+    CODE_INDEX_MANIFESTS_COLLECTION,
     CHUNK_METADATA_COLLECTION,
     FILE_ANALYSIS_RESULTS_COLLECTION,
     RAW_STATIC_ANALYSIS_OUTPUTS_COLLECTION,
@@ -14,6 +15,7 @@ from app.db.mongodb import (
     TOOL_CALL_LOGS_COLLECTION,
 )
 from app.schemas.mongodb import (
+    CodeIndexManifestDocument,
     ChunkMetadataDocument,
     FileAnalysisResultDocument,
     RawStaticAnalysisOutputDocument,
@@ -40,6 +42,16 @@ class MongoDocumentRepository(Generic[DocumentT]):
         payload = document.model_dump(mode="json")
         result = await self.collection.insert_one(payload)
         return str(result.inserted_id)
+
+    async def insert_many(self, documents: list[DocumentT]) -> int:
+        """Validate and insert many documents, returning the inserted count."""
+
+        if not documents:
+            return 0
+
+        payloads = [document.model_dump(mode="json") for document in documents]
+        result = await self.collection.insert_many(payloads, ordered=True)
+        return len(result.inserted_ids)
 
     async def find_by_job_id(self, job_id: UUID) -> list[dict[str, object]]:
         """Return all documents linked to a PostgreSQL review job."""
@@ -85,6 +97,28 @@ class ChunkMetadataRepository(MongoDocumentRepository[ChunkMetadataDocument]):
     def __init__(self, database: AsyncIOMotorDatabase) -> None:
         super().__init__(database, CHUNK_METADATA_COLLECTION)
 
+    async def replace_for_job(
+        self,
+        *,
+        job_id: UUID,
+        documents: list[ChunkMetadataDocument],
+        batch_size: int,
+    ) -> tuple[int, int]:
+        """Replace chunk metadata for a job using bounded MongoDB batches."""
+
+        if batch_size <= 0:
+            raise ValueError("batch_size must be greater than zero")
+
+        await self.collection.delete_many({"job_id": str(job_id)})
+        inserted_count = 0
+        roundtrips = 0
+        for start in range(0, len(documents), batch_size):
+            batch = documents[start : start + batch_size]
+            inserted_count += await self.insert_many(batch)
+            roundtrips += 1
+
+        return inserted_count, roundtrips
+
     async def find_containing_line(
         self,
         *,
@@ -107,6 +141,24 @@ class ChunkMetadataRepository(MongoDocumentRepository[ChunkMetadataDocument]):
         if document is None:
             return None
         return self._normalize_mongo_id(cast(dict[str, object], document))
+
+
+class CodeIndexManifestRepository(
+    MongoDocumentRepository[CodeIndexManifestDocument]
+):
+    """MongoDB access for immutable semantic index generation manifests."""
+
+    def __init__(self, database: AsyncIOMotorDatabase) -> None:
+        super().__init__(database, CODE_INDEX_MANIFESTS_COLLECTION)
+
+    async def upsert_for_job(self, document: CodeIndexManifestDocument) -> None:
+        """Create or replace the current lifecycle marker for one review job."""
+
+        await self.collection.update_one(
+            {"job_id": str(document.job_id)},
+            {"$set": document.model_dump(mode="json")},
+            upsert=True,
+        )
 
 
 class RepoSummaryResultRepository(MongoDocumentRepository[RepoSummaryResultDocument]):

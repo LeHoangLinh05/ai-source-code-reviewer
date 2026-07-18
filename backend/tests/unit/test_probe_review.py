@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -18,6 +19,7 @@ from app.ai.probe_review import (
     _dependency_manifest_contradicts_candidate,
     _judge_prompt,
     _probe_judge_response_from_payload,
+    _supporting_bundle_chunk,
     _trim_bundles,
 )
 from app.ai.roadmap.knowledge import load_roadmap_requirements
@@ -77,6 +79,16 @@ class _TraceWriter:
                 "output": output,
             }
         )
+
+
+class _FakeSemanticRetriever:
+    def __init__(self, results: list[SimpleNamespace]) -> None:
+        self.results = results
+        self.requests: list[object] = []
+
+    def search_many(self, requests: list[object]) -> list[list[SimpleNamespace]]:
+        self.requests = requests
+        return [self.results for _request in requests]
 
 
 def test_real_roadmap_catalog_rules_are_in_unified_probe_plan() -> None:
@@ -299,6 +311,74 @@ def test_probe_judge_prompt_requires_evidence_arrays() -> None:
     assert '"output_schema"' in prompt
 
 
+def test_supporting_bundle_chunk_requires_explicit_candidate_evidence() -> None:
+    candidate = ProbeJudgeResponse.model_validate(
+        {
+            "candidates": [
+                {
+                    "verdict": "issue",
+                    "title": "Missing logout revocation",
+                    "description": "Logout returns without revoking tokens.",
+                    "severity": "high",
+                    "category": "security",
+                    "confidence": 0.91,
+                    "file_path": "backend/app/auth.py",
+                    "line_start": 2,
+                    "line_end": 2,
+                    "supporting_evidence": [],
+                }
+            ]
+        }
+    ).candidates[0]
+
+    assert (
+        _supporting_bundle_chunk(
+            candidate,
+            [
+                _bundle(
+                    probe={"probe_id": "security.jwt_session_auth"},
+                    chunks=[
+                        _candidate_chunk(
+                            file_path="backend/app/auth.py",
+                            content="def logout():\n    return {'ok': True}",
+                        )
+                    ],
+                )
+            ],
+        )
+        is None
+    )
+
+
+def test_supporting_bundle_chunk_rejects_unsupported_reference() -> None:
+    candidate = _probe_candidate(
+        title="Missing logout revocation",
+        description="Logout returns without revoking tokens.",
+        file_path="backend/app/auth.py",
+        line_start=2,
+        line_end=2,
+    )
+
+    assert (
+        _supporting_bundle_chunk(
+            candidate,
+            [
+                _bundle(
+                    probe={"probe_id": "security.jwt_session_auth"},
+                    chunks=[
+                        _candidate_chunk(
+                            file_path="backend/app/auth.py",
+                            chunk_index=1,
+                            content="def logout():\n    return {'ok': True}",
+                        )
+                    ],
+                )
+            ],
+        )
+        is None
+    )
+
+
 def test_trim_bundles_handles_tied_chunk_rank_without_comparing_chunks() -> None:
     bundles = [
         _bundle(
@@ -431,6 +511,123 @@ async def test_jwt_session_probe_retrieves_auth_token_chunk() -> None:
     assert bundles[0].candidate_chunks[0].file_path == "backend/app/auth.py"
 
 
+@pytest.mark.asyncio
+async def test_probe_retrieval_rrf_prefers_cross_strategy_consensus() -> None:
+    job_id = uuid4()
+    database = _FakeDatabase(
+        [
+            _chunk(
+                job_id=job_id,
+                file_path="backend/app/auth.py",
+                content="def status():\n    return {'ok': True}",
+            ),
+            _chunk(
+                job_id=job_id,
+                file_path="backend/app/sessions.py",
+                content=(
+                    "def logout(refresh_token):\n"
+                    "    revoke_refresh_token(refresh_token)\n"
+                    "    blacklist_token(refresh_token)\n"
+                ),
+            ),
+        ]
+    )
+    semantic_retriever = _FakeSemanticRetriever(
+        [
+            _semantic_result(
+                job_id=job_id,
+                file_path="backend/app/auth.py",
+                content="def status():\n    return {'ok': True}",
+                score=0.99,
+            ),
+            _semantic_result(
+                job_id=job_id,
+                file_path="backend/app/sessions.py",
+                content=(
+                    "def logout(refresh_token):\n"
+                    "    revoke_refresh_token(refresh_token)\n"
+                    "    blacklist_token(refresh_token)\n"
+                ),
+                score=0.62,
+            ),
+        ]
+    )
+    service = ProbeRetrievalService(
+        database=database,  # type: ignore[arg-type]
+        code_retriever=semantic_retriever,  # type: ignore[arg-type]
+        enable_semantic_search=True,
+        chunks_per_probe=2,
+    )
+
+    bundles = await service.retrieve(
+        job_id=job_id,
+        probes=[
+            {
+                "probe_id": "security.jwt_session_auth",
+                "category": "security",
+                "priority": "high",
+                "query": "logout refresh token blacklist revoke",
+                "top_k": 2,
+            }
+        ],
+        trace_writer=_TraceWriter(),
+    )
+
+    assert bundles[0].candidate_chunks[0].file_path == "backend/app/sessions.py"
+    assert bundles[0].strategies_used == ["semantic", "bm25", "exact"]
+
+
+@pytest.mark.asyncio
+async def test_probe_retrieval_keeps_file_diversity_in_top_results() -> None:
+    job_id = uuid4()
+    database = _FakeDatabase(
+        [
+            _chunk(
+                job_id=job_id,
+                file_path="backend/app/auth.py",
+                content="def login():\n    return create_access_token(user)",
+            ),
+            {
+                **_chunk(
+                    job_id=job_id,
+                    file_path="backend/app/auth.py",
+                    content="def refresh():\n    return create_refresh_token(user)",
+                ),
+                "chunk_index": 1,
+            },
+            _chunk(
+                job_id=job_id,
+                file_path="backend/app/users.py",
+                content="def authenticate_user():\n    return verify_password(user)",
+            ),
+        ]
+    )
+    service = ProbeRetrievalService(
+        database=database,  # type: ignore[arg-type]
+        enable_semantic_search=False,
+        chunks_per_probe=2,
+    )
+
+    bundles = await service.retrieve(
+        job_id=job_id,
+        probes=[
+            {
+                "probe_id": "security.jwt_session_auth",
+                "category": "security",
+                "priority": "high",
+                "query": "login refresh token authenticate password",
+                "top_k": 2,
+            }
+        ],
+        trace_writer=_TraceWriter(),
+    )
+
+    assert {chunk.file_path for chunk in bundles[0].candidate_chunks} == {
+        "backend/app/auth.py",
+        "backend/app/users.py",
+    }
+
+
 def _chunk(
     *,
     job_id: object,
@@ -455,6 +652,28 @@ def _chunk(
         "token_count": 20,
         "chunk_text": content,
     }
+
+
+def _semantic_result(
+    *,
+    job_id: object,
+    file_path: str,
+    content: str,
+    score: float,
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        content=content,
+        semantic_score=score,
+        metadata={
+            "job_id": str(job_id),
+            "file_path": file_path,
+            "language": "python",
+            "chunk_index": 0,
+            "line_start": 1,
+            "line_end": max(1, len(content.splitlines())),
+            "risk_area": "security" if "auth" in file_path else "general",
+        },
+    )
 
 
 def _candidate_chunk(

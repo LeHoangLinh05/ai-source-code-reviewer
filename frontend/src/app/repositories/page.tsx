@@ -10,7 +10,7 @@ import {
   X,
 } from "lucide-react";
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useForm } from "react-hook-form";
 import { toast } from "sonner";
 import { z } from "zod";
@@ -23,6 +23,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { PaginationControls } from "@/components/ui/pagination-controls";
 import {
   Form,
   FormControl,
@@ -65,6 +66,7 @@ const repositorySchema = z.object({
 type RepositoryFormValues = z.infer<typeof repositorySchema>;
 
 const BRANCH_PRESETS = ["main", "master"] as const;
+const REPOSITORIES_PAGE_SIZE = 10;
 
 export default function RepositoriesPage() {
   const dispatch = useAppDispatch();
@@ -74,6 +76,15 @@ export default function RepositoriesPage() {
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [deletingRepositoryId, setDeletingRepositoryId] = useState<string | null>(
     null,
+  );
+  const [currentPage, setCurrentPage] = useState(1);
+  const pagedItems = useMemo(
+    () =>
+      items.slice(
+        (currentPage - 1) * REPOSITORIES_PAGE_SIZE,
+        currentPage * REPOSITORIES_PAGE_SIZE,
+      ),
+    [currentPage, items],
   );
   const form = useForm<RepositoryFormValues>({
     resolver: zodResolver(repositorySchema),
@@ -103,6 +114,16 @@ export default function RepositoriesPage() {
   useEffect(() => {
     void loadRepositories();
   }, [loadRepositories]);
+
+  useEffect(() => {
+    const totalPages = Math.max(
+      1,
+      Math.ceil(items.length / REPOSITORIES_PAGE_SIZE),
+    );
+    if (currentPage > totalPages) {
+      setCurrentPage(totalPages);
+    }
+  }, [currentPage, items.length]);
 
   async function handleCreateRepository(values: RepositoryFormValues) {
     dispatch(setRepositoryMutating(true));
@@ -214,11 +235,19 @@ export default function RepositoriesPage() {
             <EmptyRepositoryState onAdd={() => setIsFormOpen(true)} />
           ) : null}
           {!isLoading && !error && items.length > 0 ? (
-            <RepositoryTable
-              deletingRepositoryId={deletingRepositoryId}
-              onDeleteRepository={handleDeleteRepository}
-              repositories={items}
-            />
+            <>
+              <RepositoryTable
+                deletingRepositoryId={deletingRepositoryId}
+                onDeleteRepository={handleDeleteRepository}
+                repositories={pagedItems}
+              />
+              <PaginationControls
+                currentPage={currentPage}
+                onPageChange={setCurrentPage}
+                pageSize={REPOSITORIES_PAGE_SIZE}
+                totalItems={items.length}
+              />
+            </>
           ) : null}
         </CardContent>
       </Card>

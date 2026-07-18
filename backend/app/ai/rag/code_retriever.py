@@ -9,8 +9,10 @@ from uuid import UUID
 
 from app.ai.rag.code_embedding import (
     CodeEmbeddingStore,
+    CodeVectorQuery,
     CodeVectorSearchResult,
 )
+from app.core.config import get_settings
 
 
 class CodeVectorStore(Protocol):
@@ -34,6 +36,19 @@ class RetrievedCodeChunk:
     semantic_score: float
 
 
+@dataclass(slots=True, frozen=True)
+class CodeSemanticSearchRequest:
+    """One scoped semantic code retrieval request."""
+
+    query: str
+    job_id: str | UUID
+    repo_branch_key: str | None = None
+    index_generation_key: str | None = None
+    top_k: int = 3
+    language: str | None = None
+    risk_area: str | None = None
+
+
 class CodeSemanticRetriever:
     """Retrieve source chunks without ever searching outside the current job."""
 
@@ -50,18 +65,214 @@ class CodeSemanticRetriever:
         query: str,
         job_id: str | UUID,
         repo_branch_key: str | None = None,
+        index_generation_key: str | None = None,
         top_k: int = 3,
         language: str | None = None,
         risk_area: str | None = None,
     ) -> list[RetrievedCodeChunk]:
         """Search code with a mandatory repo-branch or legacy job filter."""
 
+        return self.search_many(
+            [
+                CodeSemanticSearchRequest(
+                    query=query,
+                    job_id=job_id,
+                    repo_branch_key=repo_branch_key,
+                    index_generation_key=index_generation_key,
+                    top_k=top_k,
+                    language=language,
+                    risk_area=risk_area,
+                )
+            ]
+        )[0]
+
+    def search_many(
+        self,
+        requests: list[CodeSemanticSearchRequest],
+    ) -> list[list[RetrievedCodeChunk]]:
+        """Search many scoped queries while deduping exact duplicates."""
+
+        if not requests:
+            return []
+
+        settings = get_settings()
+        output: list[list[RetrievedCodeChunk]] = [[] for _request in requests]
+        vector_queries: list[CodeVectorQuery] = []
+        vector_request_indexes: list[int] = []
+        duplicate_indexes: dict[int, list[int]] = {}
+        seen_keys: dict[str, int] = {}
+        prepared: dict[
+            int,
+            tuple[str, str | None, str | None, int, dict[str, object]],
+        ] = {}
+        for index, request in enumerate(requests):
+            normalized_query = request.query.strip()
+            if not normalized_query:
+                continue
+            if (
+                _estimated_tokens(normalized_query)
+                > settings.probe_semantic_max_query_tokens
+            ):
+                continue
+
+            normalized_job_id = _require_job_id(request.job_id)
+            normalized_repo_branch_key = _normalize_repo_branch_key(
+                request.repo_branch_key
+            )
+            normalized_index_generation_key = _normalize_repo_branch_key(
+                request.index_generation_key
+            )
+            requested_top_k = min(max(request.top_k, 1), self.MAX_TOP_K)
+            where = _build_where_filter(
+                job_id=normalized_job_id,
+                repo_branch_key=normalized_repo_branch_key,
+                index_generation_key=normalized_index_generation_key,
+                language=request.language,
+                risk_area=request.risk_area,
+            )
+            dedupe_key = _search_request_key(
+                query=normalized_query,
+                job_id=normalized_job_id,
+                repo_branch_key=normalized_repo_branch_key,
+                index_generation_key=normalized_index_generation_key,
+                top_k=requested_top_k,
+                language=request.language,
+                risk_area=request.risk_area,
+            )
+            original_index = seen_keys.get(dedupe_key)
+            if original_index is not None:
+                duplicate_indexes.setdefault(original_index, []).append(index)
+                continue
+
+            seen_keys[dedupe_key] = index
+            candidate_count = min(
+                self.MAX_CANDIDATES,
+                max(requested_top_k * self.CANDIDATE_MULTIPLIER, requested_top_k),
+            )
+            prepared[index] = (
+                normalized_job_id,
+                normalized_repo_branch_key,
+                normalized_index_generation_key,
+                requested_top_k,
+                where,
+            )
+            vector_request_indexes.append(index)
+            vector_queries.append(
+                CodeVectorQuery(
+                    query=normalized_query,
+                    n_results=candidate_count,
+                    where=where,
+                )
+            )
+
+        for batch_start in range(
+            0,
+            len(vector_queries),
+            settings.probe_semantic_query_batch_size,
+        ):
+            query_batch = vector_queries[
+                batch_start : batch_start + settings.probe_semantic_query_batch_size
+            ]
+            request_indexes = vector_request_indexes[
+                batch_start : batch_start + settings.probe_semantic_query_batch_size
+            ]
+            query_many = getattr(self.vectorstore, "query_many", None)
+            batch_results = (
+                query_many(query_batch)
+                if callable(query_many)
+                else [
+                    self.vectorstore.query(
+                        query=query.query,
+                        n_results=query.n_results,
+                        where=query.where,
+                    )
+                    for query in query_batch
+                ]
+            )
+            for request_index, results in zip(
+                request_indexes,
+                batch_results,
+                strict=True,
+            ):
+                (
+                    normalized_job_id,
+                    normalized_repo_branch_key,
+                    normalized_index_generation_key,
+                    requested_top_k,
+                    _where,
+                ) = prepared[request_index]
+                output[request_index] = self._rank_results(
+                    results=results,
+                    query=requests[request_index].query,
+                    job_id=normalized_job_id,
+                    repo_branch_key=normalized_repo_branch_key,
+                    index_generation_key=normalized_index_generation_key,
+                    requested_top_k=requested_top_k,
+                )
+
+        for original_index, indexes in duplicate_indexes.items():
+            for index in indexes:
+                output[index] = list(output[original_index])
+
+        return output
+
+    def _rank_results(
+        self,
+        *,
+        results: list[CodeVectorSearchResult],
+        query: str,
+        job_id: str,
+        repo_branch_key: str | None,
+        index_generation_key: str | None,
+        requested_top_k: int,
+    ) -> list[RetrievedCodeChunk]:
+        job_results = [
+            RetrievedCodeChunk(
+                content=result.content,
+                metadata=result.metadata,
+                semantic_score=result.score,
+            )
+            for result in results
+            if _metadata_matches_scope(
+                result.metadata,
+                job_id=job_id,
+                repo_branch_key=repo_branch_key,
+                index_generation_key=index_generation_key,
+            )
+        ]
+        ranked = sorted(
+            job_results,
+            key=lambda result: _ranking_score(result=result, query=query),
+            reverse=True,
+        )
+        max_per_file = max(1, requested_top_k // 2)
+        return _select_diverse(
+            ranked,
+            requested_top_k=requested_top_k,
+            max_per_file=max_per_file,
+        )
+
+    def _legacy_search(
+        self,
+        *,
+        query: str,
+        job_id: str | UUID,
+        repo_branch_key: str | None = None,
+        index_generation_key: str | None = None,
+        top_k: int = 3,
+        language: str | None = None,
+        risk_area: str | None = None,
+    ) -> list[RetrievedCodeChunk]:
         normalized_job_id = _require_job_id(job_id)
         normalized_repo_branch_key = _normalize_repo_branch_key(repo_branch_key)
+        normalized_index_generation_key = _normalize_repo_branch_key(
+            index_generation_key
+        )
         requested_top_k = min(max(top_k, 1), self.MAX_TOP_K)
         where = _build_where_filter(
             job_id=normalized_job_id,
             repo_branch_key=normalized_repo_branch_key,
+            index_generation_key=normalized_index_generation_key,
             language=language,
             risk_area=risk_area,
         )
@@ -85,6 +296,7 @@ class CodeSemanticRetriever:
                 result.metadata,
                 job_id=normalized_job_id,
                 repo_branch_key=normalized_repo_branch_key,
+                index_generation_key=normalized_index_generation_key,
             )
         ]
         ranked = sorted(
@@ -169,12 +381,42 @@ def _normalize_repo_branch_key(repo_branch_key: str | None) -> str | None:
     return normalized or None
 
 
+def _estimated_tokens(text: str) -> int:
+    return max(1, len(re.findall(r"\S+", text)))
+
+
+def _search_request_key(
+    *,
+    query: str,
+    job_id: str,
+    repo_branch_key: str | None,
+    index_generation_key: str | None,
+    top_k: int,
+    language: str | None,
+    risk_area: str | None,
+) -> str:
+    return "\0".join(
+        [
+            " ".join(query.lower().split()),
+            job_id,
+            index_generation_key or "",
+            repo_branch_key or "",
+            str(top_k),
+            language or "",
+            risk_area or "",
+        ]
+    )
+
+
 def _metadata_matches_scope(
     metadata: dict[str, object],
     *,
     job_id: str,
     repo_branch_key: str | None,
+    index_generation_key: str | None,
 ) -> bool:
+    if index_generation_key is not None:
+        return metadata.get("index_generation_key") == index_generation_key
     if repo_branch_key is not None:
         return metadata.get("repo_branch_key") == repo_branch_key
 
@@ -185,11 +427,18 @@ def _build_where_filter(
     *,
     job_id: str,
     repo_branch_key: str | None,
+    index_generation_key: str | None,
     language: str | None,
     risk_area: str | None,
 ) -> dict[str, object]:
     filters: list[dict[str, object]] = [
-        {"repo_branch_key": repo_branch_key} if repo_branch_key else {"job_id": job_id}
+        (
+            {"index_generation_key": index_generation_key}
+            if index_generation_key
+            else {"repo_branch_key": repo_branch_key}
+            if repo_branch_key
+            else {"job_id": job_id}
+        )
     ]
     if language:
         filters.append({"language": language})

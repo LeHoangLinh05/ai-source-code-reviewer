@@ -2,7 +2,7 @@
 
 import { CirclePlay, RefreshCw, Trash2 } from "lucide-react";
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -13,6 +13,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { PaginationControls } from "@/components/ui/pagination-controls";
 import { getApiErrorMessage } from "@/lib/api-error";
 import { cancelReviewJob, getReviewJobs } from "@/lib/review-jobs";
 import { useAppDispatch, useAppSelector } from "@/store/hooks";
@@ -26,6 +27,7 @@ import {
 import type { ReviewJob, ReviewJobStatus } from "@/types/review-job";
 
 const TERMINAL_STATUSES = new Set<ReviewJobStatus>(["COMPLETED", "FAILED"]);
+const JOBS_PAGE_SIZE = 10;
 
 export default function ReviewsPage() {
   const dispatch = useAppDispatch();
@@ -33,6 +35,15 @@ export default function ReviewsPage() {
     (state) => state.jobs,
   );
   const [cancelingJobId, setCancelingJobId] = useState<string | null>(null);
+  const [currentPage, setCurrentPage] = useState(1);
+  const pagedItems = useMemo(
+    () =>
+      items.slice(
+        (currentPage - 1) * JOBS_PAGE_SIZE,
+        currentPage * JOBS_PAGE_SIZE,
+      ),
+    [currentPage, items],
+  );
 
   const loadJobs = useCallback(async () => {
     dispatch(setJobLoading(true));
@@ -51,6 +62,13 @@ export default function ReviewsPage() {
   useEffect(() => {
     void loadJobs();
   }, [loadJobs]);
+
+  useEffect(() => {
+    const totalPages = Math.max(1, Math.ceil(items.length / JOBS_PAGE_SIZE));
+    if (currentPage > totalPages) {
+      setCurrentPage(totalPages);
+    }
+  }, [currentPage, items.length]);
 
   async function handleCancelJob(job: ReviewJob) {
     setCancelingJobId(job.id);
@@ -118,12 +136,20 @@ export default function ReviewsPage() {
           ) : null}
           {!isLoading && !error && items.length === 0 ? <EmptyJobsState /> : null}
           {!isLoading && !error && items.length > 0 ? (
-            <JobsTable
-              cancelingJobId={cancelingJobId}
-              isMutating={isMutating}
-              jobs={items}
-              onCancelJob={handleCancelJob}
-            />
+            <>
+              <JobsTable
+                cancelingJobId={cancelingJobId}
+                isMutating={isMutating}
+                jobs={pagedItems}
+                onCancelJob={handleCancelJob}
+              />
+              <PaginationControls
+                currentPage={currentPage}
+                onPageChange={setCurrentPage}
+                pageSize={JOBS_PAGE_SIZE}
+                totalItems={items.length}
+              />
+            </>
           ) : null}
         </CardContent>
       </Card>

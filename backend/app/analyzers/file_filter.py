@@ -1,6 +1,9 @@
 """Source file filtering for cloned review sandboxes."""
 
+from dataclasses import dataclass
+import os
 from pathlib import Path
+import subprocess
 
 IGNORED_DIRECTORY_NAMES = {
     ".git",
@@ -44,6 +47,15 @@ DEFAULT_MAX_SOURCE_FILE_SIZE_BYTES = 1_048_576
 MAGIC_BYTES_READ_SIZE = 4096
 
 
+@dataclass(slots=True, frozen=True)
+class FileManifest:
+    """Source files selected for analysis plus scanner metadata."""
+
+    files: list[Path]
+    source: str
+    scanned_count: int
+
+
 def filter_files(
     sandbox_path: Path,
     *,
@@ -51,24 +63,53 @@ def filter_files(
 ) -> list[Path]:
     """Return source files that are safe and useful for analyzers."""
 
+    return build_file_manifest(
+        sandbox_path,
+        max_source_file_size_bytes=max_source_file_size_bytes,
+    ).files
+
+
+def build_file_manifest(
+    sandbox_path: Path,
+    *,
+    max_source_file_size_bytes: int = DEFAULT_MAX_SOURCE_FILE_SIZE_BYTES,
+) -> FileManifest:
+    """Return a Git-aware source-file manifest for cloned review sandboxes."""
+
     root_path = sandbox_path.resolve()
+    candidates = _git_tracked_files(root_path)
+    source = "git" if candidates is not None else "walk"
+    if candidates is None:
+        candidates = _walk_files(root_path)
+
     filtered_files: list[Path] = []
-    for file_path in sorted(root_path.rglob("*"), key=lambda path: path.as_posix()):
-        if not file_path.is_file():
+    for file_path in candidates:
+        resolved_path = file_path.resolve()
+        if not _is_relative_to(resolved_path, root_path):
             continue
 
-        if _is_in_ignored_directory(file_path, root_path):
+        if not resolved_path.is_file():
             continue
 
-        if file_path.stat().st_size > max_source_file_size_bytes:
+        if _is_in_ignored_directory(resolved_path, root_path):
             continue
 
-        if is_binary_file(file_path):
+        if resolved_path.is_symlink():
             continue
 
-        filtered_files.append(file_path)
+        if resolved_path.stat().st_size > max_source_file_size_bytes:
+            continue
 
-    return filtered_files
+        if is_binary_file(resolved_path):
+            continue
+
+        filtered_files.append(resolved_path)
+
+    return FileManifest(
+        files=sorted(filtered_files, key=lambda path: path.as_posix()),
+        source=source,
+        scanned_count=len(candidates),
+    )
 
 
 def is_binary_file(file_path: Path) -> bool:
@@ -95,3 +136,48 @@ def to_relative_posix_path(file_path: Path, sandbox_path: Path) -> str:
 def _is_in_ignored_directory(file_path: Path, root_path: Path) -> bool:
     relative_parts = file_path.resolve().relative_to(root_path).parts
     return any(part in IGNORED_DIRECTORY_NAMES for part in relative_parts[:-1])
+
+
+def _git_tracked_files(root_path: Path) -> list[Path] | None:
+    git_dir = root_path / ".git"
+    if not git_dir.exists():
+        return None
+
+    completed_process = subprocess.run(
+        ["git", "ls-files", "-z", "--cached"],
+        cwd=root_path,
+        capture_output=True,
+        check=False,
+        text=False,
+        timeout=15,
+        env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+    )
+    if completed_process.returncode != 0:
+        return None
+
+    raw_paths = completed_process.stdout.split(b"\0")
+    return [
+        root_path / raw_path.decode("utf-8", errors="ignore")
+        for raw_path in raw_paths
+        if raw_path
+    ]
+
+
+def _walk_files(root_path: Path) -> list[Path]:
+    files: list[Path] = []
+    for directory, directory_names, filenames in os.walk(root_path):
+        directory_path = Path(directory)
+        directory_names[:] = sorted(
+            name for name in directory_names if name not in IGNORED_DIRECTORY_NAMES
+        )
+        for filename in sorted(filenames):
+            files.append(directory_path / filename)
+    return files
+
+
+def _is_relative_to(path: Path, root_path: Path) -> bool:
+    try:
+        path.relative_to(root_path)
+    except ValueError:
+        return False
+    return True

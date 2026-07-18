@@ -86,6 +86,27 @@ def test_react_parser_repairs_final_report_json_action() -> None:
     assert parsed.tool_input["executive_summary"] == "Done"
 
 
+def test_react_parser_repairs_bare_final_report_tool_json() -> None:
+    parser = MarkdownSafeReActOutputParser()
+
+    parsed = parser.parse(
+        "generate_final_report\n"
+        "{\n"
+        '  "executive_summary": "Done",\n'
+        '  "security_score": 10,\n'
+        '  "maintainability_score": 8,\n'
+        '  "performance_score": 10,\n'
+        '  "overall_score": 9,\n'
+        '  "top_priorities": ["Clean up unused imports"],\n'
+        '  "tech_stack": ["Python", "FastAPI"]\n'
+        "}"
+    )
+
+    assert parsed.tool == "generate_final_report"
+    assert parsed.tool_input["executive_summary"] == "Done"
+    assert parsed.tool_input["tech_stack"] == ["Python", "FastAPI"]
+
+
 def test_react_parser_accepts_plain_text_report_handoff_as_final_answer() -> None:
     parser = MarkdownSafeReActOutputParser()
 

@@ -86,6 +86,7 @@ class ChunkMetadataDocument(BaseModel):
     branch: str | None = None
     commit_sha: str | None = None
     repo_branch_key: str | None = None
+    index_generation_key: str | None = None
     file_path: str
     language: str
     chunk_type: str
@@ -105,6 +106,21 @@ class ChunkMetadataDocument(BaseModel):
     embedding_cache_id: str | None = None
     occurrence_index: int | None = Field(default=None, ge=0)
     chunker_version: str | None = None
+
+
+class CodeIndexManifestDocument(BaseModel):
+    """Lifecycle marker for one immutable semantic code index generation."""
+
+    job_id: UUID
+    repository_id: UUID | str
+    branch: str
+    commit_sha: str
+    repo_branch_key: str
+    index_generation_key: str
+    status: Literal["BUILDING", "INDEXED", "FAILED"]
+    chunk_count: int = Field(ge=0)
+    updated_at: datetime
+    error_message: str | None = None
 
 
 class RepoSummaryResultDocument(RepoSummary):

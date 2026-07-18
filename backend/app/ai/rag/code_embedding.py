@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import gc
 import hashlib
 import json
 import logging
 from pathlib import Path
+import re
 import time
-from typing import Any, Protocol
+from typing import Any, Mapping, Protocol
 from uuid import UUID
 
 from app.core.config import get_settings
@@ -18,11 +18,8 @@ from app.schemas.mongodb import ChunkMetadataDocument
 logger = logging.getLogger(__name__)
 
 CODE_CHUNKS_COLLECTION = "code_chunks"
-ALLOWED_CODE_EMBEDDING_MODELS = frozenset({"jinaai/jina-embeddings-v2-base-code"})
-CODE_EMBEDDING_MODEL_VERSION = "v2-base-code"
-CODE_EMBEDDING_DIMENSION = 768
-DEFAULT_CODE_EMBEDDING_MAX_SEQUENCE_LENGTH = 1024
-REMOTE_CODE_EMBEDDING_MODEL_VERSION = "openai-compatible"
+CODE_EMBEDDING_MODEL_VERSION = "remote-api-v1"
+CODE_EMBEDDING_DIMENSION = 1536
 UNKNOWN_CODE_EMBEDDING_DIMENSION = 0
 CODE_CHUNKER_VERSION = "v1"
 
@@ -50,6 +47,24 @@ class CodeEmbeddingBatchTrace:
 
 
 @dataclass(slots=True, frozen=True)
+class CodeVectorQuery:
+    """One vector search request sharing the same embedding adapter."""
+
+    query: str
+    n_results: int
+    where: dict[str, object]
+
+
+@dataclass(slots=True, frozen=True)
+class CodeEmbeddingBatchResult:
+    """Results and telemetry for one query-embedding batch."""
+
+    query_count: int
+    duration_ms: int
+    token_usage: dict[str, int] | None = None
+
+
+@dataclass(slots=True, frozen=True)
 class CodeEmbeddingIndexSummary:
     """Summary returned after indexing source-code chunks."""
 
@@ -60,6 +75,7 @@ class CodeEmbeddingIndexSummary:
     embedded_count: int = 0
     pruned_count: int = 0
     total_current_count: int = 0
+    skipped_sensitive_count: int = 0
 
 
 class CodeEmbedder(Protocol):
@@ -68,6 +84,8 @@ class CodeEmbedder(Protocol):
     def embed_documents(self, texts: list[str]) -> list[list[float]]: ...
 
     def embed_query(self, text: str) -> list[float]: ...
+
+    def embed_queries(self, texts: list[str]) -> list[list[float]]: ...
 
 
 class CodeEmbeddingStore:
@@ -83,7 +101,6 @@ class CodeEmbeddingStore:
         api_key: str | None = None,
         dimension: int | None = None,
         batch_size: int | None = None,
-        max_sequence_length: int | None = None,
     ) -> None:
         settings = get_settings()
         self.provider = provider or settings.code_embedding_provider
@@ -92,11 +109,8 @@ class CodeEmbeddingStore:
             settings.code_embedding_dimension if dimension is None else dimension
         )
         self.batch_size = batch_size or settings.code_embedding_batch_size
-        self.max_sequence_length = (
-            settings.code_embedding_max_sequence_length
-            if max_sequence_length is None
-            else max_sequence_length
-        )
+        self.max_item_tokens = settings.code_embedding_max_item_tokens
+        self.max_batch_tokens = settings.code_embedding_max_batch_tokens
         self._validate_provider_config()
 
         self.persist_path = Path(persist_path or settings.rag_chroma_path)
@@ -143,20 +157,30 @@ class CodeEmbeddingStore:
             branch=branch,
             commit_sha=commit_sha,
         )
+        skipped_sensitive_count = _count_sensitive_chunks(prepared_chunks)
+        prepared_chunks = [
+            chunk for chunk in prepared_chunks if _can_send_chunk_to_remote(chunk)
+        ]
         repo_branch_key = _common_repo_branch_key(prepared_chunks)
+        index_generation_key = _common_index_generation_key(prepared_chunks)
+        index_scope_key = index_generation_key or repo_branch_key
         logger.info(
             "Semantic code indexing preparing %d chunks with provider=%s model=%s "
-            "batch_size=%d max_sequence_length=%d repo_branch_key=%s",
+            "batch_size=%d repo_branch_key=%s index_generation_key=%s "
+            "skipped_sensitive=%d",
             len(prepared_chunks),
             self.provider,
             self.model_name,
             self.batch_size,
-            self.max_sequence_length,
             repo_branch_key or "legacy",
+            index_generation_key or "legacy",
+            skipped_sensitive_count,
         )
 
         existing_cache_ids = (
-            self._existing_cache_ids(repo_branch_key) if repo_branch_key else set()
+            self._existing_cache_ids(index_scope_key)
+            if index_scope_key
+            else set()
         )
         chunks_to_embed = [
             chunk
@@ -164,19 +188,20 @@ class CodeEmbeddingStore:
             if _chunk_id(chunk) not in existing_cache_ids
         ]
         cached_chunks = [
-            chunk
-            for chunk in prepared_chunks
-            if _chunk_id(chunk) in existing_cache_ids
+            chunk for chunk in prepared_chunks if _chunk_id(chunk) in existing_cache_ids
         ]
         self._refresh_cached_chunks(cached_chunks)
 
-        total_batches = _count_batches(len(chunks_to_embed), self.batch_size)
+        batches_to_embed = _token_limited_batches(
+            chunks_to_embed,
+            max_items=self.batch_size,
+            max_tokens=self.max_batch_tokens,
+            max_item_tokens=self.max_item_tokens,
+        )
+        total_batches = len(batches_to_embed)
         embedded_count = 0
         batch_traces: list[CodeEmbeddingBatchTrace] = []
-        for batch_number, batch_chunks in enumerate(
-            _batched(chunks_to_embed, self.batch_size),
-            start=1,
-        ):
+        for batch_number, batch_chunks in enumerate(batches_to_embed, start=1):
             batch_trace = self._index_chunk_batch(
                 batch_chunks,
                 batch_number=batch_number,
@@ -187,11 +212,11 @@ class CodeEmbeddingStore:
 
         pruned_count = (
             self._prune_stale_cache_ids(
-                repo_branch_key=repo_branch_key,
+                index_generation_key=index_scope_key,
                 existing_cache_ids=existing_cache_ids,
                 current_cache_ids={_chunk_id(chunk) for chunk in prepared_chunks},
             )
-            if repo_branch_key
+            if index_scope_key
             else 0
         )
         duration_ms = _duration_ms(started_at)
@@ -213,6 +238,7 @@ class CodeEmbeddingStore:
             embedded_count=embedded_count,
             pruned_count=pruned_count,
             total_current_count=len(prepared_chunks),
+            skipped_sensitive_count=skipped_sensitive_count,
         )
 
     def query(
@@ -227,32 +253,61 @@ class CodeEmbeddingStore:
         if n_results <= 0:
             return []
 
-        query_embedding = _validated_embeddings(
-            [self._embedder.embed_query(query)],
-            expected_dimension=self._expected_dimension(),
+        return self.query_many(
+            [CodeVectorQuery(query=query, n_results=n_results, where=where)]
         )[0]
-        result = self._collection.query(
-            query_embeddings=[query_embedding],
-            n_results=n_results,
-            where=where,
-            include=["documents", "metadatas", "distances"],
+
+    def query_many(
+        self,
+        queries: list[CodeVectorQuery],
+    ) -> list[list[CodeVectorSearchResult]]:
+        """Search source chunks for many query texts with exact-order output."""
+
+        if not queries:
+            return []
+
+        query_texts = [query.query for query in queries]
+        embed_queries = getattr(self._embedder, "embed_queries", None)
+        raw_embeddings = (
+            embed_queries(query_texts)
+            if callable(embed_queries)
+            else [self._embedder.embed_query(query_text) for query_text in query_texts]
         )
-        documents = result.get("documents", [[]])[0]
-        metadatas = result.get("metadatas", [[]])[0]
-        distances = result.get("distances", [[]])[0]
-        return [
-            CodeVectorSearchResult(
-                content=str(content),
-                metadata=dict(metadata or {}),
-                score=max(0.0, 1.0 - float(distance)),
+        query_embeddings = _validated_embeddings(
+            raw_embeddings,
+            expected_dimension=self._expected_dimension(),
+        )
+        if len(query_embeddings) != len(queries):
+            raise RuntimeError("Code embedding model returned an unexpected batch size")
+
+        grouped_results: list[list[CodeVectorSearchResult]] = [[] for _ in queries]
+        for group in _query_groups(queries):
+            max_results = max(queries[index].n_results for index in group)
+            if max_results <= 0:
+                continue
+            result = self._collection.query(
+                query_embeddings=[query_embeddings[index] for index in group],
+                n_results=max_results,
+                where=queries[group[0]].where,
+                include=["documents", "metadatas", "distances"],
             )
-            for content, metadata, distance in zip(
-                documents,
-                metadatas,
-                distances,
-                strict=True,
-            )
-        ]
+            documents_by_query = result.get("documents", [])
+            metadatas_by_query = result.get("metadatas", [])
+            distances_by_query = result.get("distances", [])
+            for offset, query_index in enumerate(group):
+                grouped_results[query_index] = _vector_results_from_query_payload(
+                    documents_by_query[offset]
+                    if offset < len(documents_by_query)
+                    else [],
+                    metadatas_by_query[offset]
+                    if offset < len(metadatas_by_query)
+                    else [],
+                    distances_by_query[offset]
+                    if offset < len(distances_by_query)
+                    else [],
+                )[: queries[query_index].n_results]
+
+        return grouped_results
 
     def delete_job(self, job_id: str) -> None:
         """Delete legacy job-scoped vectors left by earlier index versions."""
@@ -262,6 +317,13 @@ class CodeEmbeddingStore:
             raise ValueError("job_id is required to clean code_chunks")
 
         self._collection.delete(where={"job_id": normalized_job_id})
+
+    def close(self) -> None:
+        """Close reusable remote clients owned by this store."""
+
+        close = getattr(self._embedder, "close", None)
+        if callable(close):
+            close()
 
     def _prepare_indexable_chunks(
         self,
@@ -287,9 +349,9 @@ class CodeEmbeddingStore:
             dimension=self._expected_dimension(),
         )
 
-    def _existing_cache_ids(self, repo_branch_key: str) -> set[str]:
+    def _existing_cache_ids(self, index_generation_key: str) -> set[str]:
         result = self._collection.get(
-            where={"repo_branch_key": repo_branch_key},
+            where={"index_generation_key": index_generation_key},
             include=["metadatas"],
         )
         ids = result.get("ids", [])
@@ -307,11 +369,11 @@ class CodeEmbeddingStore:
     def _prune_stale_cache_ids(
         self,
         *,
-        repo_branch_key: str,
+        index_generation_key: str | None,
         existing_cache_ids: set[str],
         current_cache_ids: set[str],
     ) -> int:
-        _ = repo_branch_key
+        _ = index_generation_key
         stale_cache_ids = sorted(existing_cache_ids - current_cache_ids)
         if not stale_cache_ids:
             return 0
@@ -322,11 +384,10 @@ class CodeEmbeddingStore:
     def _validate_collection_model(self) -> None:
         metadata = self._collection.metadata or {}
         expected_metadata: dict[str, str | int] = {
+            "embedding_provider": self.provider,
             "embedding_model": self.model_name,
             "embedding_model_version": self._model_version(),
         }
-        if self.provider != "local":
-            expected_metadata["embedding_provider"] = self.provider
 
         expected_dimension = self._expected_dimension()
         if expected_dimension is not None:
@@ -340,29 +401,14 @@ class CodeEmbeddingStore:
 
     def _validate_provider_config(self) -> None:
         if self.provider not in {
-            "local",
             "openai",
-            "nvidia",
             "mistral",
             "openrouter",
         }:
             raise ValueError(f"Unsupported code embedding provider: {self.provider}")
 
-        if (
-            self.provider == "local"
-            and self.model_name not in ALLOWED_CODE_EMBEDDING_MODELS
-        ):
-            raise ValueError(
-                f"Code embedding model is not allowlisted: {self.model_name}"
-            )
-
         if self.batch_size <= 0:
             raise ValueError("code_embedding_batch_size must be greater than zero")
-
-        if self.max_sequence_length < 0:
-            raise ValueError(
-                "code_embedding_max_sequence_length must be zero or greater"
-            )
 
         if self.dimension < UNKNOWN_CODE_EMBEDDING_DIMENSION:
             raise ValueError("code_embedding_dimension must be zero or greater")
@@ -374,12 +420,6 @@ class CodeEmbeddingStore:
         base_url: str | None,
         api_key: str | None,
     ) -> CodeEmbedder:
-        if self.provider == "local":
-            return _SentenceTransformerCodeEmbedder(
-                self.model_name,
-                max_sequence_length=self.max_sequence_length,
-            )
-
         resolved_api_key = api_key or _code_embedding_api_key(
             provider=self.provider,
             settings=settings,
@@ -405,7 +445,13 @@ class CodeEmbeddingStore:
         batch_number: int,
         total_batches: int,
     ) -> CodeEmbeddingBatchTrace:
-        documents = [str(chunk.chunk_text) for chunk in chunks]
+        documents = [
+            _truncate_embedding_text(
+                str(chunk.chunk_text),
+                max_tokens=self.max_item_tokens,
+            )
+            for chunk in chunks
+        ]
         batch_started_at = time.perf_counter()
         logger.info(
             "Generating semantic code embedding batch %d/%d with %d documents",
@@ -449,15 +495,9 @@ class CodeEmbeddingStore:
             estimated_input_tokens=sum(chunk.token_count for chunk in chunks),
             token_usage=token_usage if isinstance(token_usage, dict) else None,
         )
-        del embeddings
-        del documents
-        gc.collect()
         return batch_trace
 
     def _collection_name(self) -> str:
-        if self.provider == "local":
-            return CODE_CHUNKS_COLLECTION
-
         safe_model_name = "".join(
             character if character.isalnum() else "_"
             for character in self.model_name.lower()
@@ -467,11 +507,10 @@ class CodeEmbeddingStore:
     def _collection_metadata(self) -> dict[str, str | int]:
         metadata: dict[str, str | int] = {
             "hnsw:space": "cosine",
+            "embedding_provider": self.provider,
             "embedding_model": self.model_name,
             "embedding_model_version": self._model_version(),
         }
-        if self.provider != "local":
-            metadata["embedding_provider"] = self.provider
 
         expected_dimension = self._expected_dimension()
         if expected_dimension is not None:
@@ -524,36 +563,21 @@ class DisabledCodeEmbeddingStore(CodeEmbeddingStore):
         _ = query, n_results, where
         return []
 
+    def query_many(
+        self,
+        queries: list[CodeVectorQuery],
+    ) -> list[list[CodeVectorSearchResult]]:
+        """Return no semantic matches when the optional index is disabled."""
+
+        return [[] for _query in queries]
+
     def delete_job(self, job_id: str) -> None:
         """No-op cleanup for disabled code vector storage."""
 
         _ = job_id
 
-
-class _SentenceTransformerCodeEmbedder:
-    """Local sentence-transformers adapter for code embeddings."""
-
-    def __init__(self, model_name: str, *, max_sequence_length: int) -> None:
-        self._model = _build_sentence_transformer(model_name)
-        if max_sequence_length > 0:
-            self._model.max_seq_length = max_sequence_length
-            logger.info(
-                "Configured local code embedding max_seq_length=%d",
-                max_sequence_length,
-            )
-
-    def embed_documents(self, texts: list[str]) -> list[list[float]]:
-        return _validated_embeddings(
-            self._model.encode(
-                texts,
-                normalize_embeddings=True,
-                show_progress_bar=False,
-            ).tolist(),
-            expected_dimension=CODE_EMBEDDING_DIMENSION,
-        )
-
-    def embed_query(self, text: str) -> list[float]:
-        return self.embed_documents([text])[0]
+    def close(self) -> None:
+        """No-op cleanup for disabled code vector storage."""
 
 
 class _OpenAICompatibleCodeEmbedder:
@@ -581,12 +605,27 @@ class _OpenAICompatibleCodeEmbedder:
             "Content-Type": "application/json",
         }
         self.last_token_usage: dict[str, int] | None = None
+        self._client: Any | None = None
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
         return self._embed(texts, input_type="passage")
 
     def embed_query(self, text: str) -> list[float]:
-        return self._embed([text], input_type="query")[0]
+        return self.embed_queries([text])[0]
+
+    def embed_queries(self, texts: list[str]) -> list[list[float]]:
+        return self._embed(texts, input_type="query")
+
+    def close(self) -> None:
+        """Close the reusable HTTP client if it has been opened."""
+
+        if self._client is None:
+            return
+
+        close = getattr(self._client, "close", None)
+        if callable(close):
+            close()
+        self._client = None
 
     def _embed(self, texts: list[str], *, input_type: str) -> list[list[float]]:
         if not texts:
@@ -604,15 +643,16 @@ class _OpenAICompatibleCodeEmbedder:
             "input": texts,
             "encoding_format": "float",
         }
-        if self.provider == "nvidia":
-            payload["input_type"] = input_type
-        elif self.provider == "mistral":
+        _ = input_type
+        if self.provider == "mistral":
             if self.output_dimension is not None:
                 payload["output_dimension"] = self.output_dimension
             payload["output_dtype"] = "float"
 
-        with httpx.Client(timeout=60.0) as client:
-            response = self._post_with_retries(client, payload)
+        if self._client is None:
+            self._client = httpx.Client(timeout=60.0)
+
+        response = self._post_with_retries(self._client, payload)
 
         response_payload = response.json()
         self.last_token_usage = _token_usage_from_response(response_payload)
@@ -634,9 +674,10 @@ class _OpenAICompatibleCodeEmbedder:
                 if not _should_retry_embedding_response(
                     response, attempt, self.max_retries
                 ):
+                    detail = _embedding_error_detail(response)
                     raise RuntimeError(
                         f"{self.provider} code embedding request failed: "
-                        f"HTTP {response.status_code}"
+                        f"HTTP {response.status_code}{detail}"
                     ) from error
 
                 delay_seconds = _embedding_retry_delay_seconds(
@@ -657,24 +698,6 @@ class _OpenAICompatibleCodeEmbedder:
         ) from last_error
 
 
-def _build_sentence_transformer(model_name: str) -> Any:
-    if model_name not in ALLOWED_CODE_EMBEDDING_MODELS:
-        raise ValueError(f"Code embedding model is not allowlisted: {model_name}")
-
-    try:
-        from sentence_transformers import SentenceTransformer
-    except ImportError as error:
-        raise RuntimeError(
-            "sentence-transformers is required for code semantic search"
-        ) from error
-
-    return SentenceTransformer(
-        model_name,
-        device="cpu",
-        trust_remote_code=True,
-    )
-
-
 def _build_chroma_client(persist_path: Path) -> Any:
     try:
         import chromadb
@@ -685,9 +708,7 @@ def _build_chroma_client(persist_path: Path) -> Any:
 
 
 def _code_embedding_api_key(*, provider: str, settings: Any) -> str:
-    if provider == "nvidia":
-        secret = settings.nvidia_api_key
-    elif provider == "mistral":
+    if provider == "mistral":
         secret = settings.mistral_api_key
     elif provider == "openrouter":
         secret = settings.openrouter_api_key
@@ -703,9 +724,6 @@ def _code_embedding_api_key(*, provider: str, settings: Any) -> str:
 def _code_embedding_base_url(*, provider: str, settings: Any) -> str:
     if settings.code_embedding_base_url:
         return str(settings.code_embedding_base_url)
-
-    if provider == "nvidia":
-        return str(settings.nvidia_base_url)
 
     if provider == "mistral":
         return str(settings.mistral_base_url)
@@ -760,6 +778,15 @@ def _retry_after_seconds(response: Any) -> float | None:
     return max(0.0, delay)
 
 
+def _embedding_error_detail(response: Any) -> str:
+    text = getattr(response, "text", "")
+    if not isinstance(text, str) or not text.strip():
+        return ""
+
+    compact_text = " ".join(text.split())
+    return f": {compact_text[:500]}"
+
+
 def _embeddings_from_response(response_payload: object) -> list[list[float]]:
     if not isinstance(response_payload, dict):
         raise RuntimeError("Code embedding API returned an invalid response")
@@ -789,6 +816,30 @@ def _embeddings_from_response(response_payload: object) -> list[list[float]]:
     ]
 
 
+def _vector_results_from_query_payload(
+    documents: list[object],
+    metadatas: list[object],
+    distances: list[object],
+) -> list[CodeVectorSearchResult]:
+    results: list[CodeVectorSearchResult] = []
+    for content, metadata, distance in zip(
+        documents,
+        metadatas,
+        distances,
+        strict=True,
+    ):
+        if not isinstance(metadata, Mapping):
+            metadata = {}
+        results.append(
+            CodeVectorSearchResult(
+                content=str(content),
+                metadata=dict(metadata),
+                score=max(0.0, 1.0 - float(str(distance))),
+            )
+        )
+    return results
+
+
 def prepare_code_embedding_chunks(
     chunks: list[ChunkMetadataDocument],
     *,
@@ -813,6 +864,10 @@ def prepare_code_embedding_chunks(
         repository_id=repository_id,
         branch=normalized_branch,
     )
+    index_generation_key = build_index_generation_key(
+        repo_branch_key=repo_branch_key,
+        commit_sha=commit_sha,
+    )
     occurrences: dict[tuple[str, str], int] = {}
     prepared_chunks: list[ChunkMetadataDocument] = []
     for chunk in chunks:
@@ -822,7 +877,7 @@ def prepare_code_embedding_chunks(
         occurrence_index = occurrences.get(occurrence_key, 0)
         occurrences[occurrence_key] = occurrence_index + 1
         embedding_cache_id = build_embedding_cache_id(
-            repo_branch_key=repo_branch_key,
+            index_generation_key=index_generation_key,
             file_path=chunk.file_path,
             content_hash=content_hash,
             occurrence_index=occurrence_index,
@@ -839,6 +894,7 @@ def prepare_code_embedding_chunks(
                     "branch": normalized_branch,
                     "commit_sha": commit_sha,
                     "repo_branch_key": repo_branch_key,
+                    "index_generation_key": index_generation_key,
                     "content_hash": content_hash,
                     "embedding_cache_id": embedding_cache_id,
                     "occurrence_index": occurrence_index,
@@ -856,6 +912,16 @@ def build_repo_branch_key(*, repository_id: str | UUID, branch: str) -> str:
     return _sha256_text(f"{repository_id}\0{branch}")
 
 
+def build_index_generation_key(*, repo_branch_key: str, commit_sha: str | None) -> str:
+    """Return the immutable vector scope for one branch snapshot."""
+
+    normalized_commit = (commit_sha or "").strip()
+    if not normalized_commit:
+        return repo_branch_key
+
+    return _sha256_text(f"{repo_branch_key}\0{normalized_commit}")
+
+
 def build_content_hash(content: str) -> str:
     """Return the content hash used to detect changed chunks."""
 
@@ -864,7 +930,7 @@ def build_content_hash(content: str) -> str:
 
 def build_embedding_cache_id(
     *,
-    repo_branch_key: str,
+    index_generation_key: str,
     file_path: str,
     content_hash: str,
     occurrence_index: int,
@@ -878,7 +944,7 @@ def build_embedding_cache_id(
 
     fingerprint = "\0".join(
         [
-            repo_branch_key,
+            index_generation_key,
             file_path,
             content_hash,
             str(occurrence_index),
@@ -895,10 +961,8 @@ def build_embedding_cache_id(
 def code_embedding_model_version(provider: str) -> str:
     """Return the cache-significant model version label for a provider."""
 
-    if provider == "local":
-        return CODE_EMBEDDING_MODEL_VERSION
-
-    return REMOTE_CODE_EMBEDDING_MODEL_VERSION
+    _ = provider
+    return CODE_EMBEDDING_MODEL_VERSION
 
 
 def _chunk_id(chunk: ChunkMetadataDocument) -> str:
@@ -929,6 +993,7 @@ def _chunk_metadata(
         "branch": chunk.branch,
         "commit_sha": chunk.commit_sha,
         "repo_branch_key": chunk.repo_branch_key,
+        "index_generation_key": chunk.index_generation_key,
         "content_hash": chunk.content_hash,
         "embedding_cache_id": chunk.embedding_cache_id,
         "occurrence_index": chunk.occurrence_index,
@@ -951,6 +1016,39 @@ def _common_repo_branch_key(chunks: list[ChunkMetadataDocument]) -> str | None:
     return None
 
 
+def _common_index_generation_key(chunks: list[ChunkMetadataDocument]) -> str | None:
+    index_generation_keys = {
+        chunk.index_generation_key for chunk in chunks if chunk.index_generation_key
+    }
+    if len(index_generation_keys) == 1:
+        return next(iter(index_generation_keys))
+
+    return None
+
+
+def _count_sensitive_chunks(chunks: list[ChunkMetadataDocument]) -> int:
+    return sum(1 for chunk in chunks if not _can_send_chunk_to_remote(chunk))
+
+
+def _can_send_chunk_to_remote(chunk: ChunkMetadataDocument) -> bool:
+    content = chunk.chunk_text if isinstance(chunk.chunk_text, str) else ""
+    return not _contains_high_confidence_secret(content)
+
+
+def _contains_high_confidence_secret(content: str) -> bool:
+    if "PRIVATE KEY-----" in content:
+        return True
+
+    secret_patterns = (
+        r"\bAKIA[0-9A-Z]{16}\b",
+        r"\bghp_[A-Za-z0-9_]{30,}\b",
+        r"\bxox[baprs]-[A-Za-z0-9-]{20,}\b",
+        r"\bsk-[A-Za-z0-9]{32,}\b",
+        r"(?i)\b(api[_-]?key|secret|password|token)\b\s*[:=]\s*['\"][^'\"]{24,}",
+    )
+    return any(re.search(pattern, content) for pattern in secret_patterns)
+
+
 def _normalize_branch(branch: str | None) -> str | None:
     if branch is None:
         return None
@@ -971,6 +1069,56 @@ def _batched(
         chunks[start : start + batch_size]
         for start in range(0, len(chunks), batch_size)
     ]
+
+
+def _token_limited_batches(
+    chunks: list[ChunkMetadataDocument],
+    *,
+    max_items: int,
+    max_tokens: int,
+    max_item_tokens: int,
+) -> list[list[ChunkMetadataDocument]]:
+    batches: list[list[ChunkMetadataDocument]] = []
+    current_batch: list[ChunkMetadataDocument] = []
+    current_tokens = 0
+    for chunk in chunks:
+        chunk_tokens = min(max(chunk.token_count, 1), max_item_tokens)
+        if current_batch and (
+            len(current_batch) >= max_items
+            or current_tokens + chunk_tokens > max_tokens
+        ):
+            batches.append(current_batch)
+            current_batch = []
+            current_tokens = 0
+
+        current_batch.append(chunk)
+        current_tokens += chunk_tokens
+
+    if current_batch:
+        batches.append(current_batch)
+
+    return batches
+
+
+def _truncate_embedding_text(text: str, *, max_tokens: int) -> str:
+    max_chars = max(1, max_tokens * 6)
+    if len(text) > max_chars:
+        text = text[:max_chars]
+
+    tokens = re.findall(r"\S+", text)
+    if len(tokens) <= max_tokens:
+        return text
+
+    return " ".join(tokens[:max_tokens])
+
+
+def _query_groups(queries: list[CodeVectorQuery]) -> list[list[int]]:
+    groups_by_where: dict[str, list[int]] = {}
+    for index, query in enumerate(queries):
+        key = json.dumps(query.where, sort_keys=True, default=str)
+        groups_by_where.setdefault(key, []).append(index)
+
+    return list(groups_by_where.values())
 
 
 def _count_batches(item_count: int, batch_size: int) -> int:

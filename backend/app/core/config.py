@@ -94,9 +94,10 @@ class Settings(BaseSettings):
     refresh_cookie_secure: bool = False
     refresh_cookie_samesite: Literal["lax", "strict", "none"] = "lax"
 
-    llm_provider: Literal["openai", "nvidia"] = "openai"
+    llm_provider: Literal["openai"] = "openai"
     openai_api_key: SecretStr | None = None
-    openai_model: str = "gpt-4o-mini"
+    openai_base_url: str | None = "https://api.cline.bot/api/v1"
+    openai_model: str = "cline-pass/qwen3.7-plus"
     openai_max_retries: int = Field(default=6, ge=0, le=10)
     openai_min_request_interval_seconds: float = Field(
         default=1.5,
@@ -108,13 +109,10 @@ class Settings(BaseSettings):
     enable_ai_issue_verifier: bool = True
     probe_retrieval_chunks_per_probe: int = Field(default=3, ge=1, le=10)
     probe_retrieval_max_chunks: int = Field(default=160, ge=1, le=500)
+    probe_semantic_query_batch_size: int = Field(default=16, ge=1, le=64)
+    probe_semantic_max_query_tokens: int = Field(default=256, ge=1, le=2048)
     probe_judge_max_probes_per_batch: int = Field(default=8, ge=1, le=24)
     probe_judge_max_chunks_per_batch: int = Field(default=24, ge=1, le=80)
-    nvidia_api_key: SecretStr | None = None
-    nvidia_base_url: str = "https://integrate.api.nvidia.com/v1"
-    nvidia_model: str = "deepseek-ai/deepseek-v4-flash"
-    nvidia_max_retries: int = 0
-    nvidia_timeout_seconds: float = 45.0
     mistral_api_key: SecretStr | None = None
     mistral_base_url: str = "https://api.mistral.ai/v1"
     openrouter_api_key: SecretStr | None = None
@@ -122,17 +120,20 @@ class Settings(BaseSettings):
     rag_chroma_path: str = str(PROJECT_ROOT / ".chroma")
     rag_embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
     code_embedding_provider: Literal[
-        "local",
         "openai",
-        "nvidia",
         "mistral",
         "openrouter",
-    ] = "local"
-    code_embedding_model: str = "jinaai/jina-embeddings-v2-base-code"
+    ] = "mistral"
+    code_embedding_model: str = "codestral-embed-2505"
     code_embedding_base_url: str | None = None
-    code_embedding_dimension: int = 768
-    code_embedding_batch_size: int = 4
-    code_embedding_max_sequence_length: int = 1024
+    code_embedding_dimension: int = 1536
+    code_embedding_batch_size: int = 16
+    code_embedding_max_item_tokens: int = Field(default=1500, ge=1, le=8192)
+    code_embedding_max_batch_tokens: int = Field(default=12000, ge=1, le=65536)
+    code_embedding_max_concurrency: int = Field(default=2, ge=1, le=8)
+    code_embedding_max_pending_batches: int = Field(default=4, ge=1, le=32)
+    code_chunk_parse_concurrency: int = Field(default=4, ge=1, le=16)
+    mongodb_chunk_batch_size: int = Field(default=500, ge=1, le=5000)
     code_embedding_max_retries: int = Field(default=4, ge=0, le=10)
     code_embedding_retry_base_delay_seconds: float = Field(default=2.0, ge=0.1, le=60.0)
     enable_code_semantic_search: bool = True

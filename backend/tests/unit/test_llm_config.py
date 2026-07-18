@@ -3,11 +3,90 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
+from pydantic import SecretStr
 
 import app.ai.llm_config as llm_config
+
+
+def test_get_openai_llm_uses_configured_compatible_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    model = object()
+    captured_options: dict[str, object] = {}
+    api_key = SecretStr("cline-test-key")
+    settings = SimpleNamespace(
+        openai_api_key=api_key,
+        openai_base_url="https://api.cline.bot/api/v1",
+        openai_model="cline-pass/qwen3.7-plus",
+    )
+
+    def build_model(**options: object) -> object:
+        captured_options.update(options)
+        return model
+
+    monkeypatch.setattr(llm_config, "get_settings", lambda: settings)
+    monkeypatch.setattr(llm_config, "OpenAICompatibleChatOpenAI", build_model)
+
+    result = llm_config.get_openai_llm()
+
+    assert result is model
+    assert captured_options == {
+        "model": "cline-pass/qwen3.7-plus",
+        "api_key": api_key,
+        "base_url": "https://api.cline.bot/api/v1",
+        "temperature": 0,
+        "max_retries": 0,
+    }
+
+
+def test_compatible_chat_model_unwraps_clinepass_response() -> None:
+    model = llm_config.OpenAICompatibleChatOpenAI(
+        model="cline-pass/qwen3.7-plus",
+        api_key=SecretStr("cline-test-key"),
+        base_url="https://api.cline.bot/api/v1",
+    )
+    result = model._create_chat_result(
+        {
+            "success": True,
+            "data": {
+                "id": "chatcmpl-test",
+                "object": "chat.completion",
+                "created": 1,
+                "model": "cline-pass/qwen3.7-plus",
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {
+                            "role": "assistant",
+                            "content": "ok",
+                        },
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 3,
+                    "completion_tokens": 1,
+                    "total_tokens": 4,
+                },
+            },
+        }
+    )
+
+    assert result.generations[0].message.content == "ok"
+    assert result.llm_output == {
+        "token_usage": {
+            "prompt_tokens": 3,
+            "completion_tokens": 1,
+            "total_tokens": 4,
+        },
+        "model_provider": "openai",
+        "model_name": "cline-pass/qwen3.7-plus",
+        "system_fingerprint": "",
+        "id": "chatcmpl-test",
+    }
 
 
 @pytest.mark.asyncio
@@ -35,79 +114,21 @@ async def test_run_with_configured_llm_uses_openai_model_once(
 
 
 @pytest.mark.asyncio
-async def test_run_with_configured_llm_uses_nvidia_first(
+async def test_allow_fallback_keeps_using_configured_openai_model(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    nvidia_model = object()
     openai_model = object()
     calls: list[object] = []
 
     monkeypatch.setattr(
         llm_config,
         "get_settings",
-        lambda: SimpleNamespace(llm_provider="nvidia"),
+        lambda: SimpleNamespace(llm_provider="openai"),
     )
-    monkeypatch.setattr(llm_config, "get_nvidia_llm", lambda: nvidia_model)
     monkeypatch.setattr(llm_config, "get_openai_llm", lambda: openai_model)
 
     async def callback(llm: Any) -> str:
         calls.append(llm)
-        return "ok"
-
-    result = await llm_config.run_with_configured_llm(callback)
-
-    assert result == "ok"
-    assert calls == [nvidia_model]
-
-
-@pytest.mark.asyncio
-async def test_run_with_configured_llm_does_not_replay_pipeline_after_nvidia_failure(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    nvidia_model = object()
-    openai_model = object()
-    calls: list[object] = []
-
-    monkeypatch.setattr(
-        llm_config,
-        "get_settings",
-        lambda: SimpleNamespace(llm_provider="nvidia"),
-    )
-    monkeypatch.setattr(llm_config, "get_nvidia_llm", lambda: nvidia_model)
-    monkeypatch.setattr(llm_config, "get_openai_llm", lambda: openai_model)
-
-    async def callback(llm: Any) -> str:
-        calls.append(llm)
-        if llm is nvidia_model:
-            raise RuntimeError("NIM format error")
-        return "ok"
-
-    with pytest.raises(RuntimeError, match="NIM format error"):
-        await llm_config.run_with_configured_llm(callback)
-
-    assert calls == [nvidia_model]
-
-
-@pytest.mark.asyncio
-async def test_small_call_may_fallback_before_side_effects(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    nvidia_model = object()
-    openai_model = object()
-    calls: list[object] = []
-
-    monkeypatch.setattr(
-        llm_config,
-        "get_settings",
-        lambda: SimpleNamespace(llm_provider="nvidia"),
-    )
-    monkeypatch.setattr(llm_config, "get_nvidia_llm", lambda: nvidia_model)
-    monkeypatch.setattr(llm_config, "get_openai_llm", lambda: openai_model)
-
-    async def callback(llm: Any) -> str:
-        calls.append(llm)
-        if llm is nvidia_model:
-            raise RuntimeError("NIM format error")
         return "ok"
 
     result = await llm_config.run_with_configured_llm(
@@ -116,23 +137,22 @@ async def test_small_call_may_fallback_before_side_effects(
     )
 
     assert result == "ok"
-    assert calls == [nvidia_model, openai_model]
+    assert calls == [openai_model]
 
 
 @pytest.mark.asyncio
 async def test_rate_limit_opens_provider_circuits_and_stops_retries(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    nvidia_model = object()
     openai_model = object()
     calls: list[object] = []
     settings = SimpleNamespace(
-        llm_provider="nvidia",
+        llm_provider="openai",
         llm_job_call_budget=10,
         llm_rate_limit_failure_budget=1,
+        openai_max_retries=0,
     )
     monkeypatch.setattr(llm_config, "get_settings", lambda: settings)
-    monkeypatch.setattr(llm_config, "get_nvidia_llm", lambda: nvidia_model)
     monkeypatch.setattr(llm_config, "get_openai_llm", lambda: openai_model)
 
     async def callback(llm: Any) -> str:
@@ -150,7 +170,7 @@ async def test_rate_limit_opens_provider_circuits_and_stops_retries(
         with pytest.raises(llm_config.LLMCircuitOpenError):
             await llm_config.run_with_configured_llm(callback)
 
-    assert calls == [nvidia_model, openai_model]
+    assert calls == [openai_model]
 
 
 class _FakePipelineModel:
@@ -170,58 +190,6 @@ class _FakePipelineModel:
         if isinstance(response, Exception):
             raise response
         return response
-
-
-@pytest.mark.asyncio
-async def test_pipeline_model_switches_per_request_without_replay(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    rate_limit = RuntimeError("Worker local total request limit reached (48/48)")
-    rate_limit.status_code = 503  # type: ignore[attr-defined]
-    nvidia_model = _FakePipelineModel([rate_limit])
-    openai_model = _FakePipelineModel(["continued", "next-step"])
-    settings = SimpleNamespace(
-        llm_provider="nvidia",
-        llm_job_call_budget=96,
-    )
-    monkeypatch.setattr(llm_config, "get_settings", lambda: settings)
-    monkeypatch.setattr(llm_config, "get_nvidia_llm", lambda: nvidia_model)
-    monkeypatch.setattr(llm_config, "get_openai_llm", lambda: openai_model)
-
-    async with llm_config.llm_session():
-        model = llm_config.get_pipeline_llm()
-        first = await model.bind(stop=["Observation:"]).ainvoke("same-agent-step")
-        second = await model.ainvoke("next-agent-step")
-
-    assert first == "continued"
-    assert second == "next-step"
-    assert nvidia_model.calls == 1
-    assert openai_model.calls == 2
-
-
-@pytest.mark.asyncio
-async def test_pipeline_model_switches_to_openai_after_nvidia_timeout(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    nvidia_model = _FakePipelineModel([RuntimeError("Request timed out.")])
-    openai_model = _FakePipelineModel(["continued", "next-step"])
-    settings = SimpleNamespace(
-        llm_provider="nvidia",
-        llm_job_call_budget=96,
-    )
-    monkeypatch.setattr(llm_config, "get_settings", lambda: settings)
-    monkeypatch.setattr(llm_config, "get_nvidia_llm", lambda: nvidia_model)
-    monkeypatch.setattr(llm_config, "get_openai_llm", lambda: openai_model)
-
-    async with llm_config.llm_session():
-        model = llm_config.get_pipeline_llm()
-        first = await model.ainvoke("same-agent-step")
-        second = await model.ainvoke("next-agent-step")
-
-    assert first == "continued"
-    assert second == "next-step"
-    assert nvidia_model.calls == 1
-    assert openai_model.calls == 2
 
 
 @pytest.mark.asyncio
@@ -387,4 +355,5 @@ def test_llm_trace_summarizes_output_content() -> None:
     trace = llm_config._llm_output_trace(SimpleNamespace(content="review result"))
 
     assert trace["kind"] == "SimpleNamespace"
-    assert trace["content"]["preview"] == "review result"
+    content = cast(dict[str, object], trace["content"])
+    assert content["preview"] == "review result"

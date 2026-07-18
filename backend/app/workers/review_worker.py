@@ -53,6 +53,7 @@ async def process_review_job_async(job_id: UUID) -> None:
             settings = get_settings()
             database = get_mongodb_database()
             review_job_repository = ReviewJobRepository(session)
+            code_embedding_store: CodeEmbeddingStore | DisabledCodeEmbeddingStore
             if settings.enable_code_semantic_search:
                 try:
                     logger.info(
@@ -94,6 +95,8 @@ async def process_review_job_async(job_id: UUID) -> None:
             )
             await pipeline_service.run(job_id)
     finally:
+        if "code_embedding_store" in locals():
+            code_embedding_store.close()
         await close_mongodb_client()
         await close_redis_client()
         await close_postgres_engine()

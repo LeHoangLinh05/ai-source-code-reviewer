@@ -11,6 +11,7 @@ FILE_ANALYSIS_RESULTS_COLLECTION = "file_analysis_results"
 RAW_STATIC_ANALYSIS_OUTPUTS_COLLECTION = "raw_static_analysis_outputs"
 TOOL_CALL_LOGS_COLLECTION = "tool_call_logs"
 CHUNK_METADATA_COLLECTION = "chunk_metadata"
+CODE_INDEX_MANIFESTS_COLLECTION = "code_index_manifests"
 REPO_SUMMARY_RESULTS_COLLECTION = "repo_summary_results"
 
 mongodb_client: AsyncIOMotorClient | None = None
@@ -102,6 +103,19 @@ async def ensure_mongodb_indexes() -> None:
     await database[CHUNK_METADATA_COLLECTION].create_index(
         [("repo_branch_key", ASCENDING), ("file_path", ASCENDING)],
         name="idx_chunk_metadata_repo_branch_file",
+    )
+    await database[CHUNK_METADATA_COLLECTION].create_index(
+        [("index_generation_key", ASCENDING), ("file_path", ASCENDING)],
+        name="idx_chunk_metadata_generation_file",
+    )
+
+    await database[CODE_INDEX_MANIFESTS_COLLECTION].create_index(
+        [("job_id", ASCENDING)],
+        name="idx_code_index_manifest_job",
+    )
+    await database[CODE_INDEX_MANIFESTS_COLLECTION].create_index(
+        [("index_generation_key", ASCENDING), ("status", ASCENDING)],
+        name="idx_code_index_manifest_generation_status",
     )
 
     await database[REPO_SUMMARY_RESULTS_COLLECTION].create_index(

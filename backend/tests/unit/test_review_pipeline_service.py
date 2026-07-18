@@ -138,9 +138,9 @@ async def test_chunk_code_persists_cache_metadata_and_indexes_repo_branch(
     chunk_repository = _RecordingChunkRepository()
     service: Any = ReviewPipelineService.__new__(ReviewPipelineService)
     service.settings = SimpleNamespace(
-        code_embedding_provider="local",
-        code_embedding_model="jinaai/jina-embeddings-v2-base-code",
-        code_embedding_dimension=768,
+        code_embedding_provider="mistral",
+        code_embedding_model="codestral-embed-2505",
+        code_embedding_dimension=1536,
     )
     service.chunk_metadata_repository = chunk_repository
     service.code_embedding_store = code_store
@@ -163,6 +163,7 @@ async def test_chunk_code_persists_cache_metadata_and_indexes_repo_branch(
     assert document.content_hash is not None
     assert document.embedding_cache_id is not None
     assert document.repo_branch_key is not None
+    assert document.index_generation_key is not None
     assert code_store.index_calls == [
         {
             "chunk_count": 1,

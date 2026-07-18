@@ -10,6 +10,7 @@ import json
 from pathlib import Path
 import re
 from uuid import UUID
+from typing import Any
 
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from sqlalchemy import select
@@ -57,6 +58,8 @@ class AIToolRuntime:
     knowledge_search_fingerprints: dict[str, str] = field(default_factory=dict)
     source_search_count: int = 0
     rejected_issue_confidence: dict[str, float] = field(default_factory=dict)
+    code_corpus: Any | None = None
+    code_retriever: Any | None = None
 
     def register_chunk_content(
         self,

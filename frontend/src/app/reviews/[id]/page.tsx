@@ -310,23 +310,30 @@ function AITracePanel({
               Pipeline coverage, agent tool calls, generated issues, and report handoff.
             </CardDescription>
           </div>
-          <span
-            className={[
-              "inline-flex h-9 items-center gap-2 rounded-md border px-3 text-sm font-semibold",
-              latestStatusTone.container,
-            ].join(" ")}
-          >
-            {latestStatus === "error" ? (
-              <AlertTriangle aria-hidden="true" />
-            ) : latestStatus === "rejected" ? (
-              <AlertTriangle aria-hidden="true" />
-            ) : trace?.has_ai_started ? (
-              <CheckCircle2 aria-hidden="true" />
-            ) : (
-              <Activity aria-hidden="true" />
-            )}
-            {trace?.has_ai_started ? latestStatus : "waiting"}
-          </span>
+          <div className="flex flex-wrap items-center gap-2">
+            {trace ? (
+              <Button asChild size="sm" variant="secondary">
+                <a href="#ai-trace-events">Events</a>
+              </Button>
+            ) : null}
+            <span
+              className={[
+                "inline-flex h-9 items-center gap-2 rounded-md border px-3 text-sm font-semibold",
+                latestStatusTone.container,
+              ].join(" ")}
+            >
+              {latestStatus === "error" ? (
+                <AlertTriangle aria-hidden="true" />
+              ) : latestStatus === "rejected" ? (
+                <AlertTriangle aria-hidden="true" />
+              ) : trace?.has_ai_started ? (
+                <CheckCircle2 aria-hidden="true" />
+              ) : (
+                <Activity aria-hidden="true" />
+              )}
+              {trace?.has_ai_started ? latestStatus : "waiting"}
+            </span>
+          </div>
         </div>
       </CardHeader>
       <CardContent className="grid gap-5">
@@ -352,7 +359,17 @@ function AITracePanel({
         ) : null}
 
         {trace ? (
-          <TraceEventList events={trace.events} isCompact />
+          <section className="grid gap-3" id="ai-trace-events">
+            <div className="flex items-center gap-2">
+              <Activity aria-hidden="true" className="size-4 text-muted-foreground" />
+              <h2 className="text-sm font-semibold uppercase text-muted-foreground">
+                Event stream
+              </h2>
+            </div>
+            <div className="max-h-[calc(100vh-14rem)] overflow-y-auto pr-2">
+              <TraceEventList events={trace.events} isCompact />
+            </div>
+          </section>
         ) : null}
       </CardContent>
     </Card>

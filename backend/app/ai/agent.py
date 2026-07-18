@@ -179,16 +179,23 @@ async def run_ai_review(
     sandbox_path: Path,
     postgres_session: AsyncSession,
     mongodb_database: AsyncIOMotorDatabase,
+    code_embedding_store: Any | None = None,
 ) -> dict[str, Any]:
     """Run the AI review agent for one job using OpenAI."""
 
     session_id = uuid4()
+    code_retriever = None
+    if code_embedding_store is not None:
+        from app.ai.rag.code_retriever import CodeSemanticRetriever
+
+        code_retriever = CodeSemanticRetriever(code_embedding_store)
     runtime = AIToolRuntime(
         job_id=job_id,
         session_id=session_id,
         sandbox_path=sandbox_path,
         postgres_session=postgres_session,
         mongodb_database=mongodb_database,
+        code_retriever=code_retriever,
     )
 
     from app.ai.llm_config import get_pipeline_llm, llm_session
@@ -214,6 +221,7 @@ async def run_ai_review(
                 mongodb_database=mongodb_database,
                 trace_writer=callback,
                 enable_semantic_search=True,
+                code_retriever=runtime.code_retriever,
                 chunks_per_probe=settings.probe_retrieval_chunks_per_probe,
                 max_chunks=settings.probe_retrieval_max_chunks,
                 max_probes_per_batch=settings.probe_judge_max_probes_per_batch,
@@ -566,7 +574,7 @@ def _coerce_malformed_json_action(text: str) -> AgentAction | None:
     """Repair outputs where the model puts JSON directly after Action."""
 
     if "Action:" not in text:
-        return None
+        return _coerce_bare_tool_json_action(text)
 
     payload = _extract_first_json_object(text)
     if payload is None:
@@ -574,6 +582,29 @@ def _coerce_malformed_json_action(text: str) -> AgentAction | None:
 
     tool_name = _infer_tool_name_from_payload(payload, text=text)
     if tool_name is None:
+        return None
+
+    return AgentAction(tool=tool_name, tool_input=payload, log=text)
+
+
+def _coerce_bare_tool_json_action(text: str) -> AgentAction | None:
+    """Repair outputs like `tool_name` followed directly by a JSON object."""
+
+    payload = _extract_first_json_object(text)
+    if payload is None:
+        return None
+
+    tool_name = _infer_tool_name_from_payload(payload, text=text)
+    if tool_name is None:
+        return None
+
+    object_start = text.find("{")
+    if object_start < 0:
+        return None
+
+    prefix = text[:object_start]
+    pattern = rf"(?<![A-Za-z0-9_]){re.escape(tool_name)}(?![A-Za-z0-9_])"
+    if re.search(pattern, prefix) is None:
         return None
 
     return AgentAction(tool=tool_name, tool_input=payload, log=text)

@@ -17,8 +17,9 @@ from typing import Any, TypeVar
 from uuid import uuid4
 
 from langchain_core.runnables import Runnable, RunnableConfig
+from langchain_core.outputs import ChatResult
 from langchain_openai import ChatOpenAI
-from pydantic import SecretStr
+from openai import BaseModel
 
 from app.core.config import get_settings
 
@@ -27,6 +28,20 @@ logger = logging.getLogger(__name__)
 ResultT = TypeVar("ResultT")
 MAX_LLM_TRACE_PREVIEW = 500
 MAX_LLM_TRACE_MESSAGES = 8
+
+
+class OpenAICompatibleChatOpenAI(ChatOpenAI):
+    """Accept small response wrappers used by some OpenAI-compatible APIs."""
+
+    def _create_chat_result(
+        self,
+        response: dict[str, Any] | BaseModel,
+        generation_info: dict | None = None,
+    ) -> ChatResult:
+        return super()._create_chat_result(
+            _unwrap_openai_compatible_response(response),
+            generation_info,
+        )
 
 
 class LLMCircuitOpenError(RuntimeError):
@@ -39,7 +54,6 @@ class LLMSessionState:
 
     call_count: int = 0
     rate_limit_failures: int = 0
-    nvidia_circuit_open: bool = False
     openai_circuit_open: bool = False
     last_openai_request_at: float | None = None
 
@@ -54,134 +68,25 @@ def get_openai_llm() -> ChatOpenAI:
     """Return the OpenAI chat model used by the review pipeline."""
 
     settings = get_settings()
-    return ChatOpenAI(
+    return OpenAICompatibleChatOpenAI(
         model=settings.openai_model,
         api_key=settings.openai_api_key,
+        base_url=settings.openai_base_url,
         temperature=0,
         max_retries=0,
     )
 
 
-def get_nvidia_llm() -> ChatOpenAI:
-    """Return the NVIDIA NIM chat model through its OpenAI-compatible API."""
+def _unwrap_openai_compatible_response(
+    response: dict[str, Any] | BaseModel,
+) -> dict[str, Any] | BaseModel:
+    response_dict = response if isinstance(response, dict) else response.model_dump()
+    data = response_dict.get("data")
+    choices = response_dict.get("choices")
+    if isinstance(data, dict) and choices is None:
+        return data
 
-    settings = get_settings()
-    if not _has_secret_value(settings.nvidia_api_key):
-        raise ValueError("NVIDIA_API_KEY is required when LLM_PROVIDER=nvidia")
-
-    return ChatOpenAI(
-        model=settings.nvidia_model,
-        api_key=settings.nvidia_api_key,
-        base_url=settings.nvidia_base_url,
-        temperature=0,
-        max_retries=settings.nvidia_max_retries,
-        timeout=settings.nvidia_timeout_seconds,
-    )
-
-
-class ProviderFailoverLLM(Runnable[Any, Any]):
-    """Switch individual model requests without replaying agent tool calls."""
-
-    def __init__(
-        self,
-        primary: ChatOpenAI,
-        fallback_factory: Callable[[], ChatOpenAI],
-        state: LLMSessionState,
-    ) -> None:
-        self.primary = primary
-        self.fallback_factory = fallback_factory
-        self.state = state
-        self._fallback: ChatOpenAI | None = None
-
-    @property
-    def fallback(self) -> ChatOpenAI:
-        if self._fallback is None:
-            self._fallback = self.fallback_factory()
-        return self._fallback
-
-    def invoke(
-        self,
-        input: Any,
-        config: RunnableConfig | None = None,
-        **kwargs: Any,
-    ) -> Any:
-        if self.state.nvidia_circuit_open:
-            return _invoke_model(
-                self.fallback,
-                "openai",
-                self.state,
-                input,
-                config,
-                kwargs,
-            )
-        try:
-            return _invoke_model(
-                self.primary,
-                "nvidia",
-                self.state,
-                input,
-                config,
-                kwargs,
-            )
-        except Exception as error:
-            if not _is_transient_provider_error(error):
-                raise
-            _open_provider_circuit(self.state, "nvidia")
-            logger.warning(
-                "NVIDIA unavailable for this job; switching remaining requests "
-                "to OpenAI: %s",
-                error,
-            )
-            return _invoke_model(
-                self.fallback,
-                "openai",
-                self.state,
-                input,
-                config,
-                kwargs,
-            )
-
-    async def ainvoke(
-        self,
-        input: Any,
-        config: RunnableConfig | None = None,
-        **kwargs: Any,
-    ) -> Any:
-        if self.state.nvidia_circuit_open:
-            return await _ainvoke_model(
-                self.fallback,
-                "openai",
-                self.state,
-                input,
-                config,
-                kwargs,
-            )
-        try:
-            return await _ainvoke_model(
-                self.primary,
-                "nvidia",
-                self.state,
-                input,
-                config,
-                kwargs,
-            )
-        except Exception as error:
-            if not _is_transient_provider_error(error):
-                raise
-            _open_provider_circuit(self.state, "nvidia")
-            logger.warning(
-                "NVIDIA unavailable for this job; switching remaining requests "
-                "to OpenAI: %s",
-                error,
-            )
-            return await _ainvoke_model(
-                self.fallback,
-                "openai",
-                self.state,
-                input,
-                config,
-                kwargs,
-            )
+    return response
 
 
 class ManagedOpenAILLM(Runnable[Any, Any]):
@@ -222,18 +127,15 @@ class ManagedOpenAILLM(Runnable[Any, Any]):
         )
 
 
-def get_pipeline_llm() -> ManagedOpenAILLM | ProviderFailoverLLM:
-    """Return one model router for a complete side-effecting review pipeline."""
+def get_pipeline_llm() -> ManagedOpenAILLM:
+    """Return the configured model for a complete side-effecting review pipeline."""
 
-    settings = get_settings()
     state = _session_state.get()
     if state is None:
         raise RuntimeError(
             "LLM session must be configured before creating pipeline LLM"
         )
-    if settings.llm_provider == "openai":
-        return ManagedOpenAILLM(get_openai_llm(), state)
-    return ProviderFailoverLLM(get_nvidia_llm(), get_openai_llm, state)
+    return ManagedOpenAILLM(get_openai_llm(), state)
 
 
 def get_remaining_llm_call_budget() -> int | None:
@@ -254,27 +156,10 @@ async def run_with_configured_llm(
 ) -> ResultT:
     """Run one bounded LLM call without replaying side-effecting pipelines."""
 
-    settings = get_settings()
+    _ = allow_fallback
     state, token = _get_or_create_session_state()
     try:
-        if settings.llm_provider == "openai":
-            return await _run_provider_call(call, get_openai_llm(), "openai", state)
-
-        if state.nvidia_circuit_open:
-            if not allow_fallback:
-                raise LLMCircuitOpenError("NVIDIA circuit breaker is open")
-            return await _run_provider_call(call, get_openai_llm(), "openai", state)
-
-        try:
-            return await _run_provider_call(call, get_nvidia_llm(), "nvidia", state)
-        except Exception as error:
-            if not allow_fallback:
-                raise
-            logger.warning(
-                "NVIDIA NIM small LLM call failed; using one OpenAI fallback: %s",
-                error,
-            )
-            return await _run_provider_call(call, get_openai_llm(), "openai", state)
+        return await _run_provider_call(call, get_openai_llm(), "openai", state)
     finally:
         if token is not None:
             _session_state.reset(token)
@@ -594,7 +479,9 @@ def _llm_input_trace(value: object) -> dict[str, object]:
         return {
             "kind": "messages",
             "message_count": len(value),
-            "messages": [_message_trace(item) for item in value[:MAX_LLM_TRACE_MESSAGES]],
+            "messages": [
+                _message_trace(item) for item in value[:MAX_LLM_TRACE_MESSAGES]
+            ],
             "truncated_messages": max(0, len(value) - MAX_LLM_TRACE_MESSAGES),
         }
     return {"kind": type(value).__name__, **_object_trace(value)}
@@ -717,8 +604,6 @@ def _before_model_request(provider: str, state: LLMSessionState) -> None:
             call_budget,
         )
         raise LLMCircuitOpenError("LLM job call budget exhausted")
-    if provider == "nvidia" and state.nvidia_circuit_open:
-        raise LLMCircuitOpenError("NVIDIA circuit breaker is open")
     if provider == "openai" and state.openai_circuit_open:
         raise LLMCircuitOpenError("OpenAI circuit breaker is open")
     state.call_count += 1
@@ -741,9 +626,7 @@ def _record_model_failure(
 
 
 def _open_provider_circuit(state: LLMSessionState, provider: str) -> None:
-    if provider == "nvidia":
-        state.nvidia_circuit_open = True
-    elif provider == "openai":
+    if provider == "openai":
         state.openai_circuit_open = True
 
 
@@ -792,10 +675,3 @@ def _is_timeout_error(error: Exception) -> bool:
 
 def _is_transient_provider_error(error: Exception) -> bool:
     return _is_rate_limit_error(error) or _is_timeout_error(error)
-
-
-def _has_secret_value(secret: SecretStr | None) -> bool:
-    if secret is None:
-        return False
-
-    return bool(secret.get_secret_value().strip())

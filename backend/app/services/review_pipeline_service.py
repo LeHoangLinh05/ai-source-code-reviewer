@@ -8,7 +8,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import time
-from typing import cast
+from typing import Literal, cast
 from uuid import UUID, uuid4
 
 from motor.motor_asyncio import AsyncIOMotorDatabase
@@ -28,7 +28,7 @@ from app.analyzers.code_chunker import (
     chunk_plain_text_file,
     chunk_python_file,
 )
-from app.analyzers.file_filter import filter_files, to_relative_posix_path
+from app.analyzers.file_filter import build_file_manifest, to_relative_posix_path
 from app.analyzers.secret_scanner import scan_secrets
 from app.analyzers.static_analysis.bandit_analyzer import run_bandit
 from app.analyzers.static_analysis.base import StaticAnalysisRun, filter_files_by_suffix
@@ -42,6 +42,7 @@ from app.analyzers.structure_analyzer import (
 from app.core.config import BACKEND_DIR, Settings
 from app.models.review_job import ReviewJob, ReviewJobStatus
 from app.repositories.mongodb_repository import (
+    CodeIndexManifestRepository,
     ChunkMetadataRepository,
     FileAnalysisResultRepository,
     RawStaticAnalysisOutputRepository,
@@ -52,6 +53,7 @@ from app.repositories.report_repository import ReportRepository
 from app.repositories.repository_repository import RepositoryRepository
 from app.repositories.review_job_repository import ReviewJobRepository
 from app.schemas.mongodb import (
+    CodeIndexManifestDocument,
     FileAnalysisResultDocument,
     FileTreeEntry,
     ChunkMetadataDocument,
@@ -68,6 +70,19 @@ from app.services.report_generation_service import AI_REPORT_MODEL, build_static
 logger = logging.getLogger(__name__)
 
 CLONE_TIMEOUT_SECONDS = 120
+
+
+def filter_files(
+    sandbox_path: Path,
+    *,
+    max_source_file_size_bytes: int,
+) -> list[Path]:
+    """Compatibility wrapper for tests and older callers."""
+
+    return build_file_manifest(
+        sandbox_path,
+        max_source_file_size_bytes=max_source_file_size_bytes,
+    ).files
 
 
 class ReviewPipelineError(Exception):
@@ -157,9 +172,17 @@ class ReviewPipelineService:
             review_job, ReviewJobStatus.CLONING, 20, "Repository cloned"
         )
 
-        filtered_files = filter_files(
+        file_manifest = build_file_manifest(
             sandbox_path,
             max_source_file_size_bytes=self.settings.max_source_file_size_bytes,
+        )
+        filtered_files = file_manifest.files
+        logger.info(
+            "Review job %s file manifest built from %s: %d selected / %d scanned",
+            review_job.id,
+            file_manifest.source,
+            len(filtered_files),
+            file_manifest.scanned_count,
         )
         await self._ensure_job_active(review_job.id)
         structure = await self._analyze_structure(
@@ -396,14 +419,35 @@ class ReviewPipelineService:
             ),
             dimension=self.settings.code_embedding_dimension,
         )
-        for chunk_document in chunks_to_embed:
-            await self.chunk_metadata_repository.insert_one(chunk_document)
+        await self._write_code_index_manifest(
+            review_job=review_job,
+            chunks=chunks_to_embed,
+            status="BUILDING",
+        )
+        replace_for_job = getattr(
+            self.chunk_metadata_repository, "replace_for_job", None
+        )
+        if callable(replace_for_job):
+            inserted_count, roundtrips = await replace_for_job(
+                job_id=review_job.id,
+                documents=chunks_to_embed,
+                batch_size=getattr(self.settings, "mongodb_chunk_batch_size", 500),
+            )
+        else:
+            inserted_count = 0
+            roundtrips = 0
+            for chunk_document in chunks_to_embed:
+                await self.chunk_metadata_repository.insert_one(chunk_document)
+                inserted_count += 1
+                roundtrips += 1
 
         logger.info(
-            "Review job %s persisted %d source chunks to MongoDB in %.2fs",
+            "Review job %s persisted %d source chunks to MongoDB in %.2fs "
+            "using %d write roundtrips",
             review_job.id,
-            len(chunks_to_embed),
+            inserted_count,
             time.perf_counter() - chunk_started_at,
+            roundtrips,
         )
         embedding_started_at = time.perf_counter()
         logger.info(
@@ -411,12 +455,26 @@ class ReviewPipelineService:
             review_job.id,
             len(chunks_to_embed),
         )
-        embedding_summary = await asyncio.to_thread(
-            self.code_embedding_store.index_chunks,
-            chunks_to_embed,
-            repository_id=review_job.repository_id,
-            branch=branch,
-            commit_sha=review_job.commit_sha,
+        try:
+            embedding_summary = await asyncio.to_thread(
+                self.code_embedding_store.index_chunks,
+                chunks_to_embed,
+                repository_id=review_job.repository_id,
+                branch=branch,
+                commit_sha=review_job.commit_sha,
+            )
+        except Exception as error:
+            await self._write_code_index_manifest(
+                review_job=review_job,
+                chunks=chunks_to_embed,
+                status="FAILED",
+                error_message=str(error),
+            )
+            raise
+        await self._write_code_index_manifest(
+            review_job=review_job,
+            chunks=chunks_to_embed,
+            status="INDEXED",
         )
         await self._write_embedding_trace_events(review_job.id, embedding_summary)
         logger.info(
@@ -429,6 +487,48 @@ class ReviewPipelineService:
             ReviewJobStatus.CHUNKING_CODE,
             84,
             "Source chunks ready",
+        )
+
+    async def _write_code_index_manifest(
+        self,
+        *,
+        review_job: ReviewJob,
+        chunks: list[ChunkMetadataDocument],
+        status: Literal["BUILDING", "INDEXED", "FAILED"],
+        error_message: str | None = None,
+    ) -> None:
+        if not chunks:
+            return
+
+        first_chunk = chunks[0]
+        if (
+            review_job.repository_id is None
+            or not first_chunk.branch
+            or not first_chunk.commit_sha
+            or not first_chunk.repo_branch_key
+            or not first_chunk.index_generation_key
+        ):
+            return
+
+        collection = getattr(self.chunk_metadata_repository, "collection", None)
+        database = getattr(collection, "database", None)
+        if database is None:
+            return
+
+        repository = CodeIndexManifestRepository(cast(AsyncIOMotorDatabase, database))
+        await repository.upsert_for_job(
+            CodeIndexManifestDocument(
+                job_id=review_job.id,
+                repository_id=review_job.repository_id,
+                branch=first_chunk.branch,
+                commit_sha=first_chunk.commit_sha,
+                repo_branch_key=first_chunk.repo_branch_key,
+                index_generation_key=first_chunk.index_generation_key,
+                status=status,
+                chunk_count=len(chunks),
+                updated_at=datetime.now(UTC),
+                error_message=error_message,
+            )
         )
 
     async def _write_embedding_trace_events(
@@ -577,6 +677,7 @@ class ReviewPipelineService:
             sandbox_path=sandbox_path,
             postgres_session=self.postgres_session,
             mongodb_database=database,
+            code_embedding_store=self.code_embedding_store,
         )
 
     async def _require_ai_generated_report(self, job_id: UUID) -> None:
