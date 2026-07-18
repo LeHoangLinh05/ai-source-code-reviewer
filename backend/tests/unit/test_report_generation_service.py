@@ -1,4 +1,4 @@
-"""Tests for temporary static report scoring."""
+"""Tests for static report scoring."""
 
 from uuid import uuid4
 

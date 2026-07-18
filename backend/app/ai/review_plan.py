@@ -152,12 +152,6 @@ def expected_chunk_keys_from_plan(plan: dict[str, object]) -> set[tuple[str, int
     return expected
 
 
-def all_chunk_keys(chunk_documents: Sequence[object]) -> set[tuple[str, int]]:
-    """Return all persisted chunk keys for full repository coverage."""
-
-    return {chunk.key for chunk in _chunk_infos(chunk_documents)}
-
-
 def _chunk_infos(chunk_documents: Sequence[object]) -> list[ChunkInfo]:
     chunks: list[ChunkInfo] = []
     for document in chunk_documents:

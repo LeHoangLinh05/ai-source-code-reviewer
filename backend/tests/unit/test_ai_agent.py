@@ -1,7 +1,5 @@
 """Tests for AI report agent orchestration helpers."""
 
-import hashlib
-
 from langchain_core.language_models.fake_chat_models import FakeListChatModel
 
 from app.ai.agent import (
@@ -9,9 +7,7 @@ from app.ai.agent import (
     ROADMAP_RULE_CATALOG_TOOL_NAME,
     REPORT_FINAL_ANSWER_INSTRUCTION,
     MarkdownSafeReActOutputParser,
-    _backfill_tool_input,
     _loaded_roadmap_rule_ids,
-    _redact_source_tool_output,
     build_react_prompt,
     create_report_agent_executor,
     normalize_tool_name,
@@ -113,62 +109,6 @@ def test_react_parser_accepts_plain_text_report_handoff_as_final_answer() -> Non
     parsed = parser.parse("Final report generated successfully.")
 
     assert parsed.return_values["output"] == "Final report generated successfully."
-
-
-def test_backfill_tool_input_from_legacy_read_file_output_when_input_is_null() -> None:
-    tool_input = _backfill_tool_input(
-        tool_input={"input": None},
-        tool_name="read_file_chunk",
-        output={
-            "status": "ok",
-            "file_path": "Backend/app/api/deps.py",
-            "chunk_index": 4,
-        },
-    )
-
-    assert tool_input == {
-        "file_path": "Backend/app/api/deps.py",
-        "chunk_index": 4,
-    }
-
-
-def test_legacy_source_tool_trace_redacts_full_content() -> None:
-    content = "def authenticate(token: str) -> bool:\n    return bool(token)\n"
-
-    trace = _redact_source_tool_output(
-        tool_name="search_code_semantic",
-        output={
-            "status": "ok",
-            "results": [
-                {
-                    "file_path": "app/auth.py",
-                    "chunk_index": 2,
-                    "line_start": 40,
-                    "line_end": 41,
-                    "content": content,
-                    "semantic_score": 0.91,
-                }
-            ],
-        },
-    )
-
-    results = trace["results"]
-    assert isinstance(results, list)
-    result = results[0]
-    assert isinstance(result, dict)
-    assert "content" not in result
-    assert result == {
-        "status": "ok",
-        "summary": "source content redacted from tool trace",
-        "file_path": "app/auth.py",
-        "chunk_index": 2,
-        "line_start": 40,
-        "line_end": 41,
-        "chunk_key": ["app/auth.py", 2],
-        "content_sha256": hashlib.sha256(content.encode()).hexdigest(),
-        "content_size": len(content.encode()),
-        "semantic_score": 0.91,
-    }
 
 
 def test_loaded_roadmap_rule_ids_include_catalog_trace() -> None:

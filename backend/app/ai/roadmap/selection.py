@@ -148,7 +148,7 @@ def build_roadmap_context(
     *,
     vectorstore: KnowledgeDocumentStore | None = None,
 ) -> dict[str, object] | None:
-    """Build compact roadmap context for analyze_project_structure."""
+    """Build compact roadmap context for review planning."""
 
     profile = parse_roadmap_profile(options)
     if profile is None:

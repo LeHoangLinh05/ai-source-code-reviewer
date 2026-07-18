@@ -163,7 +163,9 @@ class ReportService:
             await self._issue_with_source_context(grouped_issue)
             for grouped_issue in grouped_issues
         ]
-        return _issue_group_response(group_key, enriched_issues, include_occurrences=True)
+        return _issue_group_response(
+            group_key, enriched_issues, include_occurrences=True
+        )
 
     async def _issue_with_source_context(self, issue: ReviewIssue) -> IssueResponse:
         response = IssueResponse.model_validate(issue)
@@ -304,10 +306,14 @@ def _issue_group_response(
     *,
     include_occurrences: bool = False,
 ) -> IssueResponse:
-    representative = _representative_issue([
-        _review_issue_from_response(issue) if isinstance(issue, IssueResponse) else issue
-        for issue in issues
-    ])
+    representative = _representative_issue(
+        [
+            _review_issue_from_response(issue)
+            if isinstance(issue, IssueResponse)
+            else issue
+            for issue in issues
+        ]
+    )
     response = IssueResponse.model_validate(representative)
     sorted_issues = sorted(
         issues,

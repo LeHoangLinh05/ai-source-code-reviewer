@@ -143,9 +143,7 @@ class ChunkMetadataRepository(MongoDocumentRepository[ChunkMetadataDocument]):
         return self._normalize_mongo_id(cast(dict[str, object], document))
 
 
-class CodeIndexManifestRepository(
-    MongoDocumentRepository[CodeIndexManifestDocument]
-):
+class CodeIndexManifestRepository(MongoDocumentRepository[CodeIndexManifestDocument]):
     """MongoDB access for immutable semantic index generation manifests."""
 
     def __init__(self, database: AsyncIOMotorDatabase) -> None:

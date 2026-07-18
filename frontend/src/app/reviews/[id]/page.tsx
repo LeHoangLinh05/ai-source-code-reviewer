@@ -106,7 +106,6 @@ export default function ReviewJobDetailPage() {
       return;
     }
 
-    // TODO(P5): replace polling with useJobProgress backed by SSE.
     const intervalId = window.setInterval(() => {
       void loadJob();
       void loadAiTrace();

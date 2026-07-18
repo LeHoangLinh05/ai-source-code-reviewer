@@ -334,28 +334,6 @@ class AITraceService:
         output_dict = output if isinstance(output, dict) else {"output": output}
         tool_name = str(document.get("tool_name", "unknown"))
         tool_input = _preview_dict(document.get("input", {}))
-        if tool_name == "analyze_project_structure":
-            files = output_dict.get("files_to_review")
-            review_plan = output_dict.get("chunk_review_plan")
-            target_chunks = (
-                review_plan.get("target_chunks") if isinstance(review_plan, dict) else 0
-            )
-            tool_input = {}
-            output_dict = {
-                "status": "ok",
-                "files_to_review": len(files) if isinstance(files, list) else 0,
-                "target_chunks": target_chunks,
-            }
-        elif tool_name == "search_knowledge_base":
-            tool_input = {"scope": "internal knowledge"}
-            result_count = output_dict.get("result_count")
-            if result_count is None:
-                results = output_dict.get("results")
-                result_count = len(results) if isinstance(results, list) else 0
-            output_dict = {
-                "status": output_dict.get("status", "ok"),
-                "result_count": result_count,
-            }
         return AIToolCallTrace(
             sequence=int(document.get("sequence", 0)),
             tool_name=tool_name,
@@ -363,7 +341,9 @@ class AITraceService:
             duration_ms=int(document.get("duration_ms", 0)),
             input=tool_input,
             output=output_dict,
-            status=str(document.get("status") or _tool_call_status(tool_name, output_dict)),
+            status=str(
+                document.get("status") or _tool_call_status(tool_name, output_dict)
+            ),
             event_type=str(document.get("event_type") or "tool"),
             provider=_optional_str(document.get("provider")),
             model=_optional_str(document.get("model")),

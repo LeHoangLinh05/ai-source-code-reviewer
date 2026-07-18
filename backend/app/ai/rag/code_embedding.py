@@ -56,15 +56,6 @@ class CodeVectorQuery:
 
 
 @dataclass(slots=True, frozen=True)
-class CodeEmbeddingBatchResult:
-    """Results and telemetry for one query-embedding batch."""
-
-    query_count: int
-    duration_ms: int
-    token_usage: dict[str, int] | None = None
-
-
-@dataclass(slots=True, frozen=True)
 class CodeEmbeddingIndexSummary:
     """Summary returned after indexing source-code chunks."""
 
@@ -178,9 +169,7 @@ class CodeEmbeddingStore:
         )
 
         existing_cache_ids = (
-            self._existing_cache_ids(index_scope_key)
-            if index_scope_key
-            else set()
+            self._existing_cache_ids(index_scope_key) if index_scope_key else set()
         )
         chunks_to_embed = [
             chunk
@@ -1119,10 +1108,6 @@ def _query_groups(queries: list[CodeVectorQuery]) -> list[list[int]]:
         groups_by_where.setdefault(key, []).append(index)
 
     return list(groups_by_where.values())
-
-
-def _count_batches(item_count: int, batch_size: int) -> int:
-    return (item_count + batch_size - 1) // batch_size
 
 
 def _duration_ms(started_at: float) -> int:

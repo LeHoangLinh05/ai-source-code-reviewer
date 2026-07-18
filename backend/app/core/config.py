@@ -106,7 +106,6 @@ class Settings(BaseSettings):
     )
     llm_job_call_budget: int = Field(default=96, ge=1, le=200)
     llm_rate_limit_failure_budget: int = Field(default=1, ge=1, le=5)
-    enable_ai_issue_verifier: bool = True
     probe_retrieval_chunks_per_probe: int = Field(default=3, ge=1, le=10)
     probe_retrieval_max_chunks: int = Field(default=160, ge=1, le=500)
     probe_semantic_query_batch_size: int = Field(default=16, ge=1, le=64)

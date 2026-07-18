@@ -70,7 +70,7 @@ class CodeSemanticRetriever:
         language: str | None = None,
         risk_area: str | None = None,
     ) -> list[RetrievedCodeChunk]:
-        """Search code with a mandatory repo-branch or legacy job filter."""
+        """Search code with a mandatory repository snapshot or job fallback."""
 
         return self.search_many(
             [
@@ -251,70 +251,6 @@ class CodeSemanticRetriever:
             requested_top_k=requested_top_k,
             max_per_file=max_per_file,
         )
-
-    def _legacy_search(
-        self,
-        *,
-        query: str,
-        job_id: str | UUID,
-        repo_branch_key: str | None = None,
-        index_generation_key: str | None = None,
-        top_k: int = 3,
-        language: str | None = None,
-        risk_area: str | None = None,
-    ) -> list[RetrievedCodeChunk]:
-        normalized_job_id = _require_job_id(job_id)
-        normalized_repo_branch_key = _normalize_repo_branch_key(repo_branch_key)
-        normalized_index_generation_key = _normalize_repo_branch_key(
-            index_generation_key
-        )
-        requested_top_k = min(max(top_k, 1), self.MAX_TOP_K)
-        where = _build_where_filter(
-            job_id=normalized_job_id,
-            repo_branch_key=normalized_repo_branch_key,
-            index_generation_key=normalized_index_generation_key,
-            language=language,
-            risk_area=risk_area,
-        )
-        candidate_count = min(
-            self.MAX_CANDIDATES,
-            max(requested_top_k * self.CANDIDATE_MULTIPLIER, requested_top_k),
-        )
-        results = self.vectorstore.query(
-            query=query,
-            n_results=candidate_count,
-            where=where,
-        )
-        job_results = [
-            RetrievedCodeChunk(
-                content=result.content,
-                metadata=result.metadata,
-                semantic_score=result.score,
-            )
-            for result in results
-            if _metadata_matches_scope(
-                result.metadata,
-                job_id=normalized_job_id,
-                repo_branch_key=normalized_repo_branch_key,
-                index_generation_key=normalized_index_generation_key,
-            )
-        ]
-        ranked = sorted(
-            job_results,
-            key=lambda result: _ranking_score(result=result, query=query),
-            reverse=True,
-        )
-        max_per_file = max(1, requested_top_k // 2)
-        return _select_diverse(
-            ranked,
-            requested_top_k=requested_top_k,
-            max_per_file=max_per_file,
-        )
-
-    def clear_job(self, job_id: str | UUID) -> None:
-        """Compatibility no-op; retrieval is now stable and stateless."""
-
-        _require_job_id(job_id)
 
 
 def _chunk_key(chunk: RetrievedCodeChunk) -> tuple[str, int]:

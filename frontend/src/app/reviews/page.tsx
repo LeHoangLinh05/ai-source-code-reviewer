@@ -115,7 +115,7 @@ export default function ReviewsPage() {
           <div>
             <CardTitle>Job List</CardTitle>
             <CardDescription>
-              Polling detail pages are temporary until SSE lands in Phase 5.
+              Monitor repository review jobs and open completed reports.
             </CardDescription>
           </div>
           <Button

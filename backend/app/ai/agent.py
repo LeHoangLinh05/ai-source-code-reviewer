@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-import hashlib
 import json
 import logging
 import re
@@ -67,13 +66,6 @@ FINAL_REPORT_PAYLOAD_FIELDS = {
     "tech_stack",
     "top_priorities",
 }
-LEGACY_SOURCE_TOOL_NAMES = {
-    "read_file_chunk",
-    "read_next_review_chunk",
-    "search_code",
-    "search_code_semantic",
-}
-
 REACT_PROMPT_SUFFIX_TEMPLATE = """
 
 You have access to the following tools:
@@ -291,9 +283,7 @@ async def _load_roadmap_catalog_state(job_id: UUID) -> tuple[bool, bool]:
             {
                 "job_id": str(job_id),
                 "agent_type": "review",
-                "tool_name": {
-                    "$in": ["search_knowledge_base", ROADMAP_RULE_CATALOG_TOOL_NAME]
-                },
+                "tool_name": ROADMAP_RULE_CATALOG_TOOL_NAME,
                 "output.status": "ok",
             }
         )
@@ -329,9 +319,7 @@ async def _materialize_roadmap_rule_catalog(
             {
                 "job_id": str(job_id),
                 "agent_type": "review",
-                "tool_name": {
-                    "$in": ["search_knowledge_base", ROADMAP_RULE_CATALOG_TOOL_NAME]
-                },
+                "tool_name": ROADMAP_RULE_CATALOG_TOOL_NAME,
                 "output.status": "ok",
             }
         )
@@ -439,9 +427,9 @@ async def _load_review_coverage(
     *,
     missing_limit: int | None = 25,
 ) -> tuple[int, int, list[dict[str, object]]]:
-    from app.ai.tools.generate_report import _load_chunk_review_coverage
+    from app.ai.review_coverage import load_chunk_review_coverage
 
-    return await _load_chunk_review_coverage(job_id, missing_limit=missing_limit)
+    return await load_chunk_review_coverage(job_id, missing_limit=missing_limit)
 
 
 async def _build_report_context(
@@ -809,12 +797,6 @@ class MongoToolCallLogger(AsyncCallbackHandler):
         duration_ms = int((time.perf_counter() - perf_started_at) * 1000)
         tool_input = self.input_by_run_id.pop(run_id, {})
         tool_name = self.tool_name_by_run_id.pop(run_id, "unknown")
-        tool_input = _backfill_tool_input(
-            tool_input=tool_input,
-            tool_name=tool_name,
-            output=output,
-        )
-        output = _redact_source_tool_output(tool_name=tool_name, output=output)
         sequence = self.sequence_by_run_id.pop(run_id, self.sequence)
         status = _tool_log_status(output)
         await self.repository.insert_one(
@@ -869,27 +851,6 @@ def _first_present_tool_input(kwargs: dict[str, Any], input_str: str) -> Any:
     return input_str
 
 
-def _backfill_tool_input(
-    *,
-    tool_input: dict[str, object],
-    tool_name: str,
-    output: dict[str, object],
-) -> dict[str, object]:
-    if tool_input and tool_input != {"input": None}:
-        return tool_input
-
-    if tool_name not in {"read_file_chunk", "read_next_review_chunk"}:
-        return tool_input
-
-    inferred_input: dict[str, object] = {}
-    for key in ("file_path", "chunk_index", "requested_chunk_index"):
-        value = output.get(key)
-        if value is not None:
-            inferred_input[key] = value
-
-    return inferred_input or tool_input
-
-
 def _normalize_tool_input(value: Any) -> dict[str, object]:
     if isinstance(value, dict):
         return _json_safe_dict(value)
@@ -932,90 +893,6 @@ def _tool_log_status(output: dict[str, object]) -> str:
     if isinstance(status, str) and status:
         return status
     return "ok"
-
-
-def _redact_source_tool_output(
-    *,
-    tool_name: str,
-    output: dict[str, object],
-) -> dict[str, object]:
-    if tool_name not in LEGACY_SOURCE_TOOL_NAMES:
-        return output
-
-    if tool_name in {"search_code", "search_code_semantic"}:
-        raw_results = output.get("results")
-        results = raw_results if isinstance(raw_results, list) else []
-        trace_output: dict[str, object] = {
-            "status": str(output.get("status", "unknown")),
-            "summary": "source content redacted from tool trace",
-            "result_count": len(results),
-            "results": [
-                _source_result_trace(result)
-                for result in results
-                if isinstance(result, dict)
-            ],
-        }
-        for field in (
-            "query_id",
-            "previous_query_id",
-            "investigation_id",
-            "normalized_query",
-            "requested_mode",
-            "strategy_used",
-            "evidence_gain",
-            "remaining_investigation_searches",
-            "remaining_pass_searches",
-            "next_action",
-        ):
-            value = output.get(field)
-            if value is not None:
-                trace_output[field] = value
-        return trace_output
-
-    return _source_result_trace(output)
-
-
-def _source_result_trace(result: dict[str, object]) -> dict[str, object]:
-    trace: dict[str, object] = {
-        "status": str(result.get("status", "ok")),
-        "summary": str(
-            result.get("summary")
-            or result.get("reason")
-            or "source content redacted from tool trace"
-        ),
-    }
-    for field in (
-        "result_index",
-        "file_path",
-        "chunk_index",
-        "line_start",
-        "line_end",
-        "semantic_score",
-        "lexical_score",
-        "final_score",
-        "evidence_status",
-    ):
-        value = result.get(field)
-        if value is not None:
-            trace[field] = value
-
-    file_path = result.get("file_path")
-    chunk_index = result.get("chunk_index")
-    if isinstance(file_path, str) and isinstance(chunk_index, int):
-        trace["chunk_key"] = [file_path, chunk_index]
-
-    content = result.get("content")
-    if isinstance(content, str):
-        content_bytes = content.encode("utf-8")
-        trace["content_sha256"] = hashlib.sha256(content_bytes).hexdigest()
-        trace["content_size"] = len(content_bytes)
-    else:
-        for field in ("content_sha256", "content_size"):
-            value = result.get(field)
-            if value is not None:
-                trace[field] = value
-
-    return trace
 
 
 def _json_safe_dict(value: dict[str, Any]) -> dict[str, object]:

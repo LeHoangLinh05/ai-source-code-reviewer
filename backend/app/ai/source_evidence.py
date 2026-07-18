@@ -6,13 +6,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
-SOURCE_TOOL_NAMES = frozenset(
-    {
-        "probe_retrieval",
-        "read_file_chunk",
-        "read_next_review_chunk",
-    }
-)
+SOURCE_TOOL_NAMES = frozenset({"probe_retrieval"})
 
 
 @dataclass(slots=True, frozen=True)
@@ -29,7 +23,7 @@ class SourceChunkEvidence:
 def source_chunk_evidence(
     documents: Sequence[object],
 ) -> list[SourceChunkEvidence]:
-    """Extract successful chunk locations from read and semantic-search traces."""
+    """Extract successful chunk locations from probe-retrieval traces."""
 
     evidence: list[SourceChunkEvidence] = []
     for document in documents:
@@ -41,25 +35,17 @@ def source_chunk_evidence(
             continue
 
         tool_name = document.get("tool_name")
-        if tool_name == "probe_retrieval":
-            raw_results = output.get("results")
-            results = raw_results if isinstance(raw_results, list) else []
-            for result in results:
-                if not isinstance(result, dict):
-                    continue
-                item = _evidence_item(
-                    result,
-                    sequence=_optional_int(document.get("sequence")),
-                )
-                if item is not None:
-                    evidence.append(item)
+        if tool_name != "probe_retrieval":
             continue
 
-        if tool_name in {"read_file_chunk", "read_next_review_chunk"} or (
-            tool_name is None and "file_path" in output
-        ):
+        raw_results = output.get("results")
+        results = raw_results if isinstance(raw_results, list) else []
+        for result in results:
+            if not isinstance(result, dict):
+                continue
             item = _evidence_item(
-                output, sequence=_optional_int(document.get("sequence"))
+                result,
+                sequence=_optional_int(document.get("sequence")),
             )
             if item is not None:
                 evidence.append(item)
@@ -68,7 +54,7 @@ def source_chunk_evidence(
 
 
 def source_chunk_keys(documents: Sequence[object]) -> set[tuple[str, int]]:
-    """Return the union of chunk keys delivered by either source tool."""
+    """Return the union of source chunk keys delivered to the probe judge."""
 
     return {
         (item.file_path, item.chunk_index) for item in source_chunk_evidence(documents)

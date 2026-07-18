@@ -72,19 +72,6 @@ logger = logging.getLogger(__name__)
 CLONE_TIMEOUT_SECONDS = 120
 
 
-def filter_files(
-    sandbox_path: Path,
-    *,
-    max_source_file_size_bytes: int,
-) -> list[Path]:
-    """Compatibility wrapper for tests and older callers."""
-
-    return build_file_manifest(
-        sandbox_path,
-        max_source_file_size_bytes=max_source_file_size_bytes,
-    ).files
-
-
 class ReviewPipelineError(Exception):
     """Expected pipeline failure with a user-facing error message."""
 

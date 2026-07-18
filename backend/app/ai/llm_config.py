@@ -138,17 +138,6 @@ def get_pipeline_llm() -> ManagedOpenAILLM:
     return ManagedOpenAILLM(get_openai_llm(), state)
 
 
-def get_remaining_llm_call_budget() -> int | None:
-    """Return remaining job-level LLM calls for the active session, if any."""
-
-    state = _session_state.get()
-    if state is None:
-        return None
-
-    call_budget = getattr(get_settings(), "llm_job_call_budget", 96)
-    return max(0, call_budget - state.call_count)
-
-
 async def run_with_configured_llm(
     call: Callable[[ChatOpenAI], Awaitable[ResultT]],
     *,

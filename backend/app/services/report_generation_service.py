@@ -1,4 +1,4 @@
-"""Temporary static-analysis report generation for Phase 1 pipeline."""
+"""Deterministic static-analysis report generation."""
 
 from collections import Counter
 from uuid import UUID
@@ -34,7 +34,7 @@ def build_static_report(
     issues: list[NormalizedIssue],
     tech_stack: dict[str, object],
 ) -> ReviewReport:
-    """Build a non-AI report until Phase 6 replaces score synthesis."""
+    """Build a static report from normalized analyzer findings."""
 
     severity_counts = Counter(issue.severity for issue in issues)
     return ReviewReport(
@@ -81,7 +81,7 @@ def calculate_report_scores(issues: list[NormalizedIssue]) -> dict[str, float]:
 
 
 def calculate_score(issues: list[NormalizedIssue]) -> float:
-    """Return the temporary 0-10 score based on weighted issue severity."""
+    """Return the 0-10 score based on weighted issue severity."""
 
     penalty = sum(SEVERITY_SCORE_WEIGHTS[issue.severity] for issue in issues)
     return max(0.0, round(10.0 - penalty, 1))

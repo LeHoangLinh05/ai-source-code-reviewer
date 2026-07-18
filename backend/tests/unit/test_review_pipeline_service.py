@@ -7,6 +7,7 @@ from uuid import uuid4
 
 import pytest
 
+from app.analyzers.file_filter import FileManifest
 from app.ai.roadmap.knowledge import ROADMAP_PROFILE_ID
 from app.models.review_job import ReviewJobStatus
 from app.schemas.repo_summary import RepoSummary
@@ -267,7 +268,11 @@ async def test_pipeline_runs_repo_summary_between_structure_and_static(
         review_pipeline_service, "get_commit_sha", lambda _sandbox_path: "abc123"
     )
     monkeypatch.setattr(
-        review_pipeline_service, "filter_files", lambda *_args, **_kwargs: []
+        review_pipeline_service,
+        "build_file_manifest",
+        lambda *_args, **_kwargs: FileManifest(
+            files=[], source="test", scanned_count=0
+        ),
     )
     monkeypatch.setattr(review_pipeline_service, "scan_secrets", lambda *_args: [])
     monkeypatch.setattr(

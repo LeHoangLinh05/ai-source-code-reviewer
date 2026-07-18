@@ -18,41 +18,25 @@ def test_read_chunk_coverage_counts_only_successful_unique_chunks() -> None:
     files_read, chunks_read, target_chunks_read = _read_chunk_coverage(
         [
             {
-                "tool_name": "read_file_chunk",
-                "output": {
-                    "status": "ok",
-                    "file_path": "app/main.py",
-                    "chunk_index": 0,
-                },
-            },
-            {
-                "tool_name": "read_file_chunk",
-                "output": {
-                    "status": "rejected",
-                    "file_path": "app/main.py",
-                    "chunk_index": 1,
-                },
-            },
-            {
-                "tool_name": "read_file_chunk",
-                "output": {
-                    "status": "ok",
-                    "file_path": "app/main.py",
-                    "chunk_index": 0,
-                },
-            },
-            {
-                "tool_name": "search_code_semantic",
+                "tool_name": "probe_retrieval",
                 "output": {
                     "status": "ok",
                     "results": [
+                        {
+                            "file_path": "app/main.py",
+                            "chunk_index": 0,
+                        },
+                        {
+                            "file_path": "app/main.py",
+                            "chunk_index": 0,
+                        },
                         {
                             "status": "ok",
                             "file_path": "app/main.py",
                             "chunk_index": 1,
                             "line_start": 10,
                             "line_end": 20,
-                        }
+                        },
                     ],
                 },
             },
@@ -61,8 +45,8 @@ def test_read_chunk_coverage_counts_only_successful_unique_chunks() -> None:
     )
 
     assert files_read == 1
-    assert chunks_read == 1
-    assert target_chunks_read == 1
+    assert chunks_read == 2
+    assert target_chunks_read == 2
 
 
 def test_ai_report_without_full_chunk_coverage_is_completed() -> None:
