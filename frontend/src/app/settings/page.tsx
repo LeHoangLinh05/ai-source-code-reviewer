@@ -49,7 +49,7 @@ export default function SettingsPage() {
                     </p>
                   </div>
                 </div>
-                <LogoutAllButton className="border-rose-900/60 bg-background text-slate-200 hover:bg-rose-950/30 hover:text-rose-100" />
+                <LogoutAllButton className="bg-destructive text-destructive-foreground hover:bg-destructive/90" />
               </div>
             </div>
           </CardContent>

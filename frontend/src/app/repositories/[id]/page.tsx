@@ -64,17 +64,23 @@ type StartReviewFormValues = z.infer<typeof startReviewSchema>;
 const BRANCH_PRESETS = ["main", "master"] as const;
 const ROADMAP_RULE_PROFILE_ID = "roadmap_bootcamp_v1";
 const STATUS_STYLES: Record<ReviewJobStatus, string> = {
-  AI_REVIEWING: "border-violet-400/40 bg-violet-500/10 text-violet-200",
-  ANALYZING_STRUCTURE: "border-sky-400/40 bg-sky-500/10 text-sky-200",
-  CHUNKING_CODE: "border-cyan-400/40 bg-cyan-500/10 text-cyan-200",
-  CLONING: "border-blue-400/40 bg-blue-500/10 text-blue-200",
-  COMPLETED: "border-emerald-400/40 bg-emerald-500/10 text-emerald-200",
-  FAILED: "border-rose-400/40 bg-rose-500/10 text-rose-200",
-  GENERATING_REPORT: "border-amber-400/40 bg-amber-500/10 text-amber-200",
-  GENERATING_SUMMARY: "border-teal-400/40 bg-teal-500/10 text-teal-200",
-  PENDING: "border-slate-500/50 bg-slate-500/10 text-slate-200",
+  AI_REVIEWING:
+    "border-violet-400/40 bg-violet-500/10 text-violet-700 dark:text-violet-200",
+  ANALYZING_STRUCTURE:
+    "border-sky-400/40 bg-sky-500/10 text-sky-700 dark:text-sky-200",
+  CHUNKING_CODE:
+    "border-cyan-400/40 bg-cyan-500/10 text-cyan-700 dark:text-cyan-200",
+  CLONING: "border-blue-400/40 bg-blue-500/10 text-blue-700 dark:text-blue-200",
+  COMPLETED:
+    "border-emerald-400/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-200",
+  FAILED: "border-rose-400/40 bg-rose-500/10 text-rose-700 dark:text-rose-200",
+  GENERATING_REPORT:
+    "border-amber-400/40 bg-amber-500/10 text-amber-800 dark:text-amber-200",
+  GENERATING_SUMMARY:
+    "border-teal-400/40 bg-teal-500/10 text-teal-700 dark:text-teal-200",
+  PENDING: "border-border bg-muted text-muted-foreground",
   RUNNING_STATIC_ANALYSIS:
-    "border-orange-400/40 bg-orange-500/10 text-orange-200",
+    "border-orange-400/40 bg-orange-500/10 text-orange-700 dark:text-orange-200",
 };
 
 export default function RepositoryDetailPage() {
@@ -330,7 +336,7 @@ export default function RepositoryDetailPage() {
                 label="URL"
                 value={
                   <a
-                    className="inline-flex min-w-0 items-center gap-2 text-slate-300 hover:underline"
+                    className="inline-flex min-w-0 items-center gap-2 text-primary hover:underline"
                     href={selectedRepository.url}
                     rel="noreferrer"
                     target="_blank"
@@ -557,7 +563,7 @@ function RepositorySummaryCard({
 
   if (summary === null) {
     return (
-      <div className="rounded-md border border-dashed border-slate-700 bg-background px-6 py-8 text-center">
+      <div className="rounded-md border border-dashed border-border bg-background px-6 py-8 text-center">
         <h2 className="text-lg font-semibold tracking-normal">
           No project overview yet
         </h2>
@@ -621,7 +627,7 @@ function SummaryChipList({ items, label }: SummaryChipListProps) {
         <div className="mt-3 flex flex-wrap gap-2">
           {items.map((item) => (
             <span
-              className="rounded-md border border-border bg-background px-2 py-1 text-xs font-medium text-slate-200"
+              className="rounded-md border border-border bg-background px-2 py-1 text-xs font-medium text-foreground"
               key={item}
             >
               {item}
@@ -670,7 +676,7 @@ function ReviewHistory({ error, isLoading, jobs }: ReviewHistoryProps) {
 
   if (jobs.length === 0) {
     return (
-      <div className="flex flex-col items-center rounded-md border border-dashed border-slate-700 bg-background px-6 py-10 text-center">
+      <div className="flex flex-col items-center rounded-md border border-dashed border-border bg-background px-6 py-10 text-center">
         <CalendarClock
           aria-hidden="true"
           className="size-10 text-muted-foreground"
@@ -695,7 +701,7 @@ function ReviewHistory({ error, isLoading, jobs }: ReviewHistoryProps) {
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
               <Link
-                className="min-w-0 truncate text-[15px] font-semibold text-foreground hover:text-slate-300"
+                className="min-w-0 truncate text-[15px] font-semibold text-foreground hover:text-primary/80"
                 href={`/reviews/${job.id}`}
               >
                 Review {job.id.slice(0, 8)}

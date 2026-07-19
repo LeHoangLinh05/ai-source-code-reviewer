@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 
+import { ThemeToggle } from "@/components/layout/theme-toggle";
 import {
   Card,
   CardContent,
@@ -16,8 +17,11 @@ type AuthCardProps = {
 
 export function AuthCard({ title, description, children }: AuthCardProps) {
   return (
-    <main className="flex min-h-screen items-center justify-center bg-background px-4 py-10">
-      <Card className="w-full max-w-md border-slate-800 bg-slate-900/90 shadow-2xl shadow-black/30">
+    <main className="relative flex min-h-screen items-center justify-center bg-background px-4 py-10">
+      <div className="absolute right-4 top-4">
+        <ThemeToggle />
+      </div>
+      <Card className="w-full max-w-md shadow-2xl shadow-foreground/10">
         <CardHeader>
           <CardTitle>{title}</CardTitle>
           <CardDescription>{description}</CardDescription>

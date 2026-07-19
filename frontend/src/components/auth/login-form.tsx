@@ -124,7 +124,7 @@ export function LoginForm() {
         </Button>
         <p className="text-center text-sm text-muted-foreground">
           New to RepoGuard AI?{" "}
-          <Link className="font-medium text-slate-200 hover:underline" href="/register">
+          <Link className="font-medium text-primary hover:underline" href="/register">
             Create an account
           </Link>
         </p>

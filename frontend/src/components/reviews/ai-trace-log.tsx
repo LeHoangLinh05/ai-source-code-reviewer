@@ -121,7 +121,7 @@ function TraceEventSummary({ event }: { event: AIToolCallTrace }) {
   const outputSummary = llmOutputSummary(event.output);
   if (!inputSummary && !outputSummary) {
     return (
-      <p className="mt-3 rounded-md border border-amber-400/30 bg-amber-400/10 p-3 text-xs leading-5 text-amber-100">
+      <p className="mt-3 rounded-md border border-amber-400/40 bg-amber-400/10 p-3 text-xs leading-5 text-amber-800 dark:text-amber-100">
         This LLM call was recorded before request/response summaries were captured.
         Duration and token usage still came from the provider response.
       </p>
@@ -156,7 +156,7 @@ function TraceSummaryPanel({
         {summary.detail}
       </p>
       {summary.preview ? (
-        <pre className="mt-2 max-h-28 overflow-auto whitespace-pre-wrap break-words rounded-md bg-background p-2 font-mono text-xs leading-5 text-slate-300">
+        <pre className="mt-2 max-h-28 overflow-auto whitespace-pre-wrap break-words rounded-md bg-background p-2 font-mono text-xs leading-5 text-foreground">
           {summary.preview}
         </pre>
       ) : null}

@@ -338,7 +338,7 @@ function AITracePanel({
       <CardContent className="grid gap-5">
         {error ? <p className="text-sm text-destructive">{error}</p> : null}
         {isIncompleteAiReport ? (
-          <div className="rounded-md border border-amber-400/30 bg-amber-400/10 p-4 text-[15px] leading-6 text-amber-100">
+          <div className="rounded-md border border-amber-400/40 bg-amber-400/10 p-4 text-[15px] leading-6 text-amber-800 dark:text-amber-100">
             The AI report exists, but the review trace is incomplete. This run should
             be treated as incomplete.
           </div>
@@ -472,23 +472,23 @@ function getStageIcon(stage: AITraceStage) {
 function getStageStatusClass(status: string) {
   if (status === "completed") {
     return {
-      badge: "bg-emerald-500/10 text-emerald-300",
+      badge: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-200",
       bar: "bg-emerald-400",
-      icon: "bg-emerald-500/10 text-emerald-300",
+      icon: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-200",
     };
   }
   if (status === "running") {
     return {
-      badge: "bg-sky-500/10 text-sky-200",
+      badge: "bg-sky-500/10 text-sky-700 dark:text-sky-200",
       bar: "bg-sky-400",
-      icon: "bg-sky-500/10 text-sky-200",
+      icon: "bg-sky-500/10 text-sky-700 dark:text-sky-200",
     };
   }
   if (status === "warning") {
     return {
-      badge: "bg-amber-400/10 text-amber-100",
+      badge: "bg-amber-400/10 text-amber-800 dark:text-amber-100",
       bar: "bg-amber-300",
-      icon: "bg-amber-400/10 text-amber-100",
+      icon: "bg-amber-400/10 text-amber-800 dark:text-amber-100",
     };
   }
   if (status === "failed") {
@@ -514,13 +514,14 @@ function getToolStatusTone(status: string) {
   }
   if (status === "rejected" || status === "warning") {
     return {
-      badge: "bg-amber-400/10 text-amber-100",
-      container: "border-amber-400/30 bg-amber-400/10 text-amber-100",
+      badge: "bg-amber-400/10 text-amber-800 dark:text-amber-100",
+      container:
+        "border-amber-400/40 bg-amber-400/10 text-amber-800 dark:text-amber-100",
     };
   }
   if (status === "ok" || status === "created") {
     return {
-      badge: "bg-emerald-500/10 text-emerald-300",
+      badge: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-200",
       container: "border-border bg-muted text-muted-foreground",
     };
   }

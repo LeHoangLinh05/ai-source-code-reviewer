@@ -306,7 +306,7 @@ function SelectFilter({
     <div className="grid gap-2">
       <label className="text-sm font-medium">{label}</label>
       <select
-        className="h-10 rounded-md border border-input bg-background px-3 text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-500 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950"
+        className="h-10 rounded-md border border-input bg-background px-3 text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
         onChange={(event) => onChange(event.target.value)}
         value={value}
       >
@@ -383,14 +383,14 @@ function IssueTable({
 function SeverityBadge({ severity }: { severity: IssueSeverity }) {
   const className =
     severity === "critical"
-      ? "border-slate-400 bg-background text-slate-50"
+      ? "border-rose-500/50 bg-rose-500/10 text-rose-700 dark:text-rose-200"
       : severity === "high"
-        ? "border-slate-500 bg-background text-slate-100"
+        ? "border-orange-500/50 bg-orange-500/10 text-orange-700 dark:text-orange-200"
         : severity === "medium"
-          ? "border-slate-600 bg-background text-slate-200"
+          ? "border-amber-500/50 bg-amber-500/10 text-amber-800 dark:text-amber-100"
           : severity === "low"
-            ? "border-slate-700 bg-background text-slate-300"
-            : "border-slate-800 bg-background text-muted-foreground";
+            ? "border-sky-500/50 bg-sky-500/10 text-sky-700 dark:text-sky-200"
+            : "border-border bg-muted text-muted-foreground";
 
   return (
     <span
@@ -452,7 +452,7 @@ function IssueDrawer({
     <div className="fixed inset-0 z-50 flex justify-end bg-background/80 backdrop-blur-sm">
       <aside
         aria-label="Issue details"
-        className="h-full w-full max-w-3xl overflow-y-auto border-l border-border bg-card p-6 shadow-xl shadow-black/30 transition-transform duration-200 ease-out"
+        className="h-full w-full max-w-3xl overflow-y-auto border-l border-border bg-card p-6 shadow-xl shadow-foreground/10 transition-transform duration-200 ease-out"
       >
         <div className="flex items-start justify-between gap-4">
           <div>
@@ -553,15 +553,15 @@ function CodeSnippetViewer({
             <div
               className={`grid min-w-[640px] grid-cols-[42px_32px_1fr] border-l-4 py-1.5 pr-4 ${
                 isIssueLine
-                  ? "border-l-slate-300 bg-slate-800/50 text-slate-100"
-                  : "border-l-transparent text-slate-300"
+                  ? "border-l-destructive bg-destructive/10 text-foreground"
+                  : "border-l-transparent text-muted-foreground"
               }`}
               key={lineNumber}
             >
-              <span className="select-none text-right text-slate-600">
+              <span className="select-none text-right text-muted-foreground">
                 {lineNumber}
               </span>
-              <span className="select-none text-center text-slate-300">
+              <span className="select-none text-center text-destructive">
                 {isIssueLine ? <AlertTriangle className="mx-auto size-3.5" /> : ""}
               </span>
               <code className="whitespace-pre">{line}</code>

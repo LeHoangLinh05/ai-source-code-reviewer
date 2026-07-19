@@ -226,7 +226,7 @@ function JobsTable({
             >
               <td className="px-6 py-4">
                 <Link
-                  className="font-medium text-foreground hover:text-slate-300"
+                  className="font-medium text-foreground hover:text-primary/80"
                   href={`/reviews/${job.id}`}
                 >
                   {job.repository_name ?? job.repository_id}
@@ -276,22 +276,22 @@ function StatusBadge({ status }: { status: ReviewJobStatus }) {
 
 function getStatusClassName(status: ReviewJobStatus) {
   if (status === "COMPLETED") {
-    return "border-slate-500/50 bg-background text-slate-100";
+    return "border-emerald-500/50 bg-emerald-500/10 text-emerald-700 dark:text-emerald-200";
   }
 
   if (status === "FAILED") {
-    return "border-slate-600 bg-background text-slate-300";
+    return "border-destructive/40 bg-destructive/10 text-destructive";
   }
 
   if (status === "AI_REVIEWING") {
-    return "border-slate-500/50 bg-slate-900 text-slate-100";
+    return "border-sky-500/50 bg-sky-500/10 text-sky-700 dark:text-sky-200";
   }
 
   if (status === "PENDING") {
-    return "border-slate-700 bg-background text-muted-foreground";
+    return "border-border bg-muted text-muted-foreground";
   }
 
-  return "border-slate-700 bg-background text-muted-foreground";
+  return "border-border bg-muted text-muted-foreground";
 }
 
 function formatDate(value: string) {

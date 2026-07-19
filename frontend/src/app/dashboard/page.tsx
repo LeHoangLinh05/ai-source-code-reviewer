@@ -512,7 +512,7 @@ function RecentJobsTable({ jobs }: { jobs: ReviewJob[] }) {
             >
               <td className="px-5 py-4">
                 <Link
-                  className="font-semibold text-foreground hover:text-slate-300"
+                  className="font-semibold text-foreground hover:text-primary/80"
                   href={`/reviews/${job.id}`}
                 >
                   {job.repository_name ?? job.repository_id}

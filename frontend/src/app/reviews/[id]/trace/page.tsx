@@ -168,7 +168,7 @@ function TraceSelect({
     <div className="grid gap-2">
       <label className="text-sm font-medium">{label}</label>
       <select
-        className="h-10 rounded-md border border-input bg-background px-3 text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-500 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950"
+        className="h-10 rounded-md border border-input bg-background px-3 text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
         onChange={(event) => onChange(event.target.value)}
         value={value}
       >

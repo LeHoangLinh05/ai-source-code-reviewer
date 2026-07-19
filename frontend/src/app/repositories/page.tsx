@@ -456,7 +456,7 @@ function RepositoryTable({
             >
               <td className="px-6 py-4">
                 <Link
-                  className="font-medium text-foreground hover:text-slate-300"
+                  className="font-medium text-foreground hover:text-primary/80"
                   href={`/repositories/${repository.id}`}
                 >
                   {repository.name}
