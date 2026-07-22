@@ -1,9 +1,9 @@
 """Shared static analysis adapter contracts and result shapes."""
 
-from dataclasses import dataclass
-from pathlib import Path
 import subprocess
 import time
+from dataclasses import dataclass
+from pathlib import Path
 
 from app.schemas.normalized_issue import NormalizedIssue
 

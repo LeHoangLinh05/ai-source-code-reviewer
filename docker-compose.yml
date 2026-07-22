@@ -81,6 +81,11 @@ services:
     restart: unless-stopped
     env_file:
       - .env
+    environment:
+      RAG_CHROMA_PATH: ${RAG_CHROMA_PATH:-/app/.chroma}
+      TOKENIZERS_PARALLELISM: "false"
+      OMP_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
     command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
     volumes:
       - ./backend:/app
@@ -112,6 +117,11 @@ services:
     restart: unless-stopped
     env_file:
       - .env
+    environment:
+      RAG_CHROMA_PATH: ${RAG_CHROMA_PATH:-/app/.chroma}
+      TOKENIZERS_PARALLELISM: "false"
+      OMP_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
     command:
       [
         "celery",

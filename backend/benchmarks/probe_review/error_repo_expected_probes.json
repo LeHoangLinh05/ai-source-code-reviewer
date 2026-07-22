@@ -1,0 +1,38 @@
+{
+  "ARCH-001": [
+    "maintainability.resource_lifecycle"
+  ],
+  "BUG-001": [
+    "bug.async_concurrency"
+  ],
+  "PERF-001": [
+    "performance.n_plus_one"
+  ],
+  "PERF-002": [
+    "performance.pagination_bounds"
+  ],
+  "SEC-001": [
+    "security.sql_nosql_injection"
+  ],
+  "SEC-002": [
+    "security.command_injection"
+  ],
+  "SEC-003": [
+    "security.ssrf_external_calls"
+  ],
+  "SEC-004": [
+    "security.object_authorization"
+  ],
+  "SEC-005": [
+    "security.object_authorization"
+  ],
+  "SEC-006": [
+    "security.mass_assignment"
+  ],
+  "SEC-007": [
+    "security.weak_password_hash"
+  ],
+  "SEC-008": [
+    "security.reset_token_lifecycle"
+  ]
+}

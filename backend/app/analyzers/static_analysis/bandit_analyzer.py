@@ -1,7 +1,7 @@
 """Bandit static analysis adapter for Python security findings."""
 
-from pathlib import Path
 import json
+from pathlib import Path
 
 from app.analyzers.file_filter import to_relative_posix_path
 from app.analyzers.static_analysis.base import StaticAnalysisRun, run_static_command

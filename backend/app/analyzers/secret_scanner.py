@@ -1,8 +1,8 @@
 """Secret scanning analyzer for detecting sensitive values in source code."""
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
-import re
 
 from app.analyzers.file_filter import to_relative_posix_path
 from app.models.review_issue import IssueCategory, IssueSeverity, IssueSource
@@ -24,7 +24,9 @@ SECRET_PATTERNS = (
         name="aws_access_key",
         regex=re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
         title="Potential AWS access key committed",
-        description="A value matching the AWS access key format appears in source code.",
+        description=(
+            "A value matching the AWS access key format appears in source code."
+        ),
     ),
     SecretPattern(
         name="private_key",
@@ -58,6 +60,19 @@ SECRET_PATTERNS = (
     ),
 )
 
+SECRET_MASK = "***MASKED***"
+SECRET_ASSIGNMENT_REGEX = re.compile(
+    r"""(?ix)
+    (?P<prefix>
+        \b(api[_-]?key|access[_-]?token|secret|token|password|passwd|pwd)\b
+        \s*[:=]\s*
+    )
+    (?P<quote>["']?)
+    (?P<value>[^\s"',}\]]{6,})
+    (?P=quote)
+    """
+)
+
 
 def scan_secrets(
     sandbox_path: Path, filtered_files: list[Path]
@@ -76,6 +91,28 @@ def scan_secrets(
             issues.extend(_scan_line(relative_path, line_number, line))
 
     return issues
+
+
+def mask_secret_values(content: str) -> str:
+    """Mask secret-like values while preserving surrounding file structure."""
+
+    masked_content = SECRET_ASSIGNMENT_REGEX.sub(_mask_assignment_match, content)
+    for pattern in SECRET_PATTERNS:
+        masked_content = pattern.regex.sub(_mask_pattern_match, masked_content)
+
+    return masked_content
+
+
+def _mask_assignment_match(match: re.Match[str]) -> str:
+    quote = match.group("quote")
+    return f"{match.group('prefix')}{quote}{SECRET_MASK}{quote}"
+
+
+def _mask_pattern_match(match: re.Match[str]) -> str:
+    if SECRET_MASK in match.group(0):
+        return match.group(0)
+
+    return SECRET_MASK
 
 
 def _scan_line(

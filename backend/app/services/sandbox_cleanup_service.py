@@ -1,10 +1,10 @@
 """Sandbox cleanup rules for completed review jobs."""
 
+import logging
+import shutil
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-import logging
 from pathlib import Path
-import shutil
 
 from app.core.config import Settings
 from app.models.review_job import ReviewJob

@@ -1,7 +1,7 @@
 """Tests for static analyzer normalization adapters."""
 
-from pathlib import Path
 import json
+from pathlib import Path
 
 from app.analyzers.static_analysis.bandit_analyzer import bandit_to_normalized
 from app.analyzers.static_analysis.eslint_analyzer import eslint_to_normalized

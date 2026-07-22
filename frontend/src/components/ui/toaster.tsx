@@ -10,7 +10,7 @@ export function Toaster() {
       toastOptions={{
         classNames: {
           toast:
-            "border border-border bg-card text-card-foreground shadow-lg shadow-black/20",
+            "border border-border bg-card text-card-foreground shadow-lg shadow-foreground/10",
         },
       }}
     />

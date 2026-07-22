@@ -6,7 +6,9 @@ import pytest
 
 from app.core.dependencies import (
     RATE_LIMIT_WINDOW_SECONDS,
+    RETRY_AFTER_HEADER,
     REVIEW_JOB_CREATE_RATE_LIMIT,
+    build_review_job_create_rate_limit_key,
     rate_limit_review_job_create,
 )
 from app.core.exceptions import RateLimitError
@@ -60,7 +62,8 @@ async def test_rate_limit_sets_ttl_for_first_request() -> None:
         redis_client,  # type: ignore[arg-type]
     )
 
-    expected_key = f"rate:{user.id}:review_jobs:create:{RATE_LIMIT_WINDOW_SECONDS}"
+    rate_limit_key = build_review_job_create_rate_limit_key(user)  # type: ignore[arg-type]
+    expected_key = f"{rate_limit_key}:{RATE_LIMIT_WINDOW_SECONDS}"
     assert redis_client.expired_key == expected_key
 
 
@@ -74,4 +77,4 @@ async def test_rate_limit_rejects_requests_over_limit() -> None:
             redis_client,  # type: ignore[arg-type]
         )
 
-    assert error.value.headers == {"Retry-After": "42"}
+    assert error.value.headers == {RETRY_AFTER_HEADER: "42"}

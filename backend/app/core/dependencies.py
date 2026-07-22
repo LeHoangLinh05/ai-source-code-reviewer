@@ -9,7 +9,7 @@ from redis.asyncio import Redis
 from redis.exceptions import RedisError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import get_settings
+from app.core.config import Settings, get_settings
 from app.core.exceptions import (
     AuthenticationError,
     AuthorizationError,
@@ -25,7 +25,7 @@ from app.repositories.mongodb_repository import (
     ChunkMetadataRepository,
     FileAnalysisResultRepository,
     RawStaticAnalysisOutputRepository,
-    RoadmapComplianceResultRepository,
+    RepoSummaryResultRepository,
     ToolCallLogRepository,
 )
 from app.repositories.refresh_token_repository import RefreshTokenRepository
@@ -33,16 +33,24 @@ from app.repositories.report_repository import ReportRepository
 from app.repositories.repository_repository import RepositoryRepository
 from app.repositories.review_job_repository import ReviewJobRepository
 from app.repositories.user_repository import UserRepository
+from app.services.ai_trace_service import AITraceService
 from app.services.auth_service import AuthService
-from app.services.job_service import ReviewJobService
+from app.services.health_service import HealthService
 from app.services.job_queue_service import JobQueueService
+from app.services.job_service import ReviewJobService
+from app.services.repo_summary_query_service import RepoSummaryQueryService
 from app.services.report_service import ReportService
 from app.services.repository_service import RepositoryService
 from app.services.token_blacklist import TokenBlacklistService
+from app.services.user_service import UserService
 
 bearer_scheme = HTTPBearer(auto_error=False)
 REVIEW_JOB_CREATE_RATE_LIMIT = 10
 RATE_LIMIT_WINDOW_SECONDS = 60
+FIRST_RATE_LIMIT_REQUEST_COUNT = 1
+RATE_LIMIT_REDIS_KEY_PREFIX = "rate"
+REVIEW_JOB_CREATE_RATE_LIMIT_KEY_SUFFIX = "review_jobs:create"
+RETRY_AFTER_HEADER = "Retry-After"
 
 
 async def get_redis() -> Redis:
@@ -57,8 +65,26 @@ async def get_mongodb() -> AsyncIOMotorDatabase:
     return get_mongodb_database()
 
 
+SettingsDep = Annotated[Settings, Depends(get_settings)]
+RedisDep = Annotated[Redis, Depends(get_redis)]
+MongoDatabaseDep = Annotated[AsyncIOMotorDatabase, Depends(get_mongodb)]
+AsyncSessionDep = Annotated[AsyncSession, Depends(get_async_session)]
+BearerCredentialsDep = Annotated[
+    HTTPAuthorizationCredentials | None,
+    Depends(bearer_scheme),
+]
+AccessTokenCookieDep = Annotated[
+    str | None,
+    Cookie(alias=get_settings().access_cookie_name),
+]
+RefreshTokenCookieDep = Annotated[
+    str | None,
+    Cookie(alias=get_settings().refresh_cookie_name),
+]
+
+
 async def get_file_analysis_result_repository(
-    database: Annotated[AsyncIOMotorDatabase, Depends(get_mongodb)],
+    database: MongoDatabaseDep,
 ) -> FileAnalysisResultRepository:
     """Build the MongoDB repository for file analysis results."""
 
@@ -66,7 +92,7 @@ async def get_file_analysis_result_repository(
 
 
 async def get_raw_static_analysis_output_repository(
-    database: Annotated[AsyncIOMotorDatabase, Depends(get_mongodb)],
+    database: MongoDatabaseDep,
 ) -> RawStaticAnalysisOutputRepository:
     """Build the MongoDB repository for raw static analyzer outputs."""
 
@@ -74,7 +100,7 @@ async def get_raw_static_analysis_output_repository(
 
 
 async def get_tool_call_log_repository(
-    database: Annotated[AsyncIOMotorDatabase, Depends(get_mongodb)],
+    database: MongoDatabaseDep,
 ) -> ToolCallLogRepository:
     """Build the MongoDB repository for AI tool call logs."""
 
@@ -82,24 +108,35 @@ async def get_tool_call_log_repository(
 
 
 async def get_chunk_metadata_repository(
-    database: Annotated[AsyncIOMotorDatabase, Depends(get_mongodb)],
+    database: MongoDatabaseDep,
 ) -> ChunkMetadataRepository:
     """Build the MongoDB repository for code chunk metadata."""
 
     return ChunkMetadataRepository(database)
 
 
-async def get_roadmap_compliance_result_repository(
-    database: Annotated[AsyncIOMotorDatabase, Depends(get_mongodb)],
-) -> RoadmapComplianceResultRepository:
-    """Build the MongoDB repository for roadmap compliance results."""
+async def get_repo_summary_result_repository(
+    database: MongoDatabaseDep,
+) -> RepoSummaryResultRepository:
+    """Build the MongoDB repository for generated repository summaries."""
 
-    return RoadmapComplianceResultRepository(database)
+    return RepoSummaryResultRepository(database)
+
+
+RepoSummaryResultRepositoryDep = Annotated[
+    RepoSummaryResultRepository,
+    Depends(get_repo_summary_result_repository),
+]
+ChunkMetadataRepositoryDep = Annotated[
+    ChunkMetadataRepository,
+    Depends(get_chunk_metadata_repository),
+]
 
 
 async def get_auth_service(
-    session: Annotated[AsyncSession, Depends(get_async_session)],
-    redis_client: Annotated[Redis, Depends(get_redis)],
+    session: AsyncSessionDep,
+    redis_client: RedisDep,
+    settings: SettingsDep,
 ) -> AuthService:
     """Build auth service with request-scoped DB and shared Redis clients."""
 
@@ -107,14 +144,18 @@ async def get_auth_service(
     refresh_token_repository = RefreshTokenRepository(session)
     token_blacklist_service = TokenBlacklistService(redis_client)
     return AuthService(
-        user_repository,
-        refresh_token_repository,
-        token_blacklist_service,
+        user_repository=user_repository,
+        refresh_token_repository=refresh_token_repository,
+        token_blacklist_service=token_blacklist_service,
+        settings=settings,
     )
 
 
+AuthServiceDep = Annotated[AuthService, Depends(get_auth_service)]
+
+
 async def get_repository_service(
-    session: Annotated[AsyncSession, Depends(get_async_session)],
+    session: AsyncSessionDep,
 ) -> RepositoryService:
     """Build repository service with request-scoped DB access."""
 
@@ -122,8 +163,51 @@ async def get_repository_service(
     return RepositoryService(repository_repository)
 
 
+RepositoryServiceDep = Annotated[RepositoryService, Depends(get_repository_service)]
+
+
+async def get_user_service(
+    session: AsyncSessionDep,
+) -> UserService:
+    """Build user settings service with request-scoped DB access."""
+
+    user_repository = UserRepository(session)
+    return UserService(user_repository)
+
+
+UserServiceDep = Annotated[UserService, Depends(get_user_service)]
+
+
+async def get_health_service(
+    session: AsyncSessionDep,
+    redis_client: RedisDep,
+    database: MongoDatabaseDep,
+) -> HealthService:
+    """Build the service that checks infrastructure health."""
+
+    return HealthService(session, redis_client, database)
+
+
+HealthServiceDep = Annotated[HealthService, Depends(get_health_service)]
+
+
+async def get_repo_summary_query_service(
+    repository_service: RepositoryServiceDep,
+    repo_summary_repository: RepoSummaryResultRepositoryDep,
+) -> RepoSummaryQueryService:
+    """Build the query service for repository project overview summaries."""
+
+    return RepoSummaryQueryService(repository_service, repo_summary_repository)
+
+
+RepoSummaryQueryServiceDep = Annotated[
+    RepoSummaryQueryService,
+    Depends(get_repo_summary_query_service),
+]
+
+
 async def get_review_job_service(
-    session: Annotated[AsyncSession, Depends(get_async_session)],
+    session: AsyncSessionDep,
 ) -> ReviewJobService:
     """Build review job service with request-scoped DB access."""
 
@@ -137,24 +221,40 @@ async def get_review_job_service(
     )
 
 
+ReviewJobServiceDep = Annotated[ReviewJobService, Depends(get_review_job_service)]
+
+
+async def get_ai_trace_service(
+    session: AsyncSessionDep,
+    database: MongoDatabaseDep,
+) -> AITraceService:
+    """Build the lightweight AI trace service."""
+
+    return AITraceService(
+        postgres_session=session,
+        mongodb_database=database,
+    )
+
+
+AITraceServiceDep = Annotated[AITraceService, Depends(get_ai_trace_service)]
+
+
 async def get_report_service(
-    session: Annotated[AsyncSession, Depends(get_async_session)],
+    session: AsyncSessionDep,
+    chunk_metadata_repository: ChunkMetadataRepositoryDep,
 ) -> ReportService:
     """Build report service with request-scoped DB access."""
 
     report_repository = ReportRepository(session)
-    return ReportService(report_repository)
+    return ReportService(report_repository, chunk_metadata_repository)
+
+
+ReportServiceDep = Annotated[ReportService, Depends(get_report_service)]
 
 
 async def get_current_access_token(
-    credentials: Annotated[
-        HTTPAuthorizationCredentials | None,
-        Depends(bearer_scheme),
-    ],
-    access_token_cookie: Annotated[
-        str | None,
-        Cookie(alias=get_settings().access_cookie_name),
-    ] = None,
+    credentials: BearerCredentialsDep,
+    access_token_cookie: AccessTokenCookieDep = None,
 ) -> str:
     """Extract the current access token from bearer auth or HttpOnly cookie."""
 
@@ -167,9 +267,12 @@ async def get_current_access_token(
     raise AuthenticationError("Access token is required")
 
 
+AccessTokenDep = Annotated[str, Depends(get_current_access_token)]
+
+
 async def get_current_user(
-    token: Annotated[str, Depends(get_current_access_token)],
-    auth_service: Annotated[AuthService, Depends(get_auth_service)],
+    token: AccessTokenDep,
+    auth_service: AuthServiceDep,
 ) -> User:
     """Decode JWT, reject blacklisted tokens, and load the active user."""
 
@@ -189,8 +292,11 @@ async def get_current_user(
     return await auth_service.get_active_user(decoded_token["subject"])
 
 
+CurrentUserDep = Annotated[User, Depends(get_current_user)]
+
+
 async def get_current_admin(
-    current_user: Annotated[User, Depends(get_current_user)],
+    current_user: CurrentUserDep,
 ) -> User:
     """Require an authenticated admin user for protected admin endpoints."""
 
@@ -200,16 +306,28 @@ async def get_current_admin(
     return current_user
 
 
+CurrentAdminDep = Annotated[User, Depends(get_current_admin)]
+
+
+def build_review_job_create_rate_limit_key(user: User) -> str:
+    """Build the Redis key for review-job creation throttling."""
+
+    return (
+        f"{RATE_LIMIT_REDIS_KEY_PREFIX}:{user.id}:"
+        f"{REVIEW_JOB_CREATE_RATE_LIMIT_KEY_SUFFIX}"
+    )
+
+
 async def rate_limit_review_job_create(
-    current_user: Annotated[User, Depends(get_current_user)],
-    redis_client: Annotated[Redis, Depends(get_redis)],
+    current_user: CurrentUserDep,
+    redis_client: RedisDep,
 ) -> None:
     """Limit expensive review-job creation requests per authenticated user."""
 
-    key = f"rate:{current_user.id}:review_jobs:create"
+    key = build_review_job_create_rate_limit_key(current_user)
     try:
         request_count = await redis_client.incr(key)
-        if request_count == 1:
+        if request_count == FIRST_RATE_LIMIT_REQUEST_COUNT:
             await redis_client.expire(key, RATE_LIMIT_WINDOW_SECONDS)
         if request_count <= REVIEW_JOB_CREATE_RATE_LIMIT:
             return
@@ -221,5 +339,11 @@ async def rate_limit_review_job_create(
     retry_after_seconds = ttl_seconds if ttl_seconds > 0 else RATE_LIMIT_WINDOW_SECONDS
     raise RateLimitError(
         "Too many review job creation requests",
-        headers={"Retry-After": str(retry_after_seconds)},
+        headers={RETRY_AFTER_HEADER: str(retry_after_seconds)},
     )
+
+
+ReviewJobCreateRateLimitDep = Annotated[
+    None,
+    Depends(rate_limit_review_job_create),
+]

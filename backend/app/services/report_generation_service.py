@@ -1,11 +1,15 @@
-"""Temporary static-analysis report generation for Phase 1 pipeline."""
+"""Deterministic static-analysis report generation."""
 
 from collections import Counter
+from math import exp
 from uuid import UUID
 
 from app.models.review_issue import IssueCategory, IssueSeverity
 from app.models.review_report import ReviewReport
 from app.schemas.normalized_issue import NormalizedIssue
+
+STATIC_REPORT_MODEL = "static-pipeline-v1"
+AI_REPORT_MODEL = "langchain-structured-report-v1"
 
 SEVERITY_SCORE_WEIGHTS = {
     IssueSeverity.CRITICAL: 3.0,
@@ -14,6 +18,7 @@ SEVERITY_SCORE_WEIGHTS = {
     IssueSeverity.LOW: 0.3,
     IssueSeverity.INFO: 0.1,
 }
+SCORE_DECAY_FACTOR = 10.0
 
 SEVERITY_RANK = {
     IssueSeverity.CRITICAL: 5,
@@ -31,7 +36,7 @@ def build_static_report(
     issues: list[NormalizedIssue],
     tech_stack: dict[str, object],
 ) -> ReviewReport:
-    """Build a non-AI report until Phase 6 replaces score synthesis."""
+    """Build a static report from normalized analyzer findings."""
 
     severity_counts = Counter(issue.severity for issue in issues)
     return ReviewReport(
@@ -43,10 +48,22 @@ def build_static_report(
         medium_count=severity_counts[IssueSeverity.MEDIUM],
         low_count=severity_counts[IssueSeverity.LOW],
         info_count=severity_counts[IssueSeverity.INFO],
-        security_score=calculate_score(
+        **calculate_report_scores(issues),
+        tech_stack=tech_stack,
+        top_risky_files=build_top_risky_files(issues),
+        executive_summary=build_executive_summary(issues, total_files_analyzed),
+        ai_model_used=STATIC_REPORT_MODEL,
+    )
+
+
+def calculate_report_scores(issues: list[NormalizedIssue]) -> dict[str, float]:
+    """Return deterministic report scores from persisted issue categories."""
+
+    return {
+        "security_score": calculate_score(
             [issue for issue in issues if issue.category == IssueCategory.SECURITY]
         ),
-        maintainability_score=calculate_score(
+        "maintainability_score": calculate_score(
             [
                 issue
                 for issue in issues
@@ -58,22 +75,18 @@ def build_static_report(
                 }
             ]
         ),
-        performance_score=calculate_score(
+        "performance_score": calculate_score(
             [issue for issue in issues if issue.category == IssueCategory.PERFORMANCE]
         ),
-        overall_score=calculate_score(issues),
-        tech_stack=tech_stack,
-        top_risky_files=build_top_risky_files(issues),
-        executive_summary=build_executive_summary(issues, total_files_analyzed),
-        ai_model_used="static-pipeline-v1",
-    )
+        "overall_score": calculate_score(issues),
+    }
 
 
 def calculate_score(issues: list[NormalizedIssue]) -> float:
-    """Return the temporary 0-10 score based on weighted issue severity."""
+    """Return the 0-10 score based on weighted issue severity."""
 
     penalty = sum(SEVERITY_SCORE_WEIGHTS[issue.severity] for issue in issues)
-    return max(0.0, round(10.0 - penalty, 1))
+    return round(10.0 * exp(-penalty / SCORE_DECAY_FACTOR), 1)
 
 
 def build_top_risky_files(
@@ -85,15 +98,16 @@ def build_top_risky_files(
 
     grouped: dict[str, list[NormalizedIssue]] = {}
     for issue in issues:
-        grouped.setdefault(issue.file_path, []).append(issue)
+        file_path = issue.file_path or "Unknown file"
+        grouped.setdefault(file_path, []).append(issue)
 
     ranked_files = sorted(
         grouped.items(),
         key=lambda item: (
-            len(item[1]),
-            max(SEVERITY_RANK[issue.severity] for issue in item[1]),
+            min(_report_priority(issue) for issue in item[1]),
+            -max(SEVERITY_RANK[issue.severity] for issue in item[1]),
+            -len(item[1]),
         ),
-        reverse=True,
     )
     return [
         {
@@ -106,6 +120,20 @@ def build_top_risky_files(
         }
         for file_path, file_issues in ranked_files[:limit]
     ]
+
+
+def _report_priority(issue: NormalizedIssue) -> int:
+    category_priorities = {
+        IssueCategory.SECURITY: 1,
+        IssueCategory.BUG: 2,
+        IssueCategory.PERFORMANCE: 3,
+        IssueCategory.MAINTAINABILITY: 4,
+        IssueCategory.REQUIREMENT: 5,
+    }
+    if (issue.raw_output or {}).get("priority") == "P0":
+        return 0
+
+    return category_priorities.get(issue.category, 6)
 
 
 def build_executive_summary(

@@ -3,7 +3,7 @@
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.models.review_issue import IssueCategory, IssueSeverity, IssueSource
 
@@ -26,8 +26,6 @@ class ReportResponse(BaseModel):
     maintainability_score: float | None
     performance_score: float | None
     overall_score: float | None
-    compliance_score: float | None
-    bonus_score: float | None
     tech_stack: dict[str, object] | None
     top_risky_files: list[dict[str, object]] | None
     executive_summary: str | None
@@ -42,8 +40,6 @@ class ReportScores(BaseModel):
     maintainability_score: float | None
     performance_score: float | None
     overall_score: float | None
-    compliance_score: float | None
-    bonus_score: float | None
 
 
 class ReportSummaryResponse(BaseModel):
@@ -54,6 +50,21 @@ class ReportSummaryResponse(BaseModel):
     scores: ReportScores
 
 
+class IssueOccurrenceResponse(BaseModel):
+    """One concrete source location for a grouped issue."""
+
+    issue_id: UUID
+    file_path: str
+    line_start: int
+    line_end: int
+    title: str
+    description: str
+    suggestion: str | None
+    confidence: float | None
+    raw_output: dict[str, object] | None
+    created_at: datetime
+
+
 class IssueResponse(BaseModel):
     """Normalized review issue returned by report endpoints."""
 
@@ -61,9 +72,9 @@ class IssueResponse(BaseModel):
 
     id: UUID
     job_id: UUID
-    file_path: str | None
-    line_start: int | None
-    line_end: int | None
+    file_path: str
+    line_start: int
+    line_end: int
     severity: IssueSeverity
     category: IssueCategory
     title: str
@@ -73,6 +84,11 @@ class IssueResponse(BaseModel):
     confidence: float | None
     raw_output: dict[str, object] | None
     created_at: datetime
+    group_key: str | None = None
+    occurrence_count: int = 1
+    affected_files: list[str] = Field(default_factory=list)
+    primary_issue_id: UUID | None = None
+    occurrences: list[IssueOccurrenceResponse] = Field(default_factory=list)
 
 
 class IssueFilters(BaseModel):

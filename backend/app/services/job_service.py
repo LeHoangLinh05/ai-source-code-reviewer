@@ -1,7 +1,7 @@
 """Review job creation, status lookup, cancellation, and queue workflows."""
 
-from datetime import UTC, datetime
 import logging
+from datetime import UTC, datetime
 from uuid import UUID
 
 from app.core.exceptions import AuthorizationError, ConflictError, NotFoundError
@@ -113,6 +113,7 @@ class ReviewJobService:
         if review_job.status in {ReviewJobStatus.COMPLETED, ReviewJobStatus.FAILED}:
             raise ConflictError("Completed or failed review jobs cannot be canceled")
 
+        await self.job_queue_service.cancel(job_id)
         try:
             await self.review_job_repository.delete(review_job)
         except Exception:

@@ -7,6 +7,7 @@ import { useForm } from "react-hook-form";
 import { toast } from "sonner";
 import { z } from "zod";
 
+import { PasswordInput } from "@/components/auth/password-input";
 import { Button } from "@/components/ui/button";
 import {
   Form,
@@ -19,15 +20,43 @@ import {
 import { Input } from "@/components/ui/input";
 import { api } from "@/lib/api";
 import { getApiErrorMessage } from "@/lib/api-error";
+import { publishAuthEvent } from "@/lib/auth-events";
+import {
+  emailSchema,
+  isLegacyTestLoginCredentials,
+  MAX_PASSWORD_LENGTH,
+  strongPasswordSchema,
+} from "@/lib/auth-validation";
 import { setSessionMarker } from "@/lib/session-marker";
 import { useAppDispatch } from "@/store/hooks";
 import { setCredentials } from "@/store/slices/authSlice";
-import type { AuthResponse, LoginPayload } from "@/types/auth";
+import type { AuthTokenResponse, LoginPayload } from "@/types/auth";
 
-const loginSchema = z.object({
-  email: z.string().email("Enter a valid email address."),
-  password: z.string().min(1, "Password is required."),
-});
+const loginSchema = z
+  .object({
+    email: emailSchema,
+    password: z
+      .string()
+      .min(1, "Password is required.")
+      .max(MAX_PASSWORD_LENGTH, "Password is too long."),
+  })
+  .superRefine((values, context) => {
+    if (isLegacyTestLoginCredentials(values.email, values.password)) {
+      return;
+    }
+
+    const result = strongPasswordSchema.safeParse(values.password);
+    if (result.success) {
+      return;
+    }
+
+    for (const issue of result.error.issues) {
+      context.addIssue({
+        ...issue,
+        path: ["password"],
+      });
+    }
+  });
 
 type LoginFormValues = z.infer<typeof loginSchema>;
 
@@ -37,6 +66,7 @@ export function LoginForm() {
   const searchParams = useSearchParams();
   const nextPath = searchParams.get("next") ?? "/dashboard";
   const form = useForm<LoginFormValues>({
+    mode: "onChange",
     resolver: zodResolver(loginSchema),
     defaultValues: {
       email: "",
@@ -49,7 +79,7 @@ export function LoginForm() {
 
     try {
       const payload: LoginPayload = values;
-      const response = await api.post<AuthResponse>("/auth/login", payload, {
+      const response = await api.post<AuthTokenResponse>("/auth/login", payload, {
         skipAuthRefresh: true,
       });
 
@@ -59,6 +89,8 @@ export function LoginForm() {
         }),
       );
       setSessionMarker();
+      publishAuthEvent("session-updated");
+      toast.success("Signed in.");
       router.replace(nextPath);
     } catch (error) {
       const errorMessage = getApiErrorMessage(error, "Unable to sign in.");
@@ -99,10 +131,9 @@ export function LoginForm() {
             <FormItem>
               <FormLabel>Password</FormLabel>
               <FormControl>
-                <Input
+                <PasswordInput
                   autoComplete="current-password"
                   placeholder="********"
-                  type="password"
                   {...field}
                 />
               </FormControl>
@@ -117,14 +148,14 @@ export function LoginForm() {
         ) : null}
         <Button
           className="w-full"
-          disabled={form.formState.isSubmitting}
+          disabled={form.formState.isSubmitting || !form.formState.isValid}
           type="submit"
         >
           {form.formState.isSubmitting ? "Signing in..." : "Sign in"}
         </Button>
         <p className="text-center text-sm text-muted-foreground">
           New to RepoGuard AI?{" "}
-          <Link className="font-medium text-slate-200 hover:underline" href="/register">
+          <Link className="font-medium text-primary hover:underline" href="/register">
             Create an account
           </Link>
         </p>

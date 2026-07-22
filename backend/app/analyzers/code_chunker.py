@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import ast
+import re
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
-import re
-from typing import Iterable
 
 MAX_TOKENS_PER_CHUNK = 1500
 FALLBACK_CHUNK_LINES = 60
@@ -84,6 +84,64 @@ def chunk_python_file(
     )
 
 
+def chunk_plain_text_file(
+    file_path: Path,
+    *,
+    language: str,
+    project_root: Path | None = None,
+    static_issues: Iterable[StaticIssueRange | object] | None = None,
+) -> list[CodeChunk]:
+    """Split one non-Python text file into token-bounded line windows."""
+
+    source = file_path.read_text(encoding="utf-8", errors="ignore")
+    display_path = _display_path(file_path, project_root)
+    return chunk_plain_text_source(
+        source,
+        file_path=display_path,
+        language=language,
+        static_issues=static_issues,
+    )
+
+
+def chunk_plain_text_source(
+    source: str,
+    *,
+    file_path: str,
+    language: str,
+    static_issues: Iterable[StaticIssueRange | object] | None = None,
+) -> list[CodeChunk]:
+    """Split plain text/config files into chunks suitable for embeddings."""
+
+    lines = source.splitlines()
+    if not lines:
+        return []
+
+    candidates = [
+        _ChunkCandidate(
+            chunk_type="file",
+            line_start=line_start,
+            line_end=line_end,
+        )
+        for line_start, line_end in _plain_line_windows(lines)
+    ]
+    chunks = [
+        _build_plain_chunk(
+            candidate,
+            lines,
+            file_path=file_path,
+            language=language,
+            static_issues=static_issues,
+        )
+        for candidate in candidates
+    ]
+    total_chunks = len(chunks)
+    for chunk_index, chunk in enumerate(chunks):
+        chunk.metadata.chunk_index = chunk_index
+        chunk.metadata.total_chunks = total_chunks
+
+    return chunks
+
+
 def chunk_python_source(
     source: str,
     *,
@@ -108,7 +166,10 @@ def chunk_python_source(
             for line_start, line_end in _line_windows(len(lines))
         ]
 
-    expanded_candidates = _enforce_token_limit(candidates, lines)
+    expanded_candidates = _drop_empty_candidates(
+        _enforce_token_limit(candidates, lines),
+        lines,
+    )
     chunks = [
         _build_chunk(
             candidate,
@@ -195,7 +256,9 @@ def _build_ast_candidates(source: str, line_count: int) -> list[_ChunkCandidate]
             covered_ranges.append((function_start, function_end))
 
     candidates.extend(_module_candidates(line_count, covered_ranges))
-    return sorted(candidates, key=lambda candidate: (candidate.line_start, candidate.line_end))
+    return sorted(
+        candidates, key=lambda candidate: (candidate.line_start, candidate.line_end)
+    )
 
 
 def _function_candidates(
@@ -277,6 +340,17 @@ def _enforce_token_limit(
     return expanded_candidates
 
 
+def _drop_empty_candidates(
+    candidates: list[_ChunkCandidate],
+    lines: list[str],
+) -> list[_ChunkCandidate]:
+    return [
+        candidate
+        for candidate in candidates
+        if _slice_lines(lines, candidate.line_start, candidate.line_end).strip()
+    ]
+
+
 def _build_chunk(
     candidate: _ChunkCandidate,
     lines: list[str],
@@ -320,6 +394,68 @@ def _line_windows(
         start = end - FALLBACK_OVERLAP_LINES + 1
 
     return windows
+
+
+def _plain_line_windows(lines: list[str]) -> list[tuple[int, int]]:
+    windows: list[tuple[int, int]] = []
+    start_index = 0
+    while start_index < len(lines):
+        end_index = start_index
+        token_count = 0
+        while end_index < len(lines):
+            line_token_count = count_tokens(lines[end_index])
+            if (
+                end_index > start_index
+                and token_count + line_token_count > MAX_TOKENS_PER_CHUNK
+            ):
+                break
+
+            token_count += line_token_count
+            end_index += 1
+            if token_count >= MAX_TOKENS_PER_CHUNK:
+                break
+
+        if end_index == start_index:
+            end_index += 1
+
+        content = _slice_lines(lines, start_index + 1, end_index)
+        if content.strip():
+            windows.append((start_index + 1, end_index))
+
+        if end_index >= len(lines):
+            break
+
+        start_index = max(start_index + 1, end_index - FALLBACK_OVERLAP_LINES)
+
+    return windows
+
+
+def _build_plain_chunk(
+    candidate: _ChunkCandidate,
+    lines: list[str],
+    *,
+    file_path: str,
+    language: str,
+    static_issues: Iterable[StaticIssueRange | object] | None,
+) -> CodeChunk:
+    content = _slice_lines(lines, candidate.line_start, candidate.line_end)
+    metadata = CodeChunkMetadata(
+        file_path=file_path,
+        language=language,
+        chunk_type=candidate.chunk_type,
+        chunk_index=0,
+        total_chunks=1,
+        function_name=None,
+        class_name=None,
+        line_start=candidate.line_start,
+        line_end=candidate.line_end,
+        imports=[],
+        module=_module_name(file_path),
+        risk_area=detect_risk_area(file_path, []),
+        has_static_issues=_has_static_issue(candidate, file_path, static_issues),
+        token_count=count_tokens(content),
+    )
+    return CodeChunk(content=content, metadata=metadata)
 
 
 def _extract_imports_from_source(source: str) -> list[str]:

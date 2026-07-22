@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import UTC, datetime
-from hashlib import sha1
-from pathlib import Path
 import re
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from hashlib import sha256
+from pathlib import Path
 
 from app.ai.rag.bm25_index import BM25Document, BM25Index
 from app.ai.rag.vectorstore import ChromaVectorStore, get_vectorstore
@@ -25,6 +25,7 @@ class RAGDocument:
     language: str
     doc_type: str
     category: str
+    extra_metadata: dict[str, object] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -37,7 +38,7 @@ class IngestedChunk:
 
 
 class RAGIngestionPipeline:
-    """Split, metadata-tag, embed, and index coding-standard documents."""
+    """Split, metadata-tag, embed, and index knowledge-base documents."""
 
     def __init__(
         self,
@@ -106,6 +107,17 @@ class RAGIngestionPipeline:
 
         return ingested_chunks
 
+    def ingest_roadmap(self, source_path: Path | None = None) -> list[IngestedChunk]:
+        """Load and ingest every roadmap requirement into the knowledge base."""
+
+        from app.ai.roadmap.knowledge import (
+            ROADMAP_SOURCE_PATH,
+            load_roadmap_documents,
+        )
+
+        roadmap_documents = load_roadmap_documents(source_path or ROADMAP_SOURCE_PATH)
+        return self.ingest_documents(roadmap_documents)
+
     def _split_document(self, document: RAGDocument) -> list[IngestedChunk]:
         tokens = _tokenize_preserving_text(document.content)
         if not tokens:
@@ -126,6 +138,7 @@ class RAGIngestionPipeline:
                     "doc_type": document.doc_type,
                     "category": document.category,
                     "ingested_at": ingested_at,
+                    **document.extra_metadata,
                 }
                 chunks.append(
                     IngestedChunk(
@@ -150,5 +163,5 @@ def _tokenize_preserving_text(text: str) -> list[str]:
 
 def _chunk_id(source: str, chunk_index: int, content: str) -> str:
     source_slug = re.sub(r"[^a-zA-Z0-9_-]+", "-", source.lower()).strip("-")
-    digest = sha1(content.encode("utf-8")).hexdigest()[:12]
+    digest = sha256(content.encode("utf-8")).hexdigest()[:12]
     return f"{source_slug}-{chunk_index}-{digest}"

@@ -1,7 +1,7 @@
 """Ruff static analysis adapter for Python lint findings."""
 
-from pathlib import Path
 import json
+from pathlib import Path
 from typing import Any
 
 from app.analyzers.file_filter import to_relative_posix_path

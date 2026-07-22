@@ -10,6 +10,29 @@
       "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
     --font-app-mono: Menlo, Monaco, Consolas, "Liberation Mono", "Courier New",
       monospace;
+    --background: 210 40% 98%;
+    --foreground: 222 47% 11%;
+    --card: 0 0% 100%;
+    --card-foreground: 222 47% 11%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 222 47% 11%;
+    --primary: 222 47% 11%;
+    --primary-foreground: 210 40% 98%;
+    --secondary: 210 40% 94%;
+    --secondary-foreground: 222 47% 11%;
+    --muted: 210 40% 96%;
+    --muted-foreground: 215 16% 47%;
+    --accent: 204 94% 94%;
+    --accent-foreground: 222 47% 11%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 214 32% 88%;
+    --input: 214 32% 88%;
+    --ring: 217 91% 60%;
+    --radius: 0.5rem;
+  }
+
+  .dark {
     --background: 222 47% 4%;
     --foreground: 210 40% 98%;
     --card: 222 47% 8%;
@@ -37,6 +60,10 @@
   }
 
   html {
+    color-scheme: light;
+  }
+
+  html.dark {
     color-scheme: dark;
   }
 
@@ -45,6 +72,6 @@
   }
 
   ::selection {
-    @apply bg-slate-600/40 text-foreground;
+    @apply bg-accent text-accent-foreground;
   }
 }

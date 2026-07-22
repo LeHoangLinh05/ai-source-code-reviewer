@@ -19,7 +19,10 @@ class JobQueueService:
         """Send a review job to the Celery worker queue."""
 
         try:
-            async_result = process_review_job.delay(str(job_id))
+            async_result = process_review_job.apply_async(
+                args=[str(job_id)],
+                task_id=str(job_id),
+            )
         except (CeleryError, OperationalError) as error:
             raise ServiceUnavailableError("Review job queue is unavailable") from error
 
@@ -28,3 +31,17 @@ class JobQueueService:
             job_id,
             async_result.id,
         )
+
+    async def cancel(self, job_id: UUID) -> None:
+        """Revoke a queued or running review job task."""
+
+        try:
+            process_review_job.AsyncResult(str(job_id)).revoke(
+                terminate=True,
+                signal="SIGTERM",
+            )
+        except (CeleryError, OperationalError) as error:
+            logger.warning("Unable to revoke review job task %s: %s", job_id, error)
+            return
+
+        logger.info("Review job %s Celery task revoked", job_id)

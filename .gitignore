@@ -5,7 +5,7 @@ backend/.env
 backend/.env.*
 !backend/.env.example
 
-/*.md
+*.md
 !/AGENTS.md
 !/style.md
 
@@ -15,3 +15,5 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 .chroma/
+.sandbox/
+backend/.cache/

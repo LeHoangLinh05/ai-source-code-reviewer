@@ -1,9 +1,14 @@
 """MongoDB document schemas for analysis, agent trace, and roadmap data."""
 
+from __future__ import annotations
+
 from datetime import datetime
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field
+
+from app.schemas.repo_summary import RepoSummary
 
 
 class FileTreeEntry(BaseModel):
@@ -57,18 +62,31 @@ class ToolCallLogDocument(BaseModel):
 
     job_id: UUID
     session_id: UUID
+    agent_type: Literal["review", "report"] = "review"
     sequence: int = Field(ge=1)
     tool_name: str
     called_at: datetime
     duration_ms: int = Field(ge=0)
     input: dict[str, object]
     output: dict[str, object]
+    event_type: Literal["tool", "llm", "embedding", "pipeline"] = "tool"
+    provider: str | None = None
+    model: str | None = None
+    phase: str | None = None
+    token_usage: dict[str, int] | None = None
+    metadata: dict[str, object] = Field(default_factory=dict)
+    status: str | None = None
 
 
 class ChunkMetadataDocument(BaseModel):
     """Metadata for one AST-derived code chunk used by repository retrieval."""
 
     job_id: UUID
+    repository_id: UUID | str | None = None
+    branch: str | None = None
+    commit_sha: str | None = None
+    repo_branch_key: str | None = None
+    index_generation_key: str | None = None
     file_path: str
     language: str
     chunk_type: str
@@ -84,33 +102,32 @@ class ChunkMetadataDocument(BaseModel):
     has_static_issues: bool = False
     token_count: int = Field(ge=0)
     chunk_text: str | None = None
+    content_hash: str | None = None
+    embedding_cache_id: str | None = None
+    occurrence_index: int | None = Field(default=None, ge=0)
+    chunker_version: str | None = None
 
 
-class RoadmapRuleResult(BaseModel):
-    """Deterministic roadmap rule result stored for scoring and debugging."""
-
-    rule_id: str
-    status: str
-    severity: str | None = None
-    week: int | str
-    skill_group: str
-
-
-class RoadmapVerificationQueueItem(BaseModel):
-    """Rule verification candidate that the AI agent must inspect later."""
-
-    rule_id: str
-    file_path: str
-    ai_hint: str
-
-
-class RoadmapComplianceResultDocument(BaseModel):
-    """Roadmap compliance output stored when a rule profile is enabled."""
+class CodeIndexManifestDocument(BaseModel):
+    """Lifecycle marker for one immutable semantic code index generation."""
 
     job_id: UUID
-    rule_profile: dict[str, object]
-    checked_at: datetime
-    results: list[RoadmapRuleResult]
-    verification_queue: list[RoadmapVerificationQueueItem] = Field(default_factory=list)
-    compliance_score: float | None = Field(default=None, ge=0.0, le=100.0)
-    bonus_score: float | None = Field(default=None, ge=0.0, le=100.0)
+    repository_id: UUID | str
+    branch: str
+    commit_sha: str
+    repo_branch_key: str
+    index_generation_key: str
+    status: Literal["BUILDING", "INDEXED", "FAILED"]
+    chunk_count: int = Field(ge=0)
+    updated_at: datetime
+    error_message: str | None = None
+
+
+class RepoSummaryResultDocument(RepoSummary):
+    """Project overview generated for one repository review job."""
+
+    repository_id: UUID
+    job_id: UUID
+    commit_sha: str
+    generated_at: datetime
+    model_used: str

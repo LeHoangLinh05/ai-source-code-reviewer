@@ -1,0 +1,68 @@
+[tool.ruff]
+target-version = "py311"
+line-length = 88
+extend-exclude = [
+    ".cache",
+    ".chroma",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+]
+
+[tool.ruff.lint]
+select = [
+    "E",
+    "F",
+    "I",
+    "B",
+    "UP",
+    "SIM",
+    "PL",
+    "S",
+    "RUF",
+]
+ignore = [
+    # AI and adapter modules intentionally lazy-load optional heavyweight deps.
+    "PLC0415",
+    # FastAPI DI and orchestration entrypoints use typed keyword-only arguments.
+    "PLR0913",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Pytest uses assert rewriting and controlled fake secrets/magic values in fixtures.
+"tests/**/*.py" = [
+    "PLR2004",
+    "PLW0108",
+    "S101",
+    "S105",
+    "S106",
+    "S107",
+    "S108",
+]
+# Generated rule catalog source carries long rule prose and self-check asserts.
+"app/ai/rules/build_rules_yaml.py" = [
+    "E501",
+    "PLR0911",
+    "PLR2004",
+    "S101",
+]
+# Existing stateful connection lifecycle is module-level by design.
+"app/db/mongodb.py" = ["PLW0603"]
+"app/db/redis.py" = ["PLW0603"]
+# Explicit false positives: these are identifiers, masks, or token labels.
+"app/analyzers/secret_scanner.py" = ["S105"]
+"app/models/review_issue.py" = ["S105"]
+"app/schemas/auth.py" = ["S105"]
+"app/services/token_blacklist.py" = ["S105"]
+# Subprocess calls are constrained to internal analyzer commands or resolved Git.
+"app/analyzers/file_filter.py" = ["S603"]
+"app/analyzers/static_analysis/base.py" = ["S603"]
+"app/services/review_pipeline_service.py" = ["S603"]
+# Probe/review plan branchy returns model domain decision tables.
+"app/ai/probe_review.py" = ["PLR0911"]
+"app/ai/review_plan.py" = ["PLR0911"]
+
+[tool.pytest.ini_options]
+markers = [
+    "performance: opt-in smoke tests for local integration performance checks",
+]

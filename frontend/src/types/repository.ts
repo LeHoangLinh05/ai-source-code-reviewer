@@ -12,6 +12,16 @@ export type Repository = {
   created_at: string;
 };
 
+export type RepoSummary = {
+  purpose: string;
+  project_type: string;
+  tech_stack: string[];
+  architecture_overview: string;
+  generated_at: string;
+  commit_sha: string;
+  model_used: string;
+};
+
 export type CreateRepositoryPayload = {
   name: string;
   url: string;

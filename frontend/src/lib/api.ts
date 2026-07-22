@@ -6,7 +6,8 @@ import axios, {
 
 import { store } from "@/store";
 import { clearCredentials, setCredentials } from "@/store/slices/authSlice";
-import type { AuthResponse } from "@/types/auth";
+import type { AuthTokenResponse } from "@/types/auth";
+import { publishAuthEvent } from "@/lib/auth-events";
 import { clearSessionMarker } from "@/lib/session-marker";
 
 type RetryableRequestConfig = InternalAxiosRequestConfig & {
@@ -37,7 +38,7 @@ function redirectToLogin() {
 
 async function refreshAccessToken() {
   refreshRequest ??= api
-    .post<AuthResponse>(
+    .post<AuthTokenResponse>(
       "/auth/refresh",
       undefined,
       {
@@ -77,6 +78,7 @@ api.interceptors.response.use(
     } catch (refreshError) {
       store.dispatch(clearCredentials());
       clearSessionMarker();
+      publishAuthEvent("session-cleared");
       redirectToLogin();
 
       return Promise.reject(refreshError);

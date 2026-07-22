@@ -1,7 +1,7 @@
 """Redis-backed access token blacklist service."""
 
-from datetime import datetime
 import logging
+from datetime import datetime
 from uuid import UUID
 
 from redis.asyncio import Redis

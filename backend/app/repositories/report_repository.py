@@ -5,7 +5,6 @@ from uuid import UUID
 from sqlalchemy import Select, delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.schemas.normalized_issue import NormalizedIssue
 from app.models.review_issue import (
     IssueCategory,
     IssueSeverity,
@@ -14,6 +13,7 @@ from app.models.review_issue import (
 )
 from app.models.review_job import ReviewJob
 from app.models.review_report import ReviewReport
+from app.schemas.normalized_issue import NormalizedIssue
 
 
 class ReportRepository:
@@ -33,6 +33,14 @@ class ReportRepository:
         statement = select(ReviewReport).where(ReviewReport.job_id == job_id)
         result = await self.session.execute(statement)
         return result.scalar_one_or_none()
+
+    async def save_report(self, report: ReviewReport) -> ReviewReport:
+        """Persist report aggregate changes."""
+
+        self.session.add(report)
+        await self.session.commit()
+        await self.session.refresh(report)
+        return report
 
     async def count_issues(
         self,
@@ -86,6 +94,34 @@ class ReportRepository:
             .offset((page - 1) * per_page)
             .limit(per_page)
         )
+        result = await self.session.execute(statement)
+        return list(result.scalars().all())
+
+    async def list_filtered_issues(
+        self,
+        *,
+        job_id: UUID,
+        severity: IssueSeverity | None,
+        category: IssueCategory | None,
+        source: IssueSource | None,
+        file_path: str | None,
+    ) -> list[ReviewIssue]:
+        """Return all issues matching report filters."""
+
+        statement = self._issue_filter_statement(
+            job_id=job_id,
+            severity=severity,
+            category=category,
+            source=source,
+            file_path=file_path,
+        )
+        result = await self.session.execute(statement)
+        return list(result.scalars().all())
+
+    async def list_all_issues(self, job_id: UUID) -> list[ReviewIssue]:
+        """Return every issue attached to a review job."""
+
+        statement = select(ReviewIssue).where(ReviewIssue.job_id == job_id)
         result = await self.session.execute(statement)
         return list(result.scalars().all())
 

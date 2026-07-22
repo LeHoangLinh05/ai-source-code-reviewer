@@ -1,9 +1,22 @@
 "use client";
 
-import { ArrowLeft, RefreshCw } from "lucide-react";
+import {
+  Activity,
+  AlertTriangle,
+  ArrowLeft,
+  Bot,
+  CheckCircle2,
+  Circle,
+  FileCode2,
+  GitBranch,
+  RefreshCw,
+  SearchCheck,
+  Trash2,
+} from "lucide-react";
 import Link from "next/link";
-import { useParams } from "next/navigation";
-import { useCallback, useEffect } from "react";
+import { useParams, useRouter } from "next/navigation";
+import { useCallback, useEffect, useState } from "react";
+import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -14,15 +27,28 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { getApiErrorMessage } from "@/lib/api-error";
-import { getReviewJob } from "@/lib/review-jobs";
+import {
+  cancelReviewJob,
+  getReviewJob,
+  getReviewJobAiTrace,
+} from "@/lib/review-jobs";
+import { TraceEventList, TraceTokenSummary } from "@/components/reviews/ai-trace-log";
+import { ReviewWorkspaceTabs } from "@/components/reviews/review-workspace-tabs";
 import { useAppDispatch, useAppSelector } from "@/store/hooks";
 import {
   setCurrentJob,
   setJobError,
   setJobLoading,
+  removeJob,
+  setJobMutating,
   upsertJob,
 } from "@/store/slices/jobSlice";
-import type { ReviewJob, ReviewJobStatus } from "@/types/review-job";
+import type {
+  AITraceStage,
+  AITrace,
+  ReviewJob,
+  ReviewJobStatus,
+} from "@/types/review-job";
 
 const POLLING_INTERVAL_MS = 4_000;
 const TERMINAL_STATUSES = new Set<ReviewJobStatus>(["COMPLETED", "FAILED"]);
@@ -30,9 +56,16 @@ const TERMINAL_STATUSES = new Set<ReviewJobStatus>(["COMPLETED", "FAILED"]);
 export default function ReviewJobDetailPage() {
   const params = useParams<{ id: string }>();
   const jobId = params.id;
+  const router = useRouter();
   const dispatch = useAppDispatch();
-  const { currentJob, error, isLoading } = useAppSelector((state) => state.jobs);
+  const { currentJob, error, isLoading, isMutating } = useAppSelector(
+    (state) => state.jobs,
+  );
   const currentJobStatus = currentJob?.status;
+  const [aiTrace, setAiTrace] = useState<AITrace | null>(null);
+  const [aiTraceError, setAiTraceError] = useState<string | null>(null);
+  const [isCanceling, setIsCanceling] = useState(false);
+  const [nowMs, setNowMs] = useState(() => Date.now());
 
   const loadJob = useCallback(async () => {
     dispatch(setJobLoading(true));
@@ -50,66 +83,112 @@ export default function ReviewJobDetailPage() {
     }
   }, [dispatch, jobId]);
 
+  const loadAiTrace = useCallback(async () => {
+    try {
+      setAiTrace(await getReviewJobAiTrace(jobId));
+      setAiTraceError(null);
+    } catch (requestError) {
+      setAiTraceError(
+        getApiErrorMessage(requestError, "Unable to load AI trace."),
+      );
+    }
+  }, [jobId]);
+
   useEffect(() => {
     void loadJob();
+    void loadAiTrace();
 
     return () => {
       dispatch(setCurrentJob(null));
     };
-  }, [dispatch, loadJob]);
+  }, [dispatch, loadAiTrace, loadJob]);
 
   useEffect(() => {
     if (currentJobStatus && TERMINAL_STATUSES.has(currentJobStatus)) {
       return;
     }
 
-    // TODO(P5): replace polling with useJobProgress backed by SSE.
     const intervalId = window.setInterval(() => {
       void loadJob();
+      void loadAiTrace();
     }, POLLING_INTERVAL_MS);
 
     return () => {
       window.clearInterval(intervalId);
     };
-  }, [currentJobStatus, loadJob]);
+  }, [currentJobStatus, loadAiTrace, loadJob]);
+
+  useEffect(() => {
+    const shouldTickDuration =
+      currentJob?.started_at !== null && currentJob?.completed_at === null;
+    if (!shouldTickDuration) {
+      return;
+    }
+
+    setNowMs(Date.now());
+    const intervalId = window.setInterval(() => setNowMs(Date.now()), 1_000);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [currentJob?.completed_at, currentJob?.started_at]);
+
+  async function handleCancelJob() {
+    if (!currentJob || TERMINAL_STATUSES.has(currentJob.status)) {
+      return;
+    }
+
+    setIsCanceling(true);
+    dispatch(setJobMutating(true));
+
+    try {
+      await cancelReviewJob(currentJob.id);
+      dispatch(removeJob(currentJob.id));
+      dispatch(setCurrentJob(null));
+      toast.success("Review job canceled.");
+      router.push("/reviews");
+    } catch (requestError) {
+      toast.error(getApiErrorMessage(requestError, "Unable to cancel job."));
+    } finally {
+      setIsCanceling(false);
+      dispatch(setJobMutating(false));
+    }
+  }
 
   return (
     <>
-      <header className="flex flex-col gap-4 border-b border-border pb-5 md:flex-row md:items-end md:justify-between">
-        <div>
-          <Button asChild className="mb-4" size="sm" variant="ghost">
-            <Link href="/reviews">
-              <ArrowLeft aria-hidden="true" />
-              Reviews
-            </Link>
-          </Button>
-          <p className="text-xs font-medium uppercase text-muted-foreground">
-            Review execution
-          </p>
-          <h1 className="mt-2 text-3xl font-extrabold tracking-normal">
-            {currentJob?.repository_name ?? "Review Job"}
-          </h1>
-          <p className="mt-1 text-[15px] leading-6 text-muted-foreground">
-            Polling status every 4 seconds until terminal state.
-          </p>
-        </div>
+      <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+        <Button asChild size="sm" variant="ghost">
+          <Link href="/reviews">
+            <ArrowLeft aria-hidden="true" />
+            Reviews
+          </Link>
+        </Button>
         <div className="flex flex-wrap gap-2">
-          {currentJob?.status === "COMPLETED" ? (
-            <>
-              <Button asChild variant="secondary">
-                <Link href={`/reviews/${jobId}/report`}>Report</Link>
-              </Button>
-              <Button asChild variant="secondary">
-                <Link href={`/reviews/${jobId}/issues`}>Issues</Link>
-              </Button>
-            </>
+          {currentJob && !TERMINAL_STATUSES.has(currentJob.status) ? (
+            <Button
+              disabled={isMutating || isCanceling}
+              onClick={() => void handleCancelJob()}
+              variant="destructive"
+            >
+              <Trash2 aria-hidden="true" />
+              Cancel
+            </Button>
           ) : null}
-          <Button disabled={isLoading} onClick={() => void loadJob()}>
+          <Button
+            disabled={isLoading}
+            onClick={() => {
+              void loadJob();
+              void loadAiTrace();
+            }}
+          >
             <RefreshCw aria-hidden="true" />
             Refresh
           </Button>
         </div>
-      </header>
+      </div>
+
+      <ReviewWorkspaceTabs activeTab="overview" jobId={jobId} />
 
       {isLoading && !currentJob ? <ReviewJobSkeleton /> : null}
 
@@ -121,12 +200,29 @@ export default function ReviewJobDetailPage() {
         </Card>
       ) : null}
 
-      {currentJob ? <ReviewJobDetail job={currentJob} /> : null}
+      {currentJob ? (
+        <ReviewJobDetail
+          aiTrace={aiTrace}
+          aiTraceError={aiTraceError}
+          job={currentJob}
+          nowMs={nowMs}
+        />
+      ) : null}
     </>
   );
 }
 
-function ReviewJobDetail({ job }: { job: ReviewJob }) {
+function ReviewJobDetail({
+  aiTrace,
+  aiTraceError,
+  job,
+  nowMs,
+}: {
+  aiTrace: AITrace | null;
+  aiTraceError: string | null;
+  job: ReviewJob;
+  nowMs: number;
+}) {
   return (
     <>
       <section className="grid gap-4 md:grid-cols-3">
@@ -137,7 +233,7 @@ function ReviewJobDetail({ job }: { job: ReviewJob }) {
         />
         <InfoCard
           label="Duration"
-          value={formatDuration(job.started_at, job.completed_at)}
+          value={formatDuration(job.started_at, job.completed_at, nowMs)}
         />
       </section>
 
@@ -181,8 +277,255 @@ function ReviewJobDetail({ job }: { job: ReviewJob }) {
         </CardContent>
       </Card>
 
+      <AITracePanel error={aiTraceError} trace={aiTrace} />
     </>
   );
+}
+
+function AITracePanel({
+  error,
+  trace,
+}: {
+  error: string | null;
+  trace: AITrace | null;
+}) {
+  const latestStatus = trace?.latest_tool_status ?? "waiting";
+  const isIncompleteAiReport =
+    trace?.report_model === "langchain-react-agent-v1" &&
+    !trace.coverage.generated_report_by_ai;
+  const latestStatusTone = getToolStatusTone(latestStatus);
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+          <div>
+            <CardTitle>AI Live Trace</CardTitle>
+            <CardDescription>
+              Pipeline coverage, agent tool calls, generated issues, and report handoff.
+            </CardDescription>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            {trace ? (
+              <Button asChild size="sm" variant="secondary">
+                <a href="#ai-trace-events">Events</a>
+              </Button>
+            ) : null}
+            <span
+              className={[
+                "inline-flex h-9 items-center gap-2 rounded-md border px-3 text-sm font-semibold",
+                latestStatusTone.container,
+              ].join(" ")}
+            >
+              {latestStatus === "error" ? (
+                <AlertTriangle aria-hidden="true" />
+              ) : latestStatus === "rejected" ? (
+                <AlertTriangle aria-hidden="true" />
+              ) : trace?.has_ai_started ? (
+                <CheckCircle2 aria-hidden="true" />
+              ) : (
+                <Activity aria-hidden="true" />
+              )}
+              {trace?.has_ai_started ? latestStatus : "waiting"}
+            </span>
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent className="grid gap-5">
+        {error ? <p className="text-sm text-destructive">{error}</p> : null}
+        {isIncompleteAiReport ? (
+          <div className="rounded-md border border-amber-400/40 bg-amber-400/10 p-4 text-[15px] leading-6 text-amber-800 dark:text-amber-100">
+            The AI report exists, but the review trace is incomplete. This run should
+            be treated as incomplete.
+          </div>
+        ) : null}
+
+        <section className="grid gap-3 md:grid-cols-3">
+          <TraceMetric label="Tool calls" value={trace?.tool_call_count ?? 0} />
+          <TraceMetric label="AI issues" value={trace?.ai_issue_count ?? 0} />
+          <TraceMetric label="Static issues" value={trace?.static_issue_count ?? 0} />
+        </section>
+
+        {trace ? (
+          <>
+            <TraceTokenSummary trace={trace} />
+            <StageTimeline stages={trace.stages} />
+          </>
+        ) : null}
+
+        {trace ? (
+          <section className="grid gap-3" id="ai-trace-events">
+            <div className="flex items-center gap-2">
+              <Activity aria-hidden="true" className="size-4 text-muted-foreground" />
+              <h2 className="text-sm font-semibold uppercase text-muted-foreground">
+                Event stream
+              </h2>
+            </div>
+            <div className="max-h-[calc(100vh-14rem)] overflow-y-auto pr-2">
+              <TraceEventList events={trace.events} isCompact />
+            </div>
+          </section>
+        ) : null}
+      </CardContent>
+    </Card>
+  );
+}
+
+function StageTimeline({ stages }: { stages: AITraceStage[] }) {
+  const visibleStages = stages.filter(
+    (stage) =>
+      stage.status !== "pending" && stage.key !== "ai" && stage.key !== "report",
+  );
+
+  if (visibleStages.length === 0) {
+    return null;
+  }
+
+  return (
+    <section className="grid gap-3">
+      <div className="flex items-center gap-2">
+        <Activity aria-hidden="true" className="size-4 text-muted-foreground" />
+        <h2 className="text-sm font-semibold uppercase text-muted-foreground">
+          Execution timeline
+        </h2>
+      </div>
+      <ol className="grid gap-3 lg:grid-cols-5">
+        {visibleStages.map((stage) => (
+          <StageItem key={stage.key} stage={stage} />
+        ))}
+      </ol>
+    </section>
+  );
+}
+
+function StageItem({ stage }: { stage: AITraceStage }) {
+  const Icon = getStageIcon(stage);
+  const statusClass = getStageStatusClass(stage.status);
+
+  return (
+    <li className="min-w-0 rounded-md border border-border bg-muted/30 p-3">
+      <div className="flex items-center justify-between gap-2">
+        <span className={`inline-flex size-8 items-center justify-center rounded-md ${statusClass.icon}`}>
+          <Icon aria-hidden="true" className="size-4" />
+        </span>
+        <span className={`rounded-md px-2 py-1 text-[11px] font-semibold uppercase ${statusClass.badge}`}>
+          {stage.status}
+        </span>
+      </div>
+      <p className="mt-3 text-sm font-semibold text-foreground">{stage.label}</p>
+      <p className="mt-1 min-h-10 text-xs leading-5 text-muted-foreground">
+        {stage.detail}
+      </p>
+      <ProgressBar value={stage.progress_percent} tone={statusClass.bar} />
+      {stage.total > 0 ? (
+        <p className="mt-2 text-xs text-muted-foreground">
+          {stage.current}/{stage.total}
+        </p>
+      ) : null}
+    </li>
+  );
+}
+
+function ProgressBar({ tone, value }: { tone: string; value: number }) {
+  return (
+    <div className="mt-3 h-2 overflow-hidden rounded-md bg-background">
+      <div
+        className={`h-full rounded-md ${tone}`}
+        style={{ width: `${Math.max(0, Math.min(100, value))}%` }}
+      />
+    </div>
+  );
+}
+
+function TraceMetric({ label, value }: { label: string; value: number }) {
+  return (
+    <div className="rounded-md border border-border bg-muted/40 p-4">
+      <p className="text-xs font-medium uppercase text-muted-foreground">{label}</p>
+      <p className="mt-2 text-2xl font-semibold tracking-normal">{value}</p>
+    </div>
+  );
+}
+
+function getStageIcon(stage: AITraceStage) {
+  if (stage.key === "clone") {
+    return GitBranch;
+  }
+  if (stage.key === "structure" || stage.key === "chunks") {
+    return FileCode2;
+  }
+  if (stage.key === "static") {
+    return SearchCheck;
+  }
+  if (stage.key === "ai") {
+    return Bot;
+  }
+  if (stage.status === "completed") {
+    return CheckCircle2;
+  }
+  return Circle;
+}
+
+function getStageStatusClass(status: string) {
+  if (status === "completed") {
+    return {
+      badge: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-200",
+      bar: "bg-emerald-400",
+      icon: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-200",
+    };
+  }
+  if (status === "running") {
+    return {
+      badge: "bg-sky-500/10 text-sky-700 dark:text-sky-200",
+      bar: "bg-sky-400",
+      icon: "bg-sky-500/10 text-sky-700 dark:text-sky-200",
+    };
+  }
+  if (status === "warning") {
+    return {
+      badge: "bg-amber-400/10 text-amber-800 dark:text-amber-100",
+      bar: "bg-amber-300",
+      icon: "bg-amber-400/10 text-amber-800 dark:text-amber-100",
+    };
+  }
+  if (status === "failed") {
+    return {
+      badge: "bg-destructive/10 text-destructive",
+      bar: "bg-destructive",
+      icon: "bg-destructive/10 text-destructive",
+    };
+  }
+  return {
+    badge: "bg-muted text-muted-foreground",
+    bar: "bg-muted-foreground",
+    icon: "bg-background text-muted-foreground",
+  };
+}
+
+function getToolStatusTone(status: string) {
+  if (status === "error") {
+    return {
+      badge: "bg-destructive/10 text-destructive",
+      container: "border-destructive/40 bg-destructive/10 text-destructive",
+    };
+  }
+  if (status === "rejected" || status === "warning") {
+    return {
+      badge: "bg-amber-400/10 text-amber-800 dark:text-amber-100",
+      container:
+        "border-amber-400/40 bg-amber-400/10 text-amber-800 dark:text-amber-100",
+    };
+  }
+  if (status === "ok" || status === "created") {
+    return {
+      badge: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-200",
+      container: "border-border bg-muted text-muted-foreground",
+    };
+  }
+
+  return {
+    badge: "bg-muted text-muted-foreground",
+    container: "border-border bg-muted text-muted-foreground",
+  };
 }
 
 function InfoCard({ label, value }: { label: string; value: string }) {
@@ -245,18 +588,19 @@ function formatCommitSha(value: string | null) {
   return value ? value.slice(0, 7) : "Not available";
 }
 
-function formatDuration(startedAt: string | null, completedAt: string | null) {
+function formatDuration(
+  startedAt: string | null,
+  completedAt: string | null,
+  nowMs: number,
+) {
   if (!startedAt) {
     return "Not started";
   }
 
-  if (!completedAt) {
-    return "In progress";
-  }
-
+  const endedAtMs = completedAt ? new Date(completedAt).getTime() : nowMs;
   const durationSeconds = Math.max(
     0,
-    Math.round((new Date(completedAt).getTime() - new Date(startedAt).getTime()) / 1000),
+    Math.floor((endedAtMs - new Date(startedAt).getTime()) / 1000),
   );
 
   if (durationSeconds < 60) {
@@ -265,9 +609,16 @@ function formatDuration(startedAt: string | null, completedAt: string | null) {
 
   const minutes = Math.floor(durationSeconds / 60);
   const seconds = durationSeconds % 60;
-  return seconds === 0 ? `${minutes}m` : `${minutes}m ${seconds}s`;
+  if (minutes < 60) {
+    return seconds === 0 ? `${minutes}m` : `${minutes}m ${seconds}s`;
+  }
+
+  const hours = Math.floor(minutes / 60);
+  const remainingMinutes = minutes % 60;
+  return `${hours}h ${remainingMinutes}m ${seconds}s`;
 }
 
 function isStaticAnalysisEnabled(options: Record<string, unknown> | null) {
   return options?.run_static_analysis !== false;
 }
+

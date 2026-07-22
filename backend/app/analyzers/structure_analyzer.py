@@ -1,10 +1,10 @@
 """Project structure, language, framework, and file tree analysis."""
 
+import json
+import tomllib
 from collections import Counter
 from dataclasses import dataclass
-import json
 from pathlib import Path
-import tomllib
 
 from app.analyzers.file_filter import to_relative_posix_path
 
@@ -16,6 +16,12 @@ LANGUAGE_BY_EXTENSION = {
     ".py": "python",
     ".ts": "typescript",
     ".tsx": "typescript",
+    ".md": "markdown",
+    ".markdown": "markdown",
+    ".json": "json",
+    ".toml": "toml",
+    ".yaml": "yaml",
+    ".yml": "yaml",
 }
 
 

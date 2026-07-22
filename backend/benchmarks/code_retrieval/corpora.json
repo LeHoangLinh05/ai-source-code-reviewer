@@ -1,0 +1,22 @@
+{
+  "corpora": [
+    {
+      "id": "repoguard",
+      "name": "RepoGuard AI",
+      "url": "https://github.com/LeHoangLinh05/ai-source-code-reviewer.git",
+      "commit_sha": "6f8b8b1f166870dc2321b82f6ca287711e28141f"
+    },
+    {
+      "id": "httpx",
+      "name": "HTTPX",
+      "url": "https://github.com/encode/httpx.git",
+      "commit_sha": "b5addb64f0161ff6bfe94c124ef76f6a1fba5254"
+    },
+    {
+      "id": "nestjs",
+      "name": "NestJS",
+      "url": "https://github.com/nestjs/nest.git",
+      "commit_sha": "ead02d3f3fa2b36ecdd8c6b98ed767cd38afc1a6"
+    }
+  ]
+}

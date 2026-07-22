@@ -1,10 +1,15 @@
-"""Tests for temporary static report scoring."""
+"""Tests for static report scoring."""
 
 from uuid import uuid4
 
 from app.models.review_issue import IssueCategory, IssueSeverity, IssueSource
 from app.schemas.normalized_issue import NormalizedIssue
-from app.services.report_generation_service import build_static_report, calculate_score
+from app.services.report_generation_service import (
+    build_static_report,
+    build_top_risky_files,
+    calculate_report_scores,
+    calculate_score,
+)
 
 
 def test_calculate_score_uses_weighted_severity_penalties() -> None:
@@ -13,7 +18,23 @@ def test_calculate_score_uses_weighted_severity_penalties() -> None:
         _issue(IssueSeverity.LOW, IssueCategory.STYLE, "b.py"),
     ]
 
-    assert calculate_score(issues) == 6.7
+    assert calculate_score(issues) == 7.2
+
+
+def test_calculate_report_scores_uses_all_persisted_issue_categories() -> None:
+    issues = [
+        _issue(IssueSeverity.CRITICAL, IssueCategory.SECURITY, "security.py"),
+        _issue(IssueSeverity.HIGH, IssueCategory.BUG, "bug.py"),
+        _issue(IssueSeverity.LOW, IssueCategory.REQUIREMENT, "requirements.py"),
+        _issue(IssueSeverity.LOW, IssueCategory.PERFORMANCE, "perf.py"),
+    ]
+
+    assert calculate_report_scores(issues) == {
+        "security_score": 7.4,
+        "maintainability_score": 8.2,
+        "performance_score": 9.7,
+        "overall_score": 5.7,
+    }
 
 
 def test_build_static_report_counts_scores_and_risky_files() -> None:
@@ -35,10 +56,39 @@ def test_build_static_report_counts_scores_and_risky_files() -> None:
     assert report.total_files_analyzed == 4
     assert report.critical_count == 1
     assert report.high_count == 1
-    assert report.overall_score == 4.7
-    assert report.security_score == 7.0
+    assert report.overall_score == 5.9
+    assert report.security_score == 7.4
     assert report.top_risky_files is not None
     assert report.top_risky_files[0]["path"] == "a.py"
+
+
+def test_top_risky_files_prioritize_p0_then_categories() -> None:
+    issues = [
+        _issue(IssueSeverity.HIGH, IssueCategory.MAINTAINABILITY, "maint.py"),
+        _issue(IssueSeverity.HIGH, IssueCategory.PERFORMANCE, "perf.py"),
+        _issue(IssueSeverity.HIGH, IssueCategory.BUG, "bug.py"),
+        _issue(IssueSeverity.HIGH, IssueCategory.SECURITY, "security.py"),
+        NormalizedIssue(
+            file_path="requirements.py",
+            line_start=1,
+            line_end=1,
+            severity=IssueSeverity.CRITICAL,
+            category=IssueCategory.REQUIREMENT,
+            title="Missing required behavior",
+            description="Missing required behavior",
+            source=IssueSource.KB,
+            confidence=0.9,
+            raw_output={"priority": "P0"},
+        ),
+    ]
+
+    assert [item["path"] for item in build_top_risky_files(issues)] == [
+        "requirements.py",
+        "security.py",
+        "bug.py",
+        "perf.py",
+        "maint.py",
+    ]
 
 
 def _issue(

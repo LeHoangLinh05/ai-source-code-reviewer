@@ -3,14 +3,18 @@
 import {
   AlertTriangle,
   CirclePlay,
+  Clock,
+  FileWarning,
   GitFork,
   RefreshCw,
   ShieldCheck,
-  Timer,
+  type LucideIcon,
 } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 
+import { StatusBadge } from "@/components/reviews/review-badges";
+import { ScoreTrack } from "@/components/reviews/score-track";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -24,36 +28,25 @@ import { getRepositories } from "@/lib/repositories";
 import { getReport } from "@/lib/reports";
 import { getReviewJobs } from "@/lib/review-jobs";
 import type { Repository } from "@/types/repository";
-import type { ReviewReport, TopRiskyFile } from "@/types/report";
+import type { ReviewReport } from "@/types/report";
 import type { ReviewJob, ReviewJobStatus } from "@/types/review-job";
 
 const ACTIVE_STATUSES = new Set<ReviewJobStatus>([
   "PENDING",
   "CLONING",
   "ANALYZING_STRUCTURE",
+  "GENERATING_SUMMARY",
   "RUNNING_STATIC_ANALYSIS",
   "CHUNKING_CODE",
   "AI_REVIEWING",
   "GENERATING_REPORT",
 ]);
 
-const STATUS_ORDER: ReviewJobStatus[] = [
-  "PENDING",
-  "CLONING",
-  "ANALYZING_STRUCTURE",
-  "RUNNING_STATIC_ANALYSIS",
-  "CHUNKING_CODE",
-  "AI_REVIEWING",
-  "GENERATING_REPORT",
-  "COMPLETED",
-  "FAILED",
-];
-
 const SEVERITY_COLORS = {
-  critical: "#f43f5e",
-  high: "#fb923c",
-  medium: "#facc15",
-  low: "#60a5fa",
+  critical: "#e11d48",
+  high: "#f97316",
+  medium: "#f59e0b",
+  low: "#38bdf8",
   info: "#94a3b8",
 };
 
@@ -82,8 +75,9 @@ export default function DashboardPage() {
         getRepositories(),
         getReviewJobs(),
       ]);
-      const completedJobs = jobData
+      const completedJobs = [...jobData]
         .filter((job) => job.status === "COMPLETED")
+        .sort(compareReviewJobsByLatest)
         .slice(0, 12);
       const reportResults = await Promise.allSettled(
         completedJobs.map((job) => getReport(job.id)),
@@ -113,52 +107,63 @@ export default function DashboardPage() {
   const activeReviewCount = jobs.filter((job) =>
     ACTIVE_STATUSES.has(job.status),
   ).length;
-  const criticalIssueCount = sumReports(reports, "critical_count");
-  const totalIssueCount = sumReports(reports, "total_issues");
-  const averageRunTime = getAverageRunTime(jobs);
-  const overallScore = getAverageScore(reports, "overall_score");
-  const severityData = buildSeverityData(reports);
-  const statusData = buildStatusData(jobs);
-  const platformData = buildPlatformData(repositories);
-  const riskyFiles = buildRiskyFiles(reports);
-  const recentJobs = useMemo(() => jobs.slice(0, 6), [jobs]);
   const completedReviewCount = jobs.filter(
     (job) => job.status === "COMPLETED",
   ).length;
-  const failedReviewCount = jobs.filter((job) => job.status === "FAILED").length;
+  const criticalIssueCount = sumReports(reports, "critical_count");
+  const highIssueCount = sumReports(reports, "high_count");
+  const totalIssueCount = sumReports(reports, "total_issues");
+  const overallScore = getAverageScore(reports, "overall_score");
+  const severityData = buildSeverityData(reports);
+  const jobStateData = buildJobStateData(jobs);
+  const platformData = buildPlatformData(repositories);
+  const riskHotspots = buildRiskHotspots(reports);
+  const recentJobs = useMemo(
+    () => [...jobs].sort(compareReviewJobsByLatest).slice(0, 6),
+    [jobs],
+  );
+  const averageRunTime = getAverageRunTime(jobs);
+  const latestCompletedJob = useMemo(
+    () => getLatestCompletedReviewJob(jobs),
+    [jobs],
+  );
+  const summary = getDashboardSummary({
+    activeReviewCount,
+    completedReviewCount,
+    criticalIssueCount,
+    highIssueCount,
+    repositoryCount: repositories.length,
+    reportCount: reports.length,
+    totalIssueCount,
+  });
+  const nextStep = getNextStep({
+    activeReviewCount,
+    completedReviewCount,
+    criticalIssueCount,
+    highIssueCount,
+    latestCompletedJobId: latestCompletedJob?.id ?? null,
+    repositoryCount: repositories.length,
+    totalIssueCount,
+  });
 
   return (
     <>
-      <header className="flex flex-col gap-4 border-b border-border pb-5 md:flex-row md:items-end md:justify-between">
-        <div>
-          <p className="text-xs font-medium uppercase text-muted-foreground">
-            AI source review workspace
-          </p>
-          <h1 className="mt-2 text-3xl font-extrabold tracking-normal">
-            Dashboard
-          </h1>
-          <p className="mt-1 text-[15px] leading-6 text-muted-foreground">
-            Security posture, review throughput, and repository coverage across
-            the current workspace.
-          </p>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <Button
-            disabled={isLoading}
-            onClick={() => void loadDashboard()}
-            variant="secondary"
-          >
-            <RefreshCw aria-hidden="true" />
-            Refresh
-          </Button>
-          <Button asChild>
-            <Link href="/repositories">
-              <GitFork aria-hidden="true" />
-              Add Repository
-            </Link>
-          </Button>
-        </div>
-      </header>
+      <div className="flex flex-wrap justify-end gap-2">
+        <Button
+          disabled={isLoading}
+          onClick={() => void loadDashboard()}
+          variant="secondary"
+        >
+          <RefreshCw aria-hidden="true" />
+          Refresh
+        </Button>
+        <Button asChild>
+          <Link href="/repositories">
+            <GitFork aria-hidden="true" />
+            Add Repository
+          </Link>
+        </Button>
+      </div>
 
       {error ? (
         <Card>
@@ -168,96 +173,80 @@ export default function DashboardPage() {
         </Card>
       ) : null}
 
-      <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
-        <MetricCard
-          icon={GitFork}
+      <section className="grid gap-4 2xl:grid-cols-[minmax(0,1.15fr)_minmax(360px,0.85fr)]">
+        <DashboardSummaryCard
           isLoading={isLoading}
-          label="Repositories"
-          value={repositories.length.toString()}
+          metrics={[
+            {
+              icon: GitFork,
+              label: "Repositories",
+              value: repositories.length.toString(),
+            },
+            {
+              icon: CirclePlay,
+              label: "Running",
+              value: activeReviewCount.toString(),
+            },
+            {
+              icon: ShieldCheck,
+              label: "Completed",
+              value: completedReviewCount.toString(),
+            },
+            {
+              icon: AlertTriangle,
+              label: "Findings",
+              value: totalIssueCount.toString(),
+            },
+            {
+              icon: Clock,
+              label: "Avg. run time",
+              value: formatDuration(averageRunTime),
+            },
+          ]}
+          summary={summary}
         />
-        <MetricCard
-          icon={CirclePlay}
-          isLoading={isLoading}
-          label="Active reviews"
-          value={activeReviewCount.toString()}
-        />
-        <MetricCard
-          icon={ShieldCheck}
-          isLoading={isLoading}
-          label="Completed"
-          value={completedReviewCount.toString()}
-        />
-        <MetricCard
-          icon={AlertTriangle}
-          isLoading={isLoading}
-          label="Critical issues"
-          value={criticalIssueCount.toString()}
-        />
-        <MetricCard
-          icon={Timer}
-          isLoading={isLoading}
-          label="Avg. run time"
-          value={averageRunTime}
-        />
+        <NextStepCard isLoading={isLoading} nextStep={nextStep} />
       </section>
 
-      <section className="grid gap-4 xl:grid-cols-[1.25fr_0.75fr]">
+      <section>
         <Card>
           <CardHeader>
-            <CardTitle>Security Posture</CardTitle>
+            <CardTitle>Latest Review Results</CardTitle>
             <CardDescription>
-              Average score and severity mix from the latest completed reports.
+              Based on the latest completed review reports.
             </CardDescription>
           </CardHeader>
-          <CardContent className="grid gap-6 lg:grid-cols-[260px_1fr] lg:items-center">
-            <ScoreGauge value={overallScore} />
+          <CardContent className="grid gap-6 lg:grid-cols-[minmax(240px,320px)_1fr]">
+            <div className="grid gap-4 rounded-md border border-border bg-background p-4">
+              <ScoreTrack
+                caption={
+                  reports.length === 0
+                    ? "No completed reports loaded"
+                    : `${reports.length} recent reports loaded`
+                }
+                label="Overall score"
+                showNoFindings={reports.length > 0 && totalIssueCount === 0}
+                value={overallScore}
+              />
+              <div className="grid grid-cols-2 gap-3 border-t border-border pt-4">
+                <MiniStat label="Findings" value={totalIssueCount.toString()} />
+                <MiniStat
+                  label="Critical"
+                  value={criticalIssueCount.toString()}
+                />
+              </div>
+            </div>
             <SeverityBars data={severityData} totalIssues={totalIssueCount} />
           </CardContent>
         </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle>Review Status</CardTitle>
-            <CardDescription>
-              Worker queue distribution across active and terminal states.
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <StatusBars data={statusData} />
-          </CardContent>
-        </Card>
       </section>
 
-      <section className="grid gap-4 xl:grid-cols-[0.85fr_1.15fr]">
-        <Card>
-          <CardHeader>
-            <CardTitle>Repository Coverage</CardTitle>
-            <CardDescription>
-              Connected source platforms and report coverage.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="grid gap-5">
-            <PlatformBars data={platformData} />
-            <div className="rounded-md border border-border bg-background p-4">
-              <p className="text-sm font-medium uppercase text-muted-foreground">
-                Report coverage
-              </p>
-              <p className="mt-2 text-3xl font-extrabold">
-                {reports.length}/{Math.max(completedReviewCount, 0)}
-              </p>
-              <p className="mt-1 text-[15px] text-muted-foreground">
-                Completed reviews with a generated report loaded into the
-                dashboard.
-              </p>
-            </div>
-          </CardContent>
-        </Card>
-
+      <section>
         <Card className="overflow-hidden">
           <CardHeader>
-            <CardTitle>Recent Review Jobs</CardTitle>
+            <CardTitle>Recent Reviews</CardTitle>
             <CardDescription>
-              Latest worker activity with quick access to job details.
+              Open a review to see the report, issues, and execution details.
             </CardDescription>
           </CardHeader>
           <CardContent className="p-0">
@@ -266,28 +255,54 @@ export default function DashboardPage() {
         </Card>
       </section>
 
-      <section className="grid gap-4 xl:grid-cols-[1fr_1fr]">
+      <section className="grid gap-4 2xl:grid-cols-[0.8fr_1.1fr_1.1fr]">
         <Card>
           <CardHeader>
-            <CardTitle>Risk Hotspots</CardTitle>
+            <CardTitle>Review Jobs</CardTitle>
             <CardDescription>
-              Files appearing most often in recent reports.
+              A simple split of waiting, running, completed, and failed jobs.
             </CardDescription>
           </CardHeader>
           <CardContent>
-            <RiskyFiles files={riskyFiles} />
+            <StatusBars data={jobStateData} />
           </CardContent>
         </Card>
 
         <Card>
           <CardHeader>
-            <CardTitle>Pipeline Snapshot</CardTitle>
+            <CardTitle>Repositories</CardTitle>
             <CardDescription>
-              Current worker stages expected in the realtime SSE tracker.
+              Connected sources and completed reviews with reports.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="grid gap-5 lg:grid-cols-[1fr_260px]">
+            <PlatformBars data={platformData} />
+            <div className="rounded-md border border-border bg-background p-4">
+              <p className="text-sm font-medium uppercase text-muted-foreground">
+                Reports ready
+              </p>
+              <p className="mt-2 text-3xl font-extrabold tracking-normal">
+                {formatReportReadinessValue(reports.length, completedReviewCount)}
+              </p>
+              <p className="mt-1 text-[15px] text-muted-foreground">
+                {formatReportReadinessDescription(
+                  reports.length,
+                  completedReviewCount,
+                )}
+              </p>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle>Risk Hotspots</CardTitle>
+            <CardDescription>
+              Files most frequently flagged in recent completed reports.
             </CardDescription>
           </CardHeader>
           <CardContent>
-            <PipelineSnapshot failedCount={failedReviewCount} jobs={jobs} />
+            <RiskHotspotsList hotspots={riskHotspots} />
           </CardContent>
         </Card>
       </section>
@@ -295,80 +310,153 @@ export default function DashboardPage() {
   );
 }
 
-function MetricCard({
-  icon: Icon,
-  isLoading,
-  label,
-  value,
-}: {
-  icon: typeof GitFork;
-  isLoading: boolean;
+type DashboardMetric = {
+  icon: LucideIcon;
   label: string;
   value: string;
+};
+
+type DashboardSummary = {
+  description: string;
+  icon: LucideIcon;
+  title: string;
+};
+
+type NextStep = {
+  description: string;
+  href: string;
+  label: string;
+  title: string;
+};
+
+function DashboardSummaryCard({
+  isLoading,
+  metrics,
+  summary,
+}: {
+  isLoading: boolean;
+  metrics: DashboardMetric[];
+  summary: DashboardSummary;
 }) {
+  const Icon = summary.icon;
+
   return (
     <Card>
-      <CardContent className="flex items-center justify-between gap-4 p-5">
-        <div>
-          <p className="text-sm font-medium uppercase text-muted-foreground">
-            {label}
-          </p>
-          {isLoading ? (
-            <div className="mt-3 h-9 w-20 animate-pulse rounded bg-muted" />
-          ) : (
-            <p className="mt-2 text-4xl font-extrabold tracking-normal">
-              {value}
+      <CardContent className="grid gap-6 p-6">
+        <div className="flex gap-4">
+          <span className="flex size-12 shrink-0 items-center justify-center rounded-md border border-border bg-background text-muted-foreground">
+            <Icon aria-hidden="true" className="size-5" />
+          </span>
+          <div className="min-w-0">
+            {isLoading ? (
+              <div className="h-8 w-64 max-w-full animate-pulse rounded bg-muted" />
+            ) : (
+              <h2 className="text-2xl font-extrabold tracking-normal">
+                {summary.title}
+              </h2>
+            )}
+            <p className="mt-2 text-[15px] leading-6 text-muted-foreground">
+              {isLoading ? "Loading the latest workspace data." : summary.description}
             </p>
-          )}
+          </div>
         </div>
-        <span className="flex size-11 items-center justify-center rounded-md border border-border bg-background text-muted-foreground">
-          <Icon aria-hidden="true" className="size-5" />
-        </span>
+
+        <div className="grid overflow-hidden rounded-md border border-border bg-border [grid-template-columns:repeat(auto-fit,minmax(150px,1fr))]">
+          {metrics.map((metric) => (
+            <SummaryMetric
+              icon={metric.icon}
+              isLoading={isLoading}
+              key={metric.label}
+              label={metric.label}
+              value={metric.value}
+            />
+          ))}
+        </div>
       </CardContent>
     </Card>
   );
 }
 
-function ScoreGauge({ value }: { value: number | null }) {
-  const score = value ?? 0;
-  const percentage = Math.max(0, Math.min(100, score * 10));
-  const radius = 46;
-  const circumference = 2 * Math.PI * radius;
-  const strokeDashoffset = circumference - (percentage / 100) * circumference;
-  const color = score < 5 ? "#f43f5e" : score < 8 ? "#f59e0b" : "#10b981";
-
+function SummaryMetric({
+  icon: Icon,
+  isLoading,
+  label,
+  value,
+}: {
+  icon: LucideIcon;
+  isLoading: boolean;
+  label: string;
+  value: string;
+}) {
   return (
-    <div className="flex items-center gap-5">
-      <svg className="size-36 -rotate-90" viewBox="0 0 120 120">
-        <circle
-          cx="60"
-          cy="60"
-          fill="none"
-          r={radius}
-          stroke="hsl(var(--muted))"
-          strokeWidth="12"
-        />
-        <circle
-          cx="60"
-          cy="60"
-          fill="none"
-          r={radius}
-          stroke={color}
-          strokeDasharray={circumference}
-          strokeDashoffset={strokeDashoffset}
-          strokeLinecap="round"
-          strokeWidth="12"
-        />
-      </svg>
-      <div>
-        <p className="text-sm font-medium uppercase text-muted-foreground">
-          Overall score
+    <div className="grid min-h-28 gap-3 bg-card p-4">
+      <div className="flex items-start justify-between gap-3">
+        <p className="text-xs font-medium uppercase text-muted-foreground">
+          {label}
         </p>
-        <p className="mt-1 text-4xl font-extrabold tracking-normal">
-          {value === null ? "--" : score.toFixed(1)}
-        </p>
-        <p className="text-[15px] text-muted-foreground">/ 10.0</p>
+        <span className="flex size-9 shrink-0 items-center justify-center rounded-md border border-border bg-background text-muted-foreground">
+          <Icon aria-hidden="true" className="size-4" />
+        </span>
       </div>
+      <div className="min-w-0">
+        {isLoading ? (
+          <div className="mt-3 h-8 w-20 animate-pulse rounded bg-muted" />
+        ) : (
+          <p className="whitespace-nowrap text-3xl font-extrabold tracking-normal tabular-nums">
+            {value}
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function NextStepCard({
+  isLoading,
+  nextStep,
+}: {
+  isLoading: boolean;
+  nextStep: NextStep;
+}) {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Next Step</CardTitle>
+        <CardDescription>The most useful place to go from here.</CardDescription>
+      </CardHeader>
+      <CardContent className="grid gap-4">
+        {isLoading ? (
+          <>
+            <div className="h-6 w-52 animate-pulse rounded bg-muted" />
+            <div className="h-16 animate-pulse rounded bg-muted" />
+          </>
+        ) : (
+          <>
+            <div>
+              <h2 className="text-xl font-semibold tracking-normal">
+                {nextStep.title}
+              </h2>
+              <p className="mt-2 text-[15px] leading-6 text-muted-foreground">
+                {nextStep.description}
+              </p>
+            </div>
+            <Button asChild>
+              <Link href={nextStep.href}>{nextStep.label}</Link>
+            </Button>
+          </>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function MiniStat({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <p className="text-xs font-medium uppercase text-muted-foreground">
+        {label}
+      </p>
+      <p className="mt-1 text-2xl font-extrabold tracking-normal">{value}</p>
     </div>
   );
 }
@@ -382,27 +470,43 @@ function SeverityBars({
 }) {
   const maxValue = Math.max(...data.map((item) => item.value), 1);
 
+  if (totalIssues === 0) {
+    return (
+      <p className="rounded-md border border-dashed border-border bg-background p-4 text-[15px] text-muted-foreground">
+        No findings in the latest review reports.
+      </p>
+    );
+  }
+
   return (
     <div className="grid gap-3">
-      <div className="flex items-end justify-between gap-4">
-        <div>
-          <p className="text-sm font-medium uppercase text-muted-foreground">
-            Issue distribution
-          </p>
-          <p className="mt-1 text-[15px] text-muted-foreground">
-            {totalIssues} findings across loaded reports
-          </p>
-        </div>
+      <SeverityStackedBar data={data} totalIssues={totalIssues} />
+      <div>
+        <p className="text-sm font-medium uppercase text-muted-foreground">
+          Findings by severity
+        </p>
+        <p className="mt-1 text-[15px] text-muted-foreground">
+          {totalIssues} findings across latest completed reports
+        </p>
       </div>
       {data.map((item) => (
         <div className="grid gap-2" key={item.label}>
           <div className="flex items-center justify-between gap-3">
-            <span className="capitalize text-[15px] text-muted-foreground">
+            <span className="flex items-center gap-2 capitalize text-[15px] text-muted-foreground">
+              <span
+                className="size-2.5 rounded-full"
+                style={{ backgroundColor: item.color }}
+              />
               {item.label}
             </span>
-            <span className="font-semibold">{item.value}</span>
+            <span className="font-semibold">
+              {item.value}
+              <span className="ml-2 text-xs font-normal text-muted-foreground">
+                {formatPercent(item.value, totalIssues)}
+              </span>
+            </span>
           </div>
-          <div className="h-3 overflow-hidden rounded bg-muted">
+          <div className="h-2.5 overflow-hidden rounded bg-muted">
             <div
               className="h-full rounded"
               style={{
@@ -417,10 +521,36 @@ function SeverityBars({
   );
 }
 
+function SeverityStackedBar({
+  data,
+  totalIssues,
+}: {
+  data: Array<{ color: string; label: string; value: number }>;
+  totalIssues: number;
+}) {
+  return (
+    <div className="flex h-3 overflow-hidden rounded-md bg-muted">
+      {data
+        .filter((item) => item.value > 0)
+        .map((item) => (
+          <div
+            aria-label={`${item.label}: ${item.value}`}
+            className="h-full"
+            key={item.label}
+            style={{
+              backgroundColor: item.color,
+              width: `${(item.value / totalIssues) * 100}%`,
+            }}
+          />
+        ))}
+    </div>
+  );
+}
+
 function StatusBars({
   data,
 }: {
-  data: Array<{ label: ReviewJobStatus; value: number }>;
+  data: Array<{ label: string; value: number }>;
 }) {
   const visibleData = data.filter((item) => item.value > 0);
   const maxValue = Math.max(...visibleData.map((item) => item.value), 1);
@@ -439,11 +569,11 @@ function StatusBars({
         <div className="grid gap-2" key={item.label}>
           <div className="flex items-center justify-between gap-3">
             <span className="text-[15px] text-muted-foreground">
-              {formatStatus(item.label)}
+              {item.label}
             </span>
             <span className="font-semibold">{item.value}</span>
           </div>
-          <div className="h-3 overflow-hidden rounded bg-muted">
+          <div className="h-2.5 overflow-hidden rounded bg-muted">
             <div
               className="h-full rounded bg-slate-300"
               style={{ width: `${(item.value / maxValue) * 100}%` }}
@@ -460,25 +590,82 @@ function PlatformBars({
 }: {
   data: Array<{ label: string; value: number }>;
 }) {
+  const total = data.reduce((sum, item) => sum + item.value, 0);
   const maxValue = Math.max(...data.map((item) => item.value), 1);
+
+  if (total === 0) {
+    return (
+      <p className="rounded-md border border-dashed border-border bg-background p-4 text-[15px] text-muted-foreground">
+        No repositories connected yet.
+      </p>
+    );
+  }
 
   return (
     <div className="grid gap-3">
-      {data.map((item) => (
-        <div className="grid gap-2" key={item.label}>
-          <div className="flex items-center justify-between">
-            <span className="capitalize text-[15px] text-muted-foreground">
-              {item.label}
+      {data
+        .filter((item) => item.value > 0)
+        .map((item) => (
+          <div className="grid gap-2" key={item.label}>
+            <div className="flex items-center justify-between">
+              <span className="capitalize text-[15px] text-muted-foreground">
+                {item.label}
+              </span>
+              <span className="font-semibold">
+                {item.value}
+                <span className="ml-2 text-xs font-normal text-muted-foreground">
+                  {formatPercent(item.value, total)}
+                </span>
+              </span>
+            </div>
+            <div className="h-2.5 overflow-hidden rounded bg-muted">
+              <div
+                className="h-full rounded bg-slate-300"
+                style={{ width: `${(item.value / maxValue) * 100}%` }}
+              />
+            </div>
+          </div>
+        ))}
+    </div>
+  );
+}
+
+type RiskHotspot = {
+  issueCount: number;
+  jobId: string;
+  path: string;
+};
+
+function RiskHotspotsList({ hotspots }: { hotspots: RiskHotspot[] }) {
+  if (hotspots.length === 0) {
+    return (
+      <p className="rounded-md border border-dashed border-border bg-background p-4 text-[15px] text-muted-foreground">
+        No risky files available from completed reports.
+      </p>
+    );
+  }
+
+  return (
+    <div className="grid gap-3">
+      {hotspots.map((hotspot, index) => (
+        <Link
+          className="grid gap-2 rounded-md border border-border bg-background p-3 transition-colors hover:bg-muted/35"
+          href={`/reviews/${hotspot.jobId}/issues?file_path=${encodeURIComponent(
+            hotspot.path,
+          )}`}
+          key={`${hotspot.jobId}:${hotspot.path}`}
+        >
+          <div className="flex items-start justify-between gap-3">
+            <p className="min-w-0 break-all text-sm font-semibold">
+              <span className="mr-2 text-muted-foreground">#{index + 1}</span>
+              {hotspot.path}
+            </p>
+            <span className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs font-semibold text-muted-foreground">
+              <FileWarning aria-hidden="true" className="size-3.5" />
+              {hotspot.issueCount}
             </span>
-            <span className="font-semibold">{item.value}</span>
           </div>
-          <div className="h-3 overflow-hidden rounded bg-muted">
-            <div
-              className="h-full rounded bg-slate-300"
-              style={{ width: `${(item.value / maxValue) * 100}%` }}
-            />
-          </div>
-        </div>
+        </Link>
       ))}
     </div>
   );
@@ -512,16 +699,14 @@ function RecentJobsTable({ jobs }: { jobs: ReviewJob[] }) {
             >
               <td className="px-5 py-4">
                 <Link
-                  className="font-semibold text-foreground hover:text-slate-300"
+                  className="font-semibold text-foreground hover:text-primary/80"
                   href={`/reviews/${job.id}`}
                 >
                   {job.repository_name ?? job.repository_id}
                 </Link>
               </td>
               <td className="px-5 py-4">
-                <span className="rounded-md border border-border bg-background px-2 py-1 text-xs font-semibold">
-                  {formatStatus(job.status)}
-                </span>
+                <StatusBadge status={job.status} />
               </td>
               <td className="px-5 py-4 text-muted-foreground">
                 {job.branch ?? "main"}
@@ -533,85 +718,6 @@ function RecentJobsTable({ jobs }: { jobs: ReviewJob[] }) {
           ))}
         </tbody>
       </table>
-    </div>
-  );
-}
-
-function RiskyFiles({ files }: { files: TopRiskyFile[] }) {
-  if (files.length === 0) {
-    return (
-      <p className="rounded-md border border-dashed border-border bg-background p-4 text-[15px] text-muted-foreground">
-        No risky files available until completed reports are generated.
-      </p>
-    );
-  }
-
-  return (
-    <div className="grid gap-3">
-      {files.map((file) => (
-        <div
-          className="rounded-md border border-border bg-background p-4"
-          key={file.path}
-        >
-          <div className="flex items-start justify-between gap-4">
-            <p className="break-all text-[15px] font-semibold">{file.path}</p>
-            <span className="rounded-md border border-border px-2 py-1 text-xs font-semibold">
-              {file.issue_count}
-            </span>
-          </div>
-          <p className="mt-2 text-sm capitalize text-muted-foreground">
-            Max severity: {file.max_severity ?? "unknown"}
-          </p>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function PipelineSnapshot({
-  failedCount,
-  jobs,
-}: {
-  failedCount: number;
-  jobs: ReviewJob[];
-}) {
-  const stages = [
-    {
-      label: "Queued",
-      value: jobs.filter((job) => job.status === "PENDING").length,
-    },
-    {
-      label: "Static analysis",
-      value: jobs.filter((job) => job.status === "RUNNING_STATIC_ANALYSIS")
-        .length,
-    },
-    {
-      label: "AI reviewing",
-      value: jobs.filter((job) => job.status === "AI_REVIEWING").length,
-    },
-    {
-      label: "Generating report",
-      value: jobs.filter((job) => job.status === "GENERATING_REPORT").length,
-    },
-    {
-      label: "Failed",
-      value: failedCount,
-    },
-  ];
-
-  return (
-    <div className="grid gap-3">
-      {stages.map((stage) => (
-        <div
-          className="flex items-center justify-between rounded-md border border-border bg-background px-4 py-3"
-          key={stage.label}
-        >
-          <span className="text-[15px] text-muted-foreground">
-            {stage.label}
-          </span>
-          <span className="font-semibold">{stage.value}</span>
-        </div>
-      ))}
     </div>
   );
 }
@@ -646,11 +752,27 @@ function buildSeverityData(reports: ReviewReport[]) {
   ];
 }
 
-function buildStatusData(jobs: ReviewJob[]) {
-  return STATUS_ORDER.map((status) => ({
-    label: status,
-    value: jobs.filter((job) => job.status === status).length,
-  }));
+function buildJobStateData(jobs: ReviewJob[]) {
+  return [
+    {
+      label: "Waiting",
+      value: jobs.filter((job) => job.status === "PENDING").length,
+    },
+    {
+      label: "Running",
+      value: jobs.filter(
+        (job) => ACTIVE_STATUSES.has(job.status) && job.status !== "PENDING",
+      ).length,
+    },
+    {
+      label: "Completed",
+      value: jobs.filter((job) => job.status === "COMPLETED").length,
+    },
+    {
+      label: "Failed",
+      value: jobs.filter((job) => job.status === "FAILED").length,
+    },
+  ];
 }
 
 function buildPlatformData(repositories: Repository[]) {
@@ -662,23 +784,22 @@ function buildPlatformData(repositories: Repository[]) {
   }));
 }
 
-function buildRiskyFiles(reports: ReviewReport[]) {
-  const fileMap = new Map<string, TopRiskyFile>();
-
-  for (const report of reports) {
-    for (const file of report.top_risky_files ?? []) {
-      const existingFile = fileMap.get(file.path);
-
-      fileMap.set(file.path, {
+function buildRiskHotspots(reports: ReviewReport[]): RiskHotspot[] {
+  return reports
+    .flatMap((report) =>
+      (report.top_risky_files ?? []).map((file) => ({
+        issueCount: file.issue_count,
+        jobId: report.job_id,
         path: file.path,
-        issue_count: (existingFile?.issue_count ?? 0) + file.issue_count,
-        max_severity: existingFile?.max_severity ?? file.max_severity,
-      });
-    }
-  }
+      })),
+    )
+    .sort((leftFile, rightFile) => {
+      if (rightFile.issueCount !== leftFile.issueCount) {
+        return rightFile.issueCount - leftFile.issueCount;
+      }
 
-  return Array.from(fileMap.values())
-    .sort((leftFile, rightFile) => rightFile.issue_count - leftFile.issue_count)
+      return leftFile.path.localeCompare(rightFile.path);
+    })
     .slice(0, 5);
 }
 
@@ -710,41 +831,6 @@ function getAverageScore(
   return scores.reduce((sum, score) => sum + score, 0) / scores.length;
 }
 
-function getAverageRunTime(jobs: ReviewJob[]) {
-  const durations = jobs.flatMap((job) => {
-    if (!job.started_at || !job.completed_at) {
-      return [];
-    }
-
-    const durationMs =
-      new Date(job.completed_at).getTime() - new Date(job.started_at).getTime();
-
-    return durationMs > 0 ? [durationMs] : [];
-  });
-
-  if (durations.length === 0) {
-    return "--";
-  }
-
-  const averageMs =
-    durations.reduce((sum, durationMs) => sum + durationMs, 0) / durations.length;
-
-  return formatDuration(averageMs);
-}
-
-function formatDuration(durationMs: number) {
-  const totalMinutes = Math.max(1, Math.round(durationMs / 60_000));
-
-  if (totalMinutes < 60) {
-    return `${totalMinutes}m`;
-  }
-
-  const hours = Math.floor(totalMinutes / 60);
-  const minutes = totalMinutes % 60;
-
-  return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
-}
-
 function formatDate(value: string) {
   return new Intl.DateTimeFormat("en", {
     dateStyle: "medium",
@@ -752,6 +838,221 @@ function formatDate(value: string) {
   }).format(new Date(value));
 }
 
-function formatStatus(status: ReviewJobStatus) {
-  return status.replaceAll("_", " ");
+function formatPercent(value: number, total: number) {
+  if (total <= 0) {
+    return "0%";
+  }
+
+  return `${Math.round((value / total) * 100)}%`;
+}
+
+function formatReportReadinessValue(
+  loadedReports: number,
+  completedReviews: number,
+) {
+  if (completedReviews === 0) {
+    return "No completed reviews";
+  }
+
+  return `${loadedReports}/${completedReviews}`;
+}
+
+function formatReportReadinessDescription(
+  loadedReports: number,
+  completedReviews: number,
+) {
+  if (completedReviews === 0) {
+    return "Reports appear here after reviews complete.";
+  }
+
+  const percentage = Math.round((loadedReports / completedReviews) * 100);
+  return `${percentage}% of completed reviews have reports available.`;
+}
+
+function compareReviewJobsByLatest(leftJob: ReviewJob, rightJob: ReviewJob) {
+  return getReviewJobTimestamp(rightJob) - getReviewJobTimestamp(leftJob);
+}
+
+function getReviewJobTimestamp(job: ReviewJob) {
+  return new Date(job.completed_at ?? job.created_at).getTime();
+}
+
+function getAverageRunTime(jobs: ReviewJob[]) {
+  const durations = jobs
+    .filter(
+      (job) =>
+        job.status === "COMPLETED" &&
+        job.started_at !== null &&
+        job.completed_at !== null,
+    )
+    .map((job) =>
+      Math.max(
+        0,
+        Math.round(
+          (new Date(job.completed_at ?? "").getTime() -
+            new Date(job.started_at ?? "").getTime()) /
+            1000,
+        ),
+      ),
+    );
+
+  if (durations.length === 0) {
+    return null;
+  }
+
+  return Math.round(
+    durations.reduce((sum, duration) => sum + duration, 0) / durations.length,
+  );
+}
+
+function formatDuration(totalSeconds: number | null) {
+  if (totalSeconds === null) {
+    return "--";
+  }
+
+  if (totalSeconds < 60) {
+    return `${totalSeconds}s`;
+  }
+
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return seconds === 0 ? `${minutes}m` : `${minutes}m ${seconds}s`;
+}
+
+function getLatestCompletedReviewJob(jobs: ReviewJob[]) {
+  return (
+    [...jobs]
+      .filter((job) => job.status === "COMPLETED")
+      .sort(compareReviewJobsByLatest)[0] ?? null
+  );
+}
+
+function getDashboardSummary({
+  activeReviewCount,
+  completedReviewCount,
+  criticalIssueCount,
+  highIssueCount,
+  repositoryCount,
+  reportCount,
+  totalIssueCount,
+}: {
+  activeReviewCount: number;
+  completedReviewCount: number;
+  criticalIssueCount: number;
+  highIssueCount: number;
+  repositoryCount: number;
+  reportCount: number;
+  totalIssueCount: number;
+}): DashboardSummary {
+  if (repositoryCount === 0) {
+    return {
+      description: "No source repository has been added to this workspace yet.",
+      icon: GitFork,
+      title: "No repositories connected",
+    };
+  }
+
+  if (completedReviewCount === 0) {
+    return {
+      description:
+        activeReviewCount > 0
+          ? `${activeReviewCount} review is running. Results will appear after it completes.`
+          : "Repositories are connected, but no review has completed yet.",
+      icon: CirclePlay,
+      title: activeReviewCount > 0 ? "First review is running" : "No completed reviews yet",
+    };
+  }
+
+  if (criticalIssueCount > 0) {
+    return {
+      description: `${criticalIssueCount} critical findings were found in ${reportCount} recent reports.`,
+      icon: AlertTriangle,
+      title: "Critical findings need attention",
+    };
+  }
+
+  if (highIssueCount > 0) {
+    return {
+      description: `${highIssueCount} high severity findings were found in ${reportCount} recent reports.`,
+      icon: AlertTriangle,
+      title: "High severity findings need review",
+    };
+  }
+
+  if (totalIssueCount === 0) {
+    return {
+      description: `${reportCount} recent reports have no findings.`,
+      icon: ShieldCheck,
+      title: "Latest reviews look clear",
+    };
+  }
+
+  return {
+    description: `${totalIssueCount} findings were found in ${reportCount} recent reports.`,
+    icon: AlertTriangle,
+    title: "Findings are ready for triage",
+  };
+}
+
+function getNextStep({
+  activeReviewCount,
+  completedReviewCount,
+  criticalIssueCount,
+  highIssueCount,
+  latestCompletedJobId,
+  repositoryCount,
+  totalIssueCount,
+}: {
+  activeReviewCount: number;
+  completedReviewCount: number;
+  criticalIssueCount: number;
+  highIssueCount: number;
+  latestCompletedJobId: string | null;
+  repositoryCount: number;
+  totalIssueCount: number;
+}): NextStep {
+  if (repositoryCount === 0) {
+    return {
+      description: "Add a GitHub or GitLab repository before creating reviews.",
+      href: "/repositories",
+      label: "Add Repository",
+      title: "Connect a repository",
+    };
+  }
+
+  if (activeReviewCount > 0) {
+    return {
+      description: "A review is still running. Open the reviews list to watch it.",
+      href: "/reviews",
+      label: "Open Reviews",
+      title: "Check running reviews",
+    };
+  }
+
+  if (completedReviewCount === 0) {
+    return {
+      description: "Open a repository and start its first review.",
+      href: "/repositories",
+      label: "Open Repositories",
+      title: "Start the first review",
+    };
+  }
+
+  if (criticalIssueCount > 0 || highIssueCount > 0 || totalIssueCount > 0) {
+    return {
+      description: "Open the latest completed review and inspect its findings.",
+      href: latestCompletedJobId
+        ? `/reviews/${latestCompletedJobId}/issues`
+        : "/reviews",
+      label: "Review Findings",
+      title: "Triage review findings",
+    };
+  }
+
+  return {
+    description: "The latest reports are clear. Open the last report for details.",
+    href: latestCompletedJobId ? `/reviews/${latestCompletedJobId}/report` : "/reviews",
+    label: "Open Latest Report",
+    title: "Read the latest report",
+  };
 }

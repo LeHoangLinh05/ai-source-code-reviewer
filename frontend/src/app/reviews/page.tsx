@@ -2,9 +2,10 @@
 
 import { CirclePlay, RefreshCw, Trash2 } from "lucide-react";
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 
+import { StatusBadge } from "@/components/reviews/review-badges";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -13,6 +14,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { PaginationControls } from "@/components/ui/pagination-controls";
 import { getApiErrorMessage } from "@/lib/api-error";
 import { cancelReviewJob, getReviewJobs } from "@/lib/review-jobs";
 import { useAppDispatch, useAppSelector } from "@/store/hooks";
@@ -26,6 +28,7 @@ import {
 import type { ReviewJob, ReviewJobStatus } from "@/types/review-job";
 
 const TERMINAL_STATUSES = new Set<ReviewJobStatus>(["COMPLETED", "FAILED"]);
+const JOBS_PAGE_SIZE = 10;
 
 export default function ReviewsPage() {
   const dispatch = useAppDispatch();
@@ -33,6 +36,15 @@ export default function ReviewsPage() {
     (state) => state.jobs,
   );
   const [cancelingJobId, setCancelingJobId] = useState<string | null>(null);
+  const [currentPage, setCurrentPage] = useState(1);
+  const pagedItems = useMemo(
+    () =>
+      items.slice(
+        (currentPage - 1) * JOBS_PAGE_SIZE,
+        currentPage * JOBS_PAGE_SIZE,
+      ),
+    [currentPage, items],
+  );
 
   const loadJobs = useCallback(async () => {
     dispatch(setJobLoading(true));
@@ -52,6 +64,13 @@ export default function ReviewsPage() {
     void loadJobs();
   }, [loadJobs]);
 
+  useEffect(() => {
+    const totalPages = Math.max(1, Math.ceil(items.length / JOBS_PAGE_SIZE));
+    if (currentPage > totalPages) {
+      setCurrentPage(totalPages);
+    }
+  }, [currentPage, items.length]);
+
   async function handleCancelJob(job: ReviewJob) {
     setCancelingJobId(job.id);
     dispatch(setJobMutating(true));
@@ -70,34 +89,21 @@ export default function ReviewsPage() {
 
   return (
     <>
-      <header className="flex flex-col gap-4 border-b border-border pb-5 md:flex-row md:items-end md:justify-between">
-        <div>
-          <p className="text-xs font-medium uppercase text-muted-foreground">
-            Worker queue
-          </p>
-          <h1 className="mt-2 text-3xl font-extrabold tracking-normal">
-            Reviews
-          </h1>
-          <p className="mt-1 text-[15px] leading-6 text-muted-foreground">
-            Review jobs created from connected repositories.
-          </p>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <Button asChild>
-            <Link href="/repositories">
-              <CirclePlay aria-hidden="true" />
-              Start from Repository
-            </Link>
-          </Button>
-        </div>
-      </header>
+      <div className="flex flex-wrap justify-end gap-2">
+        <Button asChild>
+          <Link href="/repositories">
+            <CirclePlay aria-hidden="true" />
+            Start from Repository
+          </Link>
+        </Button>
+      </div>
 
       <Card className="overflow-hidden">
         <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <CardTitle>Job List</CardTitle>
             <CardDescription>
-              Polling detail pages are temporary until SSE lands in Phase 5.
+              Monitor repository review jobs and open completed reports.
             </CardDescription>
           </div>
           <Button
@@ -118,12 +124,20 @@ export default function ReviewsPage() {
           ) : null}
           {!isLoading && !error && items.length === 0 ? <EmptyJobsState /> : null}
           {!isLoading && !error && items.length > 0 ? (
-            <JobsTable
-              cancelingJobId={cancelingJobId}
-              isMutating={isMutating}
-              jobs={items}
-              onCancelJob={handleCancelJob}
-            />
+            <>
+              <JobsTable
+                cancelingJobId={cancelingJobId}
+                isMutating={isMutating}
+                jobs={pagedItems}
+                onCancelJob={handleCancelJob}
+              />
+              <PaginationControls
+                currentPage={currentPage}
+                onPageChange={setCurrentPage}
+                pageSize={JOBS_PAGE_SIZE}
+                totalItems={items.length}
+              />
+            </>
           ) : null}
         </CardContent>
       </Card>
@@ -200,7 +214,7 @@ function JobsTable({
             >
               <td className="px-6 py-4">
                 <Link
-                  className="font-medium text-foreground hover:text-slate-300"
+                  className="font-medium text-foreground hover:text-primary/80"
                   href={`/reviews/${job.id}`}
                 >
                   {job.repository_name ?? job.repository_id}
@@ -234,38 +248,6 @@ function JobsTable({
       </table>
     </div>
   );
-}
-
-function StatusBadge({ status }: { status: ReviewJobStatus }) {
-  const className = getStatusClassName(status);
-
-  return (
-    <span
-      className={`inline-flex rounded-md border px-2 py-1 text-xs font-medium ${className}`}
-    >
-      {status.replaceAll("_", " ")}
-    </span>
-  );
-}
-
-function getStatusClassName(status: ReviewJobStatus) {
-  if (status === "COMPLETED") {
-    return "border-slate-500/50 bg-background text-slate-100";
-  }
-
-  if (status === "FAILED") {
-    return "border-slate-600 bg-background text-slate-300";
-  }
-
-  if (status === "AI_REVIEWING") {
-    return "border-slate-500/50 bg-slate-900 text-slate-100";
-  }
-
-  if (status === "PENDING") {
-    return "border-slate-700 bg-background text-muted-foreground";
-  }
-
-  return "border-slate-700 bg-background text-muted-foreground";
 }
 
 function formatDate(value: string) {
