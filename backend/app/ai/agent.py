@@ -99,6 +99,9 @@ async def run_ai_review(
                 code_retriever=runtime.code_retriever,
                 chunks_per_probe=settings.probe_retrieval_chunks_per_probe,
                 max_chunks=settings.probe_retrieval_max_chunks,
+                defect_max_chunks=settings.probe_defect_max_chunks,
+                coverage_max_chunks=settings.probe_coverage_max_chunks,
+                roadmap_max_chunks=settings.probe_roadmap_max_chunks,
                 max_probes_per_batch=settings.probe_judge_max_probes_per_batch,
                 max_chunks_per_batch=settings.probe_judge_max_chunks_per_batch,
             )

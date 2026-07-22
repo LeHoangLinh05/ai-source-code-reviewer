@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import ast
 import json
 import logging
 import re
 import time
 from dataclasses import dataclass, replace
+from pathlib import PurePosixPath
 from typing import Any, Protocol
 from uuid import UUID
 
@@ -15,15 +17,16 @@ from pydantic import BaseModel, Field, ValidationError, field_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.ai.probe_contracts import ProbeDefinition, ProbeLane
 from app.ai.rag.bm25_index import BM25Document, BM25Index, tokenize
 from app.ai.rag.code_retriever import CodeSemanticRetriever, CodeSemanticSearchRequest
+from app.ai.review_plan import REVIEW_MODE_FULL_AUDIT, get_review_mode
 from app.ai.roadmap.knowledge import RoadmapRequirement, load_roadmap_requirements
 from app.ai.roadmap.selection import build_roadmap_context
 from app.ai.semantic_audit_plan import build_semantic_audit_plan
 from app.db.mongodb import (
     CHUNK_METADATA_COLLECTION,
     FILE_ANALYSIS_RESULTS_COLLECTION,
-    RAW_STATIC_ANALYSIS_OUTPUTS_COLLECTION,
 )
 from app.models.review_issue import (
     IssueCategory,
@@ -62,6 +65,19 @@ PATH_HINTS_BY_CATEGORY = {
     "requirement": ("app", "src", "backend", "frontend", "config"),
 }
 RRF_K = 60
+MAX_RELATED_CHUNKS = 2
+FULL_AUDIT_CHUNKS_PER_PROBE = 6
+TRACE_ID_HASH_LENGTH = 12
+SMART_LANE_CALL_BUDGET_WITH_ROADMAP = {
+    ProbeLane.DEFECT: 4,
+    ProbeLane.COVERAGE: 1,
+    ProbeLane.ROADMAP: 4,
+}
+SMART_LANE_CALL_BUDGET_WITHOUT_ROADMAP = {
+    ProbeLane.DEFECT: 8,
+    ProbeLane.COVERAGE: 1,
+    ProbeLane.ROADMAP: 0,
+}
 
 
 class SyntheticTraceWriter(Protocol):
@@ -92,6 +108,7 @@ class ProbeCandidateChunk:
     path_score: float
     static_score: float
     final_score: float
+    strategies: tuple[str, ...] = ()
 
     @property
     def key(self) -> tuple[str, int]:
@@ -102,10 +119,13 @@ class ProbeCandidateChunk:
 class ProbeEvidenceBundle:
     """Retrieved evidence for one semantic audit probe."""
 
-    probe: dict[str, object]
+    probe: ProbeDefinition
     retrieval_status: str
     candidate_chunks: list[ProbeCandidateChunk]
     strategies_used: list[str]
+    strategy_candidate_counts: dict[str, int]
+    selected_count_before_trim: int
+    trimmed_count: int = 0
 
 
 @dataclass(slots=True, frozen=True)
@@ -185,19 +205,33 @@ class ProbeRetrievalService:
         code_retriever: CodeSemanticRetriever | None = None,
         enable_semantic_search: bool = True,
         chunks_per_probe: int = 3,
-        max_chunks: int = 160,
+        max_chunks: int = 188,
+        defect_max_chunks: int = 120,
+        coverage_max_chunks: int = 24,
+        roadmap_max_chunks: int = 44,
+        max_probes_per_batch: int = 8,
+        max_chunks_per_batch: int = 24,
+        full_audit: bool = False,
     ) -> None:
         self.database = database
         self.code_retriever = code_retriever
         self.enable_semantic_search = enable_semantic_search
         self.chunks_per_probe = max(1, chunks_per_probe)
         self.max_chunks = max(1, max_chunks)
+        self.lane_max_chunks = {
+            ProbeLane.DEFECT: max(1, defect_max_chunks),
+            ProbeLane.COVERAGE: max(1, coverage_max_chunks),
+            ProbeLane.ROADMAP: max(1, roadmap_max_chunks),
+        }
+        self.max_probes_per_batch = max(1, max_probes_per_batch)
+        self.max_chunks_per_batch = max(1, max_chunks_per_batch)
+        self.full_audit = full_audit
 
     async def retrieve(
         self,
         *,
         job_id: UUID,
-        probes: list[dict[str, object]],
+        probes: list[ProbeDefinition],
         trace_writer: SyntheticTraceWriter,
     ) -> list[ProbeEvidenceBundle]:
         """Run hybrid retrieval for every probe and write redacted traces."""
@@ -206,34 +240,160 @@ class ProbeRetrievalService:
         repo_branch_key = _repo_branch_key_from_documents(chunk_documents)
         index_generation_key = _index_generation_key_from_documents(chunk_documents)
         bm25_index = _build_bm25_index(chunk_documents)
-        semantic_by_probe = await self._semantic_results_for_probes(
+        semantic_by_query = await self._semantic_results_for_probes(
             job_id=job_id,
             repo_branch_key=repo_branch_key,
             index_generation_key=index_generation_key,
             probes=probes,
         )
         bundles: list[ProbeEvidenceBundle] = []
-        for probe_index, probe in enumerate(probes):
-            started_at = time.perf_counter()
-            bundle = await self._retrieve_probe(
-                job_id=job_id,
-                repo_branch_key=repo_branch_key,
-                index_generation_key=index_generation_key,
-                probe=probe,
-                semantic_results=semantic_by_probe.get(probe_index),
-                semantic_attempted=probe_index in semantic_by_probe,
-                chunk_documents=chunk_documents,
-                bm25_index=bm25_index,
+        durations_by_probe: dict[str, int] = {}
+        defect_evidence_keys: set[tuple[str, int]] = set()
+        coverage_evidence_keys: set[tuple[str, int]] = set()
+        has_roadmap = any(probe.lane is ProbeLane.ROADMAP for probe in probes)
+        for lane in ProbeLane:
+            lane_bundles: list[ProbeEvidenceBundle] = []
+            for probe_index, probe in enumerate(probes):
+                if probe.lane is not lane:
+                    continue
+                started_at = time.perf_counter()
+                excluded_keys = (
+                    defect_evidence_keys | coverage_evidence_keys
+                    if lane is ProbeLane.COVERAGE
+                    else set()
+                )
+                bundle = await self._retrieve_probe(
+                    job_id=job_id,
+                    repo_branch_key=repo_branch_key,
+                    index_generation_key=index_generation_key,
+                    probe=probe,
+                    semantic_results=[
+                        result
+                        for query_index in range(len(probe.retrieval_queries))
+                        for result in semantic_by_query.get(
+                            (probe_index, query_index),
+                            [],
+                        )
+                    ],
+                    semantic_attempted=any(
+                        (probe_index, query_index) in semantic_by_query
+                        for query_index in range(len(probe.retrieval_queries))
+                    ),
+                    chunk_documents=chunk_documents,
+                    bm25_index=bm25_index,
+                    excluded_keys=excluded_keys,
+                )
+                lane_bundles.append(bundle)
+                durations_by_probe[probe.probe_id] = int(
+                    (time.perf_counter() - started_at) * 1000
+                )
+                if lane is ProbeLane.COVERAGE:
+                    coverage_evidence_keys.update(
+                        chunk.key for chunk in bundle.candidate_chunks
+                    )
+
+            lane_bundles = self._apply_smart_per_probe_cap(
+                bundles=lane_bundles,
+                lane=lane,
+                has_roadmap=has_roadmap,
             )
-            bundles.append(bundle)
+            trimmed_lane_bundles = _trim_bundles(
+                lane_bundles,
+                max_chunks=self._lane_chunk_cap(
+                    lane=lane,
+                    has_roadmap=has_roadmap,
+                ),
+            )
+            call_budget = self._lane_call_budget(
+                lane=lane,
+                has_roadmap=has_roadmap,
+            )
+            nonempty_probe_count = sum(
+                bool(bundle.candidate_chunks) for bundle in trimmed_lane_bundles
+            )
+            if (
+                not self.full_audit
+                and call_budget > 0
+                and nonempty_probe_count > call_budget * self.max_probes_per_batch
+            ):
+                logger.warning(
+                    "Probe lane %s exceeds its smart judge probe budget: %s > %s",
+                    lane.value,
+                    nonempty_probe_count,
+                    call_budget * self.max_probes_per_batch,
+                )
+            bundles.extend(trimmed_lane_bundles)
+            if lane is ProbeLane.DEFECT:
+                defect_evidence_keys.update(
+                    chunk.key
+                    for bundle in trimmed_lane_bundles
+                    for chunk in bundle.candidate_chunks
+                )
+
+        if self.full_audit:
+            trimmed_bundles = [
+                *bundles,
+                *_full_audit_bundles(
+                    chunk_documents=chunk_documents,
+                    existing_bundles=bundles,
+                ),
+            ]
+        else:
+            trimmed_bundles = _trim_bundles(bundles, max_chunks=self.max_chunks)
+        for bundle in trimmed_bundles:
             await _write_probe_retrieval_trace(
                 trace_writer=trace_writer,
-                probe=probe,
+                probe=bundle.probe,
                 bundle=bundle,
-                duration_ms=int((time.perf_counter() - started_at) * 1000),
+                duration_ms=durations_by_probe.get(bundle.probe.probe_id, 0),
             )
 
-        return _trim_bundles(bundles, max_chunks=self.max_chunks)
+        return trimmed_bundles
+
+    def _lane_chunk_cap(self, *, lane: ProbeLane, has_roadmap: bool) -> int:
+        if self.full_audit:
+            return self.lane_max_chunks[lane]
+        call_budget = self._lane_call_budget(
+            lane=lane,
+            has_roadmap=has_roadmap,
+        )
+        if call_budget <= 0:
+            return self.lane_max_chunks[lane]
+        return min(
+            self.lane_max_chunks[lane],
+            call_budget * self.max_chunks_per_batch,
+        )
+
+    @staticmethod
+    def _lane_call_budget(*, lane: ProbeLane, has_roadmap: bool) -> int:
+        return (
+            SMART_LANE_CALL_BUDGET_WITH_ROADMAP
+            if has_roadmap
+            else SMART_LANE_CALL_BUDGET_WITHOUT_ROADMAP
+        )[lane]
+
+    def _apply_smart_per_probe_cap(
+        self,
+        *,
+        bundles: list[ProbeEvidenceBundle],
+        lane: ProbeLane,
+        has_roadmap: bool,
+    ) -> list[ProbeEvidenceBundle]:
+        if self.full_audit or not has_roadmap or lane is not ProbeLane.DEFECT:
+            return bundles
+        per_probe_cap = max(
+            1,
+            self.max_chunks_per_batch // self.max_probes_per_batch,
+        )
+        return [
+            replace(
+                bundle,
+                candidate_chunks=bundle.candidate_chunks[:per_probe_cap],
+                trimmed_count=bundle.trimmed_count
+                + max(0, len(bundle.candidate_chunks) - per_probe_cap),
+            )
+            for bundle in bundles
+        ]
 
     async def _semantic_results_for_probes(
         self,
@@ -241,31 +401,28 @@ class ProbeRetrievalService:
         job_id: UUID,
         repo_branch_key: str | None,
         index_generation_key: str | None,
-        probes: list[dict[str, object]],
-    ) -> dict[int, list[Any]]:
+        probes: list[ProbeDefinition],
+    ) -> dict[tuple[int, int], list[Any]]:
         if not self.enable_semantic_search:
             return {}
 
         requests: list[CodeSemanticSearchRequest] = []
-        request_indexes: list[int] = []
-        for index, probe in enumerate(probes):
-            query = str(probe.get("query") or "").strip()
-            if not query:
-                continue
-            top_k = min(
-                max(_optional_int(probe.get("top_k")) or self.chunks_per_probe, 1),
-                10,
-            )
-            requests.append(
-                CodeSemanticSearchRequest(
-                    query=query,
-                    job_id=job_id,
-                    repo_branch_key=repo_branch_key,
-                    index_generation_key=index_generation_key,
-                    top_k=max(top_k * 4, self.chunks_per_probe),
+        request_indexes: list[tuple[int, int]] = []
+        for probe_index, probe in enumerate(probes):
+            for query_index, query in enumerate(probe.retrieval_queries):
+                normalized_query = query.strip()
+                if not normalized_query:
+                    continue
+                requests.append(
+                    CodeSemanticSearchRequest(
+                        query=normalized_query,
+                        job_id=job_id,
+                        repo_branch_key=repo_branch_key,
+                        index_generation_key=index_generation_key,
+                        top_k=10,
+                    )
                 )
-            )
-            request_indexes.append(index)
+                request_indexes.append((probe_index, query_index))
 
         if not requests:
             return {}
@@ -277,11 +434,11 @@ class ProbeRetrievalService:
             )
         except Exception as error:
             logger.warning("Probe semantic retrieval batch failed: %s", error)
-            return {probe_index: [] for probe_index in request_indexes}
+            return {request_index: [] for request_index in request_indexes}
 
         return {
-            probe_index: results
-            for probe_index, results in zip(
+            request_index: results
+            for request_index, results in zip(
                 request_indexes,
                 results_by_request,
                 strict=True,
@@ -294,16 +451,15 @@ class ProbeRetrievalService:
         job_id: UUID,
         repo_branch_key: str | None,
         index_generation_key: str | None,
-        probe: dict[str, object],
+        probe: ProbeDefinition,
         semantic_results: list[Any] | None,
         semantic_attempted: bool,
         chunk_documents: list[dict[str, Any]],
         bm25_index: BM25Index,
+        excluded_keys: set[tuple[str, int]],
     ) -> ProbeEvidenceBundle:
-        query = str(probe.get("query") or "").strip()
-        top_k = min(
-            max(_optional_int(probe.get("top_k")) or self.chunks_per_probe, 1), 10
-        )
+        query = " ".join(probe.retrieval_queries)
+        top_k = min(max(probe.top_k, 1), 10)
         semantic_candidates: list[ProbeCandidateChunk] = []
         bm25_candidates: list[ProbeCandidateChunk] = []
         strategies: list[str] = []
@@ -318,8 +474,8 @@ class ProbeRetrievalService:
                     job_id=job_id,
                     repo_branch_key=repo_branch_key,
                     index_generation_key=index_generation_key,
-                    query=query,
-                    top_k=max(top_k * 4, self.chunks_per_probe),
+                    query=probe.primary_query,
+                    top_k=10,
                 )
                 strategies.append("semantic")
             except Exception as error:
@@ -333,33 +489,73 @@ class ProbeRetrievalService:
             if chunk is not None:
                 semantic_candidates.append(chunk)
 
-        lexical_results = bm25_index.search(query, top_k=max(top_k * 8, 20))
+        for retrieval_query in probe.retrieval_queries:
+            lexical_results = bm25_index.search(retrieval_query, top_k=50)
+            for result in lexical_results:
+                chunk = _candidate_from_document(
+                    result.metadata,
+                    probe=probe,
+                    query=retrieval_query,
+                    semantic_score=0.0,
+                    lexical_score=result.score,
+                    strategy="bm25",
+                )
+                if chunk is not None:
+                    bm25_candidates.append(chunk)
         strategies.append("bm25")
-        for result in lexical_results:
-            chunk = _candidate_from_document(
-                result.metadata,
-                probe=probe,
-                query=query,
-                semantic_score=0.0,
-                lexical_score=result.score,
-            )
-            if chunk is not None:
-                bm25_candidates.append(chunk)
 
         exact_candidates = _exact_candidates(
             chunk_documents=chunk_documents,
             probe=probe,
             query=query,
-            top_k=max(top_k * 4, 12),
+            top_k=len(chunk_documents),
         )
         strategies.append("exact")
+        structural_candidates = _structural_candidates(
+            chunk_documents=chunk_documents,
+            probe=probe,
+        )
+        strategies.append("structural")
+        file_candidates = _file_scope_candidates(
+            chunk_documents=chunk_documents,
+            probe=probe,
+        )
+        if file_candidates:
+            structural_candidates = [*file_candidates, *structural_candidates]
+            strategies.append("file_scope")
+        if probe.file_scope:
+            semantic_candidates = _candidates_in_file(
+                semantic_candidates,
+                probe.file_scope,
+            )
+            bm25_candidates = _candidates_in_file(bm25_candidates, probe.file_scope)
+            exact_candidates = _candidates_in_file(exact_candidates, probe.file_scope)
+            structural_candidates = _candidates_in_file(
+                structural_candidates,
+                probe.file_scope,
+            )
+        semantic_candidates = _exclude_candidates(semantic_candidates, excluded_keys)
+        bm25_candidates = _exclude_candidates(bm25_candidates, excluded_keys)
+        exact_candidates = _exclude_candidates(exact_candidates, excluded_keys)
+        structural_candidates = _exclude_candidates(
+            structural_candidates,
+            excluded_keys,
+        )
         selected = _fuse_probe_candidates(
             semantic_candidates=semantic_candidates,
             bm25_candidates=bm25_candidates,
             exact_candidates=exact_candidates,
+            structural_candidates=structural_candidates,
             probe=probe,
             query=query,
-            top_k=self.chunks_per_probe,
+            top_k=top_k,
+        )
+        selected = _expand_related_candidates(
+            selected=selected,
+            chunk_documents=chunk_documents,
+            probe=probe,
+            top_k=top_k,
+            excluded_keys=excluded_keys,
         )
         status = "ok" if selected else "no_candidate_evidence"
         return ProbeEvidenceBundle(
@@ -367,6 +563,13 @@ class ProbeRetrievalService:
             retrieval_status=status,
             candidate_chunks=selected,
             strategies_used=strategies,
+            strategy_candidate_counts={
+                "semantic": len(_unique_candidates(semantic_candidates)),
+                "bm25": len(_unique_candidates(bm25_candidates)),
+                "exact": len(_unique_candidates(exact_candidates)),
+                "structural": len(_unique_candidates(structural_candidates)),
+            },
+            selected_count_before_trim=len(selected),
         )
 
     def _code_retriever(self) -> CodeSemanticRetriever:
@@ -582,6 +785,9 @@ async def run_backend_directed_probe_review(
     enable_semantic_search: bool,
     chunks_per_probe: int,
     max_chunks: int,
+    defect_max_chunks: int,
+    coverage_max_chunks: int,
+    roadmap_max_chunks: int,
     max_probes_per_batch: int,
     max_chunks_per_batch: int,
     code_retriever: CodeSemanticRetriever | None = None,
@@ -593,12 +799,19 @@ async def run_backend_directed_probe_review(
         postgres_session=postgres_session,
         database=mongodb_database,
     )
+    job_options = await _load_job_options(postgres_session, job_id)
     retrieval_service = ProbeRetrievalService(
         database=mongodb_database,
         code_retriever=code_retriever,
         enable_semantic_search=enable_semantic_search,
         chunks_per_probe=chunks_per_probe,
         max_chunks=max_chunks,
+        defect_max_chunks=defect_max_chunks,
+        coverage_max_chunks=coverage_max_chunks,
+        roadmap_max_chunks=roadmap_max_chunks,
+        max_probes_per_batch=max_probes_per_batch,
+        max_chunks_per_batch=max_chunks_per_batch,
+        full_audit=get_review_mode(job_options) == REVIEW_MODE_FULL_AUDIT,
     )
     bundles = await retrieval_service.retrieve(
         job_id=job_id,
@@ -645,17 +858,12 @@ async def build_backend_probe_plan(
     job_id: UUID,
     postgres_session: AsyncSession,
     database: AsyncIOMotorDatabase,
-) -> list[dict[str, object]]:
+) -> list[ProbeDefinition]:
     """Build the same unified category probe plan without a tool loop."""
 
     structure_document = await database[FILE_ANALYSIS_RESULTS_COLLECTION].find_one(
         {"job_id": str(job_id)},
         sort=[("analyzed_at", -1)],
-    )
-    static_documents = (
-        await database[RAW_STATIC_ANALYSIS_OUTPUTS_COLLECTION]
-        .find({"job_id": str(job_id)})
-        .to_list(length=None)
     )
     chunk_documents = await _load_chunk_documents(database, job_id)
     job_options = await _load_job_options(postgres_session, job_id)
@@ -663,15 +871,14 @@ async def build_backend_probe_plan(
     file_tree = []
     if isinstance(structure_document, dict):
         file_tree = _as_list(structure_document.get("file_tree"))
-    static_issues = _static_issues(static_documents)
     return build_semantic_audit_plan(
         roadmap_context=roadmap_context,
         files_to_review=_files_to_review(
             file_tree=file_tree,
-            static_issues=static_issues,
             chunk_counts=_chunk_counts_by_file(chunk_documents),
+            chunk_risks=_chunk_risks_by_file(chunk_documents),
         ),
-        static_issues=static_issues,
+        static_issues=[],
     )
 
 
@@ -843,7 +1050,7 @@ async def _to_thread_search(
 def _candidate_from_semantic_result(
     result: Any,
     *,
-    probe: dict[str, object],
+    probe: ProbeDefinition,
     query: str,
 ) -> ProbeCandidateChunk | None:
     return _candidate_from_document(
@@ -853,17 +1060,19 @@ def _candidate_from_semantic_result(
         semantic_score=float(result.semantic_score),
         lexical_score=0.0,
         content=str(result.content),
+        strategy="semantic",
     )
 
 
 def _candidate_from_document(
     document: dict[str, Any],
     *,
-    probe: dict[str, object],
+    probe: ProbeDefinition,
     query: str,
     semantic_score: float,
     lexical_score: float,
     content: str | None = None,
+    strategy: str = "exact",
 ) -> ProbeCandidateChunk | None:
     chunk_text = content if content is not None else document.get("chunk_text")
     if not isinstance(chunk_text, str) or not chunk_text:
@@ -882,7 +1091,7 @@ def _candidate_from_document(
         return None
 
     path_score = _path_score(file_path=file_path, probe=probe, query=query)
-    static_score = 0.12 if document.get("has_static_issues") is True else 0.0
+    static_score = 0.0
     risk_score = _risk_score(document, probe)
     exact_score = _exact_score(query, chunk_text, file_path)
     final_score = (
@@ -890,7 +1099,6 @@ def _candidate_from_document(
         + lexical_score * 0.25
         + exact_score * 0.2
         + path_score
-        + static_score
         + risk_score
     )
     return ProbeCandidateChunk(
@@ -906,13 +1114,14 @@ def _candidate_from_document(
         path_score=path_score,
         static_score=static_score,
         final_score=final_score,
+        strategies=(strategy,),
     )
 
 
 def _exact_candidates(
     *,
     chunk_documents: list[dict[str, Any]],
-    probe: dict[str, object],
+    probe: ProbeDefinition,
     query: str,
     top_k: int,
 ) -> list[ProbeCandidateChunk]:
@@ -934,6 +1143,7 @@ def _exact_candidates(
             query=query,
             semantic_score=0.0,
             lexical_score=lexical_score,
+            strategy="exact",
         )
         if candidate is not None:
             candidates.append(candidate)
@@ -941,16 +1151,350 @@ def _exact_candidates(
     return sorted(candidates, key=lambda item: item.final_score, reverse=True)[:top_k]
 
 
+def _structural_candidates(
+    *,
+    chunk_documents: list[dict[str, Any]],
+    probe: ProbeDefinition,
+) -> list[ProbeCandidateChunk]:
+    matcher = _STRUCTURAL_MATCHERS.get(probe.probe_id)
+    if matcher is None:
+        return []
+
+    candidates: list[ProbeCandidateChunk] = []
+    for document in chunk_documents:
+        if str(document.get("language") or "").lower() != "python":
+            continue
+        content = document.get("chunk_text")
+        if not isinstance(content, str) or not matcher(content.lower()):
+            continue
+        candidate = _candidate_from_document(
+            document,
+            probe=probe,
+            query=probe.primary_query,
+            semantic_score=0.0,
+            lexical_score=1.0,
+            strategy="structural",
+        )
+        if candidate is not None:
+            chunk_type = str(document.get("chunk_type") or "").lower()
+            function_bonus = 0.4 if chunk_type == "function" else 0.0
+            candidates.append(
+                replace(
+                    candidate,
+                    final_score=candidate.final_score + 0.5 + function_bonus,
+                )
+            )
+    return sorted(candidates, key=_structural_candidate_rank, reverse=True)
+
+
+def _structural_candidate_rank(
+    candidate: ProbeCandidateChunk,
+) -> tuple[float, int, str, int]:
+    line_span = candidate.line_end - candidate.line_start
+    return (
+        candidate.final_score,
+        -line_span,
+        candidate.file_path,
+        -candidate.chunk_index,
+    )
+
+
+def _file_scope_candidates(
+    *,
+    chunk_documents: list[dict[str, Any]],
+    probe: ProbeDefinition,
+) -> list[ProbeCandidateChunk]:
+    if probe.file_scope is None:
+        return []
+
+    candidates: list[ProbeCandidateChunk] = []
+    for document in chunk_documents:
+        if document.get("file_path") != probe.file_scope:
+            continue
+        candidate = _candidate_from_document(
+            document,
+            probe=probe,
+            query=probe.primary_query,
+            semantic_score=0.0,
+            lexical_score=_exact_score(
+                probe.primary_query,
+                str(document.get("chunk_text") or ""),
+                probe.file_scope,
+            ),
+            strategy="file_scope",
+        )
+        if candidate is not None:
+            candidates.append(
+                replace(candidate, final_score=candidate.final_score + 0.4)
+            )
+    return sorted(candidates, key=_file_scope_candidate_rank, reverse=True)
+
+
+def _file_scope_candidate_rank(
+    candidate: ProbeCandidateChunk,
+) -> tuple[int, float, int]:
+    is_function = int(candidate.line_end > candidate.line_start)
+    return is_function, candidate.final_score, -candidate.chunk_index
+
+
+def _candidates_in_file(
+    candidates: list[ProbeCandidateChunk],
+    file_path: str,
+) -> list[ProbeCandidateChunk]:
+    return [candidate for candidate in candidates if candidate.file_path == file_path]
+
+
+def _exclude_candidates(
+    candidates: list[ProbeCandidateChunk],
+    excluded_keys: set[tuple[str, int]],
+) -> list[ProbeCandidateChunk]:
+    if not excluded_keys:
+        return candidates
+    return [candidate for candidate in candidates if candidate.key not in excluded_keys]
+
+
+def _contains_all(content: str, *terms: str) -> bool:
+    return all(term in content for term in terms)
+
+
+def _contains_any(content: str, *terms: str) -> bool:
+    return any(term in content for term in terms)
+
+
+def _matches_sql_injection(content: str) -> bool:
+    has_sink = _contains_any(content, "execute(", "from_statement(", "raw(")
+    has_construction = _contains_any(content, 'f"', "f'", ".format(", " + ")
+    return has_sink and has_construction
+
+
+def _matches_command_injection(content: str) -> bool:
+    return _contains_any(content, "subprocess", "os.system", "popen(") and (
+        "shell=true" in content or _contains_any(content, 'f"', "f'", ".format(")
+    )
+
+
+def _matches_ssrf(content: str) -> bool:
+    has_client = _contains_any(
+        content,
+        "httpx",
+        "requests.",
+        "client.get(",
+        "axios",
+        "fetch(",
+    )
+    return has_client and _contains_any(content, "url", "uri", "webhook")
+
+
+def _matches_object_authorization(content: str) -> bool:
+    return _contains_all(content, "current_user", "get_by_id") and _contains_any(
+        content,
+        "_id",
+        "id:",
+    )
+
+
+def _matches_role_authorization(content: str) -> bool:
+    return "admin" in content and "get_current_user" in content
+
+
+def _matches_mass_assignment(content: str) -> bool:
+    return "setattr(" in content and _contains_any(
+        content, "payload", ".items()", "dict"
+    )
+
+
+def _matches_weak_hash(content: str) -> bool:
+    return "password" in content and _contains_any(content, "md5(", "sha1(")
+
+
+def _matches_reset_token(content: str) -> bool:
+    return (
+        "reset" in content
+        and "token" in content
+        and _contains_any(
+            content,
+            "redis.set(",
+            ".set(",
+            "setex(",
+        )
+    )
+
+
+def _matches_refresh_validation(content: str) -> bool:
+    return "refresh" in content and _contains_any(content, "jwt", "decode(", "token")
+
+
+def _matches_logout(content: str) -> bool:
+    return "logout" in content and _contains_any(
+        content, "revoke", "blacklist", "success"
+    )
+
+
+def _matches_race(content: str) -> bool:
+    has_resource = _contains_any(content, "stock", "inventory", "quantity")
+    has_read = _contains_any(content, "get_by_", "select(")
+    has_write = "update_" in content
+    has_subtraction_assignment = (
+        re.search(
+            r"=\s*[a-z_][a-z0-9_.]*\s+-\s+[a-z_]",
+            content,
+        )
+        is not None
+    )
+    return has_resource and has_read and has_write and has_subtraction_assignment
+
+
+def _matches_transaction(content: str) -> bool:
+    return "except" in content and _contains_any(
+        content, "commit(", "update_", "create_"
+    )
+
+
+def _matches_n_plus_one(content: str) -> bool:
+    try:
+        tree = ast.parse(content)
+    except SyntaxError:
+        return False
+
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.For, ast.AsyncFor)):
+            continue
+        for statement in node.body:
+            for child in ast.walk(statement):
+                if isinstance(child, ast.Call) and _is_io_call(child):
+                    return True
+    return False
+
+
+def _is_io_call(call: ast.Call) -> bool:
+    try:
+        call_name = ast.unparse(call.func).lower()
+    except ValueError:
+        return False
+    sink_names = (
+        ".execute",
+        ".query",
+        ".fetch",
+        ".find",
+        ".get_by_",
+        "repository.",
+        "repo.",
+        "client.",
+    )
+    return any(sink in call_name for sink in sink_names)
+
+
+def _matches_pagination(content: str) -> bool:
+    loads_all = _contains_any(content, ".all()", "scalars().all", "list(")
+    in_memory = _contains_any(content, "filtered_", "[p for ", "[item for ", "offset :")
+    return loads_all and in_memory
+
+
+def _matches_resource_lifecycle(content: str) -> bool:
+    return _contains_any(
+        content, "create_engine(", "create_async_engine("
+    ) and _contains_any(
+        content,
+        "def ",
+        "async def ",
+    )
+
+
+_STRUCTURAL_MATCHERS: dict[str, Any] = {
+    "security.sql_nosql_injection": _matches_sql_injection,
+    "security.command_injection": _matches_command_injection,
+    "security.ssrf_external_calls": _matches_ssrf,
+    "security.object_authorization": _matches_object_authorization,
+    "security.role_authorization": _matches_role_authorization,
+    "security.mass_assignment": _matches_mass_assignment,
+    "security.weak_password_hash": _matches_weak_hash,
+    "security.reset_token_lifecycle": _matches_reset_token,
+    "security.refresh_token_validation": _matches_refresh_validation,
+    "security.logout_revocation": _matches_logout,
+    "bug.async_concurrency": _matches_race,
+    "bug.state_transaction_consistency": _matches_transaction,
+    "performance.n_plus_one": _matches_n_plus_one,
+    "performance.pagination_bounds": _matches_pagination,
+    "maintainability.resource_lifecycle": _matches_resource_lifecycle,
+}
+
+
+def _expand_related_candidates(
+    *,
+    selected: list[ProbeCandidateChunk],
+    chunk_documents: list[dict[str, Any]],
+    probe: ProbeDefinition,
+    top_k: int,
+    excluded_keys: set[tuple[str, int]],
+) -> list[ProbeCandidateChunk]:
+    """Add at most two directly called function chunks as supporting context."""
+
+    call_names = {
+        name.lower()
+        for candidate in selected
+        for name in re.findall(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*\(", candidate.content)
+        if name.lower() not in _IGNORED_CALL_NAMES
+    }
+    if not call_names:
+        return selected[:top_k]
+    if len(selected) >= top_k:
+        return selected[:top_k]
+
+    related: list[ProbeCandidateChunk] = []
+    selected_keys = {candidate.key for candidate in selected}
+    for document in chunk_documents:
+        function_name = str(document.get("function_name") or "").lower()
+        if not function_name or function_name not in call_names:
+            continue
+        key = (str(document.get("file_path") or ""), document.get("chunk_index"))
+        if key in selected_keys or key in excluded_keys:
+            continue
+        candidate = _candidate_from_document(
+            document,
+            probe=probe,
+            query=function_name,
+            semantic_score=0.0,
+            lexical_score=1.0,
+            strategy="related",
+        )
+        if candidate is None:
+            continue
+        related.append(candidate)
+        if len(related) >= MAX_RELATED_CHUNKS:
+            break
+
+    if not related:
+        return selected[:top_k]
+    remaining_slots = top_k - len(selected)
+    return [*selected, *related[:remaining_slots]]
+
+
+_IGNORED_CALL_NAMES = {
+    "dict",
+    "float",
+    "int",
+    "len",
+    "list",
+    "max",
+    "min",
+    "print",
+    "str",
+    "sum",
+    "super",
+}
+
+
 def _fuse_probe_candidates(
     *,
     semantic_candidates: list[ProbeCandidateChunk],
     bm25_candidates: list[ProbeCandidateChunk],
     exact_candidates: list[ProbeCandidateChunk],
-    probe: dict[str, object],
+    structural_candidates: list[ProbeCandidateChunk],
+    probe: ProbeDefinition,
     query: str,
     top_k: int,
 ) -> list[ProbeCandidateChunk]:
-    """Fuse dense, BM25 and exact ranks with small bounded code priors."""
+    """Fuse retrieval ranks while reserving evidence from distinct strategies."""
 
     candidate_by_key: dict[tuple[str, int], ProbeCandidateChunk] = {}
     rrf_scores: dict[tuple[str, int], float] = {}
@@ -960,6 +1504,7 @@ def _fuse_probe_candidates(
         ("semantic", semantic_candidates),
         ("bm25", bm25_candidates),
         ("exact", exact_candidates),
+        ("structural", structural_candidates),
     ):
         for rank, candidate in enumerate(_unique_candidates(candidates), start=1):
             candidate_by_key[candidate.key] = _merge_candidate(
@@ -978,7 +1523,13 @@ def _fuse_probe_candidates(
         for key, candidate in candidate_by_key.items()
     ]
     ranked.sort(key=lambda candidate: candidate.final_score, reverse=True)
-    return _select_diverse_probe_candidates(ranked, top_k=top_k)
+    reserved = _strategy_quota_candidates(
+        structural_candidates=structural_candidates,
+        lexical_candidates=[*bm25_candidates, *exact_candidates],
+        semantic_candidates=semantic_candidates,
+        top_k=top_k,
+    )
+    return _fill_diverse_candidates(reserved=reserved, ranked=ranked, top_k=top_k)
 
 
 def _unique_candidates(
@@ -993,9 +1544,47 @@ def _unique_candidates(
     ):
         if candidate.key in seen:
             continue
+        nested_index = next(
+            (
+                index
+                for index, current in enumerate(unique)
+                if _chunks_are_nested(candidate, current)
+            ),
+            None,
+        )
+        if nested_index is not None and _line_span(candidate) >= _line_span(
+            unique[nested_index]
+        ):
+            continue
         seen.add(candidate.key)
-        unique.append(candidate)
-    return unique
+        if nested_index is None:
+            unique.append(candidate)
+        else:
+            unique[nested_index] = candidate
+    return sorted(unique, key=lambda item: item.final_score, reverse=True)
+
+
+def _line_span(candidate: ProbeCandidateChunk) -> int:
+    return candidate.line_end - candidate.line_start
+
+
+def _chunks_are_nested(
+    first: ProbeCandidateChunk,
+    second: ProbeCandidateChunk,
+) -> bool:
+    if first.file_path != second.file_path:
+        return False
+    return _range_contains(
+        outer_start=first.line_start,
+        outer_end=first.line_end,
+        inner_start=second.line_start,
+        inner_end=second.line_end,
+    ) or _range_contains(
+        outer_start=second.line_start,
+        outer_end=second.line_end,
+        inner_start=first.line_start,
+        inner_end=first.line_end,
+    )
 
 
 def _merge_candidate(
@@ -1010,21 +1599,21 @@ def _merge_candidate(
         semantic_score=max(current.semantic_score, incoming.semantic_score),
         lexical_score=max(current.lexical_score, incoming.lexical_score),
         path_score=max(current.path_score, incoming.path_score),
-        static_score=max(current.static_score, incoming.static_score),
+        strategies=tuple(sorted(set(current.strategies) | set(incoming.strategies))),
     )
 
 
 def _adaptive_rrf_weights(
     *,
-    probe: dict[str, object],
+    probe: ProbeDefinition,
     query: str,
 ) -> dict[str, float]:
-    category = str(probe.get("category") or probe.get("review_category") or "")
+    category = probe.category
     if _looks_like_symbol_query(query):
-        return {"semantic": 0.3, "bm25": 0.45, "exact": 0.25}
+        return {"semantic": 0.25, "bm25": 0.35, "exact": 0.2, "structural": 0.5}
     if category in {"security", "requirement"}:
-        return {"semantic": 0.4, "bm25": 0.35, "exact": 0.25}
-    return {"semantic": 0.45, "bm25": 0.35, "exact": 0.2}
+        return {"semantic": 0.3, "bm25": 0.3, "exact": 0.2, "structural": 0.55}
+    return {"semantic": 0.35, "bm25": 0.3, "exact": 0.2, "structural": 0.45}
 
 
 def _looks_like_symbol_query(query: str) -> bool:
@@ -1053,31 +1642,58 @@ def _bounded_code_prior(candidate: ProbeCandidateChunk) -> float:
         min(
             0.18,
             candidate.path_score * 0.25
-            + candidate.static_score * 0.5
             + min(candidate.semantic_score, 1.0) * 0.02
             + min(candidate.lexical_score, 1.0) * 0.02,
         ),
     )
 
 
-def _select_diverse_probe_candidates(
-    ranked: list[ProbeCandidateChunk],
+def _strategy_quota_candidates(
     *,
+    structural_candidates: list[ProbeCandidateChunk],
+    lexical_candidates: list[ProbeCandidateChunk],
+    semantic_candidates: list[ProbeCandidateChunk],
+    top_k: int,
+) -> list[ProbeCandidateChunk]:
+    selected: list[ProbeCandidateChunk] = []
+    for candidates in (
+        structural_candidates[:2],
+        lexical_candidates[:2],
+        semantic_candidates[:2],
+    ):
+        for candidate in _unique_candidates(candidates):
+            if len(selected) >= top_k:
+                return selected
+            if _can_add_candidate(selected, candidate):
+                selected.append(candidate)
+    return selected
+
+
+def _fill_diverse_candidates(
+    *,
+    reserved: list[ProbeCandidateChunk],
+    ranked: list[ProbeCandidateChunk],
     top_k: int,
 ) -> list[ProbeCandidateChunk]:
     if top_k <= 0:
         return []
 
     max_per_file = max(1, top_k // 2)
-    selected: list[ProbeCandidateChunk] = []
-    selected_keys: set[tuple[str, int]] = set()
+    selected = list(reserved)
+    selected_keys = {candidate.key for candidate in selected}
     per_file_count: dict[str, int] = {}
+    for candidate in selected:
+        per_file_count[candidate.file_path] = (
+            per_file_count.get(candidate.file_path, 0) + 1
+        )
     deferred: list[ProbeCandidateChunk] = []
 
     for candidate in ranked:
         if len(selected) >= top_k:
             return selected
         if candidate.key in selected_keys:
+            continue
+        if not _can_add_candidate(selected, candidate):
             continue
         if per_file_count.get(candidate.file_path, 0) >= max_per_file:
             deferred.append(candidate)
@@ -1097,6 +1713,25 @@ def _select_diverse_probe_candidates(
         selected_keys.add(candidate.key)
 
     return selected
+
+
+def _can_add_candidate(
+    selected: list[ProbeCandidateChunk],
+    candidate: ProbeCandidateChunk,
+) -> bool:
+    if any(current.key == candidate.key for current in selected):
+        return False
+    return not any(_chunks_are_nested(candidate, current) for current in selected)
+
+
+def _range_contains(
+    *,
+    outer_start: int,
+    outer_end: int,
+    inner_start: int,
+    inner_end: int,
+) -> bool:
+    return outer_start <= inner_start and outer_end >= inner_end
 
 
 def _exact_score(query: str, content: str, file_path: str) -> float:
@@ -1119,11 +1754,11 @@ def _important_terms(query: str) -> list[str]:
 def _path_score(
     *,
     file_path: str,
-    probe: dict[str, object],
+    probe: ProbeDefinition,
     query: str,
 ) -> float:
     normalized_path = file_path.replace("\\", "/").lower()
-    category = str(probe.get("category") or probe.get("review_category") or "")
+    category = probe.category
     hints = PATH_HINTS_BY_CATEGORY.get(category, ())
     score = 0.0
     if any(hint in normalized_path for hint in hints):
@@ -1135,10 +1770,10 @@ def _path_score(
     return score
 
 
-def _risk_score(document: dict[str, Any], probe: dict[str, object]) -> float:
+def _risk_score(document: dict[str, Any], probe: ProbeDefinition) -> float:
     chunk_risk = str(document.get("risk_area") or "")
-    probe_risk = str(probe.get("risk_area") or "")
-    category = str(probe.get("category") or probe.get("review_category") or "")
+    probe_risk = probe.risk_area
+    category = probe.category
     if probe_risk and probe_risk == chunk_risk:
         return 0.12
     if category == "security" and chunk_risk in {"security", "config", "api"}:
@@ -1171,13 +1806,11 @@ def _trim_bundles(
     kept: dict[str, set[tuple[str, int]]] = {
         _probe_id(bundle.probe): set() for bundle in bundles
     }
-    remaining_slots = max_chunks
-    for bundle in bundles:
-        if remaining_slots <= 0 or not bundle.candidate_chunks:
-            break
-        if _is_high_priority_probe(bundle.probe):
-            kept[_probe_id(bundle.probe)].add(bundle.candidate_chunks[0].key)
-            remaining_slots -= 1
+    remaining_slots = _reserve_probe_candidates(
+        bundles=bundles,
+        kept=kept,
+        max_chunks=max_chunks,
+    )
 
     scored_chunks: list[tuple[tuple[int, float], str, ProbeCandidateChunk]] = []
     for bundle in bundles:
@@ -1207,18 +1840,169 @@ def _trim_bundles(
         if bundle.candidate_chunks and not chunks:
             status = "trimmed_by_global_cap"
         trimmed.append(
-            replace(bundle, retrieval_status=status, candidate_chunks=chunks)
+            replace(
+                bundle,
+                retrieval_status=status,
+                candidate_chunks=chunks,
+                trimmed_count=bundle.trimmed_count
+                + len(bundle.candidate_chunks)
+                - len(chunks),
+            )
         )
 
     return trimmed
 
 
+def _reserve_probe_candidates(
+    *,
+    bundles: list[ProbeEvidenceBundle],
+    kept: dict[str, set[tuple[str, int]]],
+    max_chunks: int,
+) -> int:
+    remaining_slots = max_chunks
+    for bundle in bundles:
+        if remaining_slots <= 0 or not bundle.candidate_chunks:
+            break
+        kept[_probe_id(bundle.probe)].add(bundle.candidate_chunks[0].key)
+        remaining_slots -= 1
+
+    for bundle in bundles:
+        if remaining_slots <= 0:
+            break
+        probe_id = _probe_id(bundle.probe)
+        kept_structural_count = sum(
+            "structural" in chunk.strategies and chunk.key in kept[probe_id]
+            for chunk in bundle.candidate_chunks
+        )
+        structural_slots = max(0, 2 - kept_structural_count)
+        structural_candidates = [
+            chunk
+            for chunk in bundle.candidate_chunks
+            if "structural" in chunk.strategies and chunk.key not in kept[probe_id]
+        ]
+        for chunk in structural_candidates[:structural_slots]:
+            if remaining_slots <= 0:
+                return 0
+            kept[probe_id].add(chunk.key)
+            remaining_slots -= 1
+    return remaining_slots
+
+
+def _trim_bundles_by_lane(
+    bundles: list[ProbeEvidenceBundle],
+    *,
+    lane_max_chunks: dict[ProbeLane, int],
+    max_chunks: int,
+) -> list[ProbeEvidenceBundle]:
+    """Apply independent lane caps before the global safety cap."""
+
+    trimmed_by_id: dict[str, ProbeEvidenceBundle] = {}
+    for lane in ProbeLane:
+        lane_bundles = [bundle for bundle in bundles if bundle.probe.lane is lane]
+        for bundle in _trim_bundles(
+            lane_bundles,
+            max_chunks=lane_max_chunks[lane],
+        ):
+            trimmed_by_id[bundle.probe.probe_id] = bundle
+
+    ordered = [trimmed_by_id[bundle.probe.probe_id] for bundle in bundles]
+    return _trim_bundles(ordered, max_chunks=max_chunks)
+
+
+def _full_audit_bundles(
+    *,
+    chunk_documents: list[dict[str, Any]],
+    existing_bundles: list[ProbeEvidenceBundle],
+) -> list[ProbeEvidenceBundle]:
+    """Return direct evidence bundles for every chunk not already scheduled."""
+
+    existing_keys = {
+        chunk.key for bundle in existing_bundles for chunk in bundle.candidate_chunks
+    }
+    candidates_by_file: dict[str, list[ProbeCandidateChunk]] = {}
+    for document in chunk_documents:
+        key = (document.get("file_path"), document.get("chunk_index"))
+        if key in existing_keys:
+            continue
+        file_path = document.get("file_path")
+        if not isinstance(file_path, str):
+            continue
+        risk_area = str(document.get("risk_area") or "general")
+        probe = _full_audit_probe(file_path=file_path, risk_area=risk_area, index=0)
+        candidate = _candidate_from_document(
+            document,
+            probe=probe,
+            query="full source audit",
+            semantic_score=0.0,
+            lexical_score=1.0,
+            strategy="full_audit",
+        )
+        if candidate is not None:
+            candidates_by_file.setdefault(file_path, []).append(candidate)
+
+    bundles: list[ProbeEvidenceBundle] = []
+    for file_path, candidates in sorted(candidates_by_file.items()):
+        risk_area = candidates[0].risk_area
+        for index in range(0, len(candidates), FULL_AUDIT_CHUNKS_PER_PROBE):
+            chunk_slice = candidates[index : index + FULL_AUDIT_CHUNKS_PER_PROBE]
+            probe = _full_audit_probe(
+                file_path=file_path,
+                risk_area=risk_area,
+                index=index // FULL_AUDIT_CHUNKS_PER_PROBE,
+            )
+            bundles.append(
+                ProbeEvidenceBundle(
+                    probe=probe,
+                    retrieval_status="ok",
+                    candidate_chunks=chunk_slice,
+                    strategies_used=["full_audit"],
+                    strategy_candidate_counts={"full_audit": len(chunk_slice)},
+                    selected_count_before_trim=len(chunk_slice),
+                )
+            )
+    return bundles
+
+
+def _full_audit_probe(
+    *,
+    file_path: str,
+    risk_area: str,
+    index: int,
+) -> ProbeDefinition:
+    category = {
+        "security": "security",
+        "api": "bug",
+        "database": "performance",
+    }.get(risk_area, "maintainability")
+    return ProbeDefinition(
+        probe_id=(
+            "coverage.full_audit."
+            f"{_sha256(file_path.encode())[:TRACE_ID_HASH_LENGTH]}.{index}"
+        ),
+        lane=ProbeLane.COVERAGE,
+        category=category,
+        priority="medium",
+        risk_area=risk_area,
+        retrieval_queries=("full source audit",),
+        lexical_terms=(),
+        judge_question=(
+            "Does this source contain a concrete security, correctness, performance, "
+            "or resource-lifecycle defect?"
+        ),
+        top_k=FULL_AUDIT_CHUNKS_PER_PROBE,
+        file_scope=file_path,
+        source_kinds=("full_audit",),
+        reason="full_audit",
+        probe_kind="coverage",
+    )
+
+
 def _trim_rank(
-    probe: dict[str, object],
+    probe: ProbeDefinition,
     chunk: ProbeCandidateChunk,
 ) -> tuple[int, float]:
-    category = str(probe.get("category") or "")
-    priority = str(probe.get("priority") or "low")
+    category = probe.category
+    priority = probe.priority
     category_rank = {"security": 4, "bug": 3, "performance": 2}.get(category, 1)
     priority_rank = {"high": 3, "medium": 2, "low": 1}.get(priority, 1)
     if category == "style":
@@ -1235,13 +2019,6 @@ def _trim_scored_chunk_sort_key(
     return rank[0], rank[1], probe_id, chunk.file_path, chunk.chunk_index
 
 
-def _is_high_priority_probe(probe: dict[str, object]) -> bool:
-    return (
-        str(probe.get("priority") or "") == "high"
-        or str(probe.get("category") or "") == "security"
-    )
-
-
 def _judge_batches(
     bundles: list[ProbeEvidenceBundle],
     *,
@@ -1251,12 +2028,14 @@ def _judge_batches(
     batches: list[list[ProbeEvidenceBundle]] = []
     current_batch: list[ProbeEvidenceBundle] = []
     current_chunk_count = 0
+    current_lane: ProbeLane | None = None
     for bundle in bundles:
         if not bundle.candidate_chunks:
             continue
         bundle_chunk_count = len(bundle.candidate_chunks)
         if current_batch and (
-            len(current_batch) >= max_probes
+            bundle.probe.lane is not current_lane
+            or len(current_batch) >= max_probes
             or current_chunk_count + bundle_chunk_count > max_chunks
         ):
             batches.append(current_batch)
@@ -1264,6 +2043,7 @@ def _judge_batches(
             current_chunk_count = 0
         current_batch.append(bundle)
         current_chunk_count += bundle_chunk_count
+        current_lane = bundle.probe.lane
 
     if current_batch:
         batches.append(current_batch)
@@ -1276,6 +2056,8 @@ def _judge_prompt(batch: list[ProbeEvidenceBundle]) -> str:
         "instruction": (
             "For each probe, decide whether the evidence proves a real issue. "
             "Do not invent files, rules, or missing behavior outside the chunks. "
+            "Return at least one candidate for every probe; use no_issue or "
+            "uncertain when evidence does not prove an issue. Preserve probe_id. "
             "Return exactly one JSON object and no markdown. Persistable issues "
             "require confidence >= 0.7."
         ),
@@ -1329,7 +2111,7 @@ def _judge_output_schema() -> dict[str, object]:
 
 def _bundle_for_prompt(bundle: ProbeEvidenceBundle) -> dict[str, object]:
     return {
-        "probe": bundle.probe,
+        "probe": bundle.probe.prompt_payload(),
         "retrieval_status": bundle.retrieval_status,
         "candidate_chunks": [
             {
@@ -1364,23 +2146,29 @@ def _numbered_content(chunk: ProbeCandidateChunk) -> str:
 async def _write_probe_retrieval_trace(
     *,
     trace_writer: SyntheticTraceWriter,
-    probe: dict[str, object],
+    probe: ProbeDefinition,
     bundle: ProbeEvidenceBundle,
     duration_ms: int,
 ) -> None:
     await trace_writer.write_synthetic_tool_log(
         tool_name=PROBE_RETRIEVAL_TOOL_NAME,
         tool_input={
-            "probe_id": _probe_id(probe),
-            "category": str(probe.get("category") or ""),
-            "related_rule_ids": _string_list(probe.get("related_rule_ids")),
-            "query": str(probe.get("query") or ""),
+            "probe_id": probe.probe_id,
+            "lane": probe.lane.value,
+            "category": probe.category,
+            "related_rule_ids": list(probe.related_rule_ids),
+            "retrieval_queries": list(probe.retrieval_queries),
+            "query": probe.primary_query,
         },
         output={
             "status": bundle.retrieval_status,
             "summary": "source content redacted from tool trace",
             "duration_ms": duration_ms,
             "strategies_used": bundle.strategies_used,
+            "candidate_counts": bundle.strategy_candidate_counts,
+            "selected_count": bundle.selected_count_before_trim,
+            "trimmed_count": bundle.trimmed_count,
+            "sent_to_judge": len(bundle.candidate_chunks),
             "result_count": len(bundle.candidate_chunks),
             "results": [_chunk_trace(chunk) for chunk in bundle.candidate_chunks],
         },
@@ -1499,10 +2287,10 @@ def _candidate_rule_id(
     if candidate.probe_id:
         for bundle in bundles:
             if _probe_id(bundle.probe) == candidate.probe_id:
-                rule_ids = _string_list(bundle.probe.get("related_rule_ids"))
+                rule_ids = list(bundle.probe.related_rule_ids)
                 return _matching_rule_id(candidate, rule_ids, roadmap_by_id)
     for bundle in bundles:
-        rule_ids = _string_list(bundle.probe.get("related_rule_ids"))
+        rule_ids = list(bundle.probe.related_rule_ids)
         if rule_ids:
             return _matching_rule_id(candidate, rule_ids, roadmap_by_id)
     return None
@@ -1786,42 +2574,23 @@ def _issue_severity(value: str | None) -> IssueSeverity:
     return IssueSeverity.MEDIUM
 
 
-def _static_issues(static_documents: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    issues: list[dict[str, Any]] = []
-    for document in static_documents:
-        tool_name = str(document.get("tool", "static"))
-        for issue in _as_list(document.get("parsed_issues")):
-            if not isinstance(issue, dict):
-                continue
-            normalized_issue = dict(issue)
-            normalized_issue["source"] = tool_name
-            issues.append(normalized_issue)
-    return issues
-
-
 def _files_to_review(
     *,
     file_tree: list[object],
-    static_issues: list[dict[str, Any]],
     chunk_counts: dict[str, int],
+    chunk_risks: dict[str, set[str]],
 ) -> list[dict[str, object]]:
-    issue_by_file: dict[str, list[dict[str, Any]]] = {}
-    for issue in static_issues:
-        file_path = issue.get("file_path")
-        if file_path:
-            issue_by_file.setdefault(str(file_path), []).append(issue)
     file_paths = {
         str(entry["path"])
         for entry in file_tree
         if isinstance(entry, dict) and entry.get("should_review") is True
     }
-    file_paths.update(issue_by_file)
     file_paths.update(chunk_counts)
     return [
         {
             "file_path": file_path,
-            "priority": _file_priority(file_path, issue_by_file.get(file_path, [])),
-            "risk_area": _file_risk_area(file_path, issue_by_file.get(file_path, [])),
+            "priority": _file_priority(file_path, chunk_risks.get(file_path, set())),
+            "risk_area": _file_risk_area(file_path, chunk_risks.get(file_path, set())),
             "total_chunks": chunk_counts.get(file_path, 0),
         }
         for file_path in sorted(file_paths)
@@ -1843,31 +2612,44 @@ def _chunk_counts_by_file(chunk_documents: list[dict[str, Any]]) -> dict[str, in
     return counts
 
 
-def _file_priority(file_path: str, issues: list[dict[str, Any]]) -> str:
-    severities = {str(issue.get("severity")) for issue in issues}
-    categories = {str(issue.get("category")) for issue in issues}
-    if severities & {"critical", "high"} or categories & {"security", "bug"}:
+def _chunk_risks_by_file(
+    chunk_documents: list[dict[str, Any]],
+) -> dict[str, set[str]]:
+    risks: dict[str, set[str]] = {}
+    for document in chunk_documents:
+        file_path = document.get("file_path")
+        risk_area = document.get("risk_area")
+        if isinstance(file_path, str) and isinstance(risk_area, str):
+            risks.setdefault(file_path, set()).add(risk_area)
+    return risks
+
+
+def _file_priority(file_path: str, risk_areas: set[str]) -> str:
+    if risk_areas & {"security", "api"}:
         return "high"
     if _path_category(file_path) == "security":
         return "high"
-    if issues:
+    if risk_areas & {"database", "config"}:
         return "medium"
     return "low"
 
 
-def _file_risk_area(file_path: str, issues: list[dict[str, Any]]) -> str:
-    categories = {str(issue.get("category")) for issue in issues}
-    if "security" in categories or _path_category(file_path) == "security":
+def _file_risk_area(file_path: str, risk_areas: set[str]) -> str:
+    if "security" in risk_areas or _path_category(file_path) == "security":
         return "security"
-    if "performance" in categories:
-        return "performance"
-    if "bug" in categories:
-        return "bug"
-    return "maintainability" if issues else "general"
+    if "database" in risk_areas:
+        return "database"
+    if "api" in risk_areas:
+        return "api"
+    if "config" in risk_areas:
+        return "config"
+    return "general"
 
 
 def _path_category(file_path: str) -> str:
-    parts = {part.lower() for part in file_path.replace("\\", "/").split("/")}
+    path = PurePosixPath(file_path.replace("\\", "/"))
+    parts = {part.lower() for part in path.parts}
+    parts.add(path.stem.lower())
     if parts & {"auth", "security", "crypto", "middleware"}:
         return "security"
     return "general"
@@ -1881,18 +2663,8 @@ def _document_key(document: dict[str, Any]) -> str:
     return f"{document.get('file_path')}:{document.get('chunk_index')}"
 
 
-def _probe_id(probe: dict[str, object]) -> str:
-    return str(probe.get("probe_id") or probe.get("audit_plan_item_id") or "probe")
-
-
-def _string_list(value: object) -> list[str]:
-    if not isinstance(value, list):
-        return []
-    return [str(item) for item in value if str(item)]
-
-
-def _optional_int(value: object) -> int | None:
-    return value if isinstance(value, int) and not isinstance(value, bool) else None
+def _probe_id(probe: ProbeDefinition) -> str:
+    return probe.probe_id
 
 
 def _sha256(content: bytes) -> str:

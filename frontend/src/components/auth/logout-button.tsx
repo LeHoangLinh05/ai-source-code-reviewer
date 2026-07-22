@@ -9,6 +9,7 @@ import { toast } from "sonner";
 import { Button, type ButtonProps } from "@/components/ui/button";
 import { api } from "@/lib/api";
 import { getApiErrorMessage } from "@/lib/api-error";
+import { publishAuthEvent } from "@/lib/auth-events";
 import { clearSessionMarker } from "@/lib/session-marker";
 import { useAppDispatch } from "@/store/hooks";
 import { clearCredentials } from "@/store/slices/authSlice";
@@ -39,6 +40,7 @@ function LogoutActionButton({
   function clearLocalSession() {
     dispatch(clearCredentials());
     clearSessionMarker();
+    publishAuthEvent("session-cleared");
     router.replace("/login");
   }
 

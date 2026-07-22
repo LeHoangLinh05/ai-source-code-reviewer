@@ -1,250 +1,394 @@
-"""Build dynamic semantic audit guidance for the Review Agent."""
+"""Build focused, typed probe definitions for semantic source review."""
 
 from __future__ import annotations
 
 import re
-from collections import Counter
 from collections.abc import Iterable, Sequence
 
-MAX_AUDIT_PLAN_ITEMS = 96
+from app.ai.probe_contracts import ProbeDefinition, ProbeLane
+
 MAX_ROADMAP_RULES_PER_PROBE = 3
-MAX_PROBE_AUDIT_ITEMS = 88
 MAX_FILE_AUDIT_ITEMS = 4
-MAX_STATIC_AUDIT_ITEMS = 2
-
+MAX_RETRIEVAL_QUERY_TOKENS = 64
+MIN_ROADMAP_TERM_LENGTH = 4
 HIGH_PRIORITY_VALUES = {"p0", "critical", "high"}
+CATEGORY_TOP_K = {
+    "security": 6,
+    "bug": 5,
+    "performance": 5,
+    "maintainability": 4,
+    "style": 3,
+}
 
-BASELINE_PROBES: tuple[dict[str, object], ...] = (
-    {
-        "probe_id": "security.sql_nosql_injection",
-        "category": "security",
-        "priority": "high",
-        "risk_area": "security",
-        "query": (
-            "Find request parameters used in SQL, ORM, NoSQL, filter, where, raw "
-            "query, or aggregation calls without parameter binding or validation"
+
+def _baseline(
+    *,
+    probe_id: str,
+    category: str,
+    priority: str,
+    queries: tuple[str, ...],
+    lexical_terms: tuple[str, ...],
+    question: str,
+    risk_area: str | None = None,
+) -> ProbeDefinition:
+    return ProbeDefinition(
+        probe_id=probe_id,
+        lane=ProbeLane.DEFECT,
+        category=category,
+        priority=priority,
+        risk_area=risk_area or category,
+        retrieval_queries=queries,
+        lexical_terms=lexical_terms,
+        judge_question=question,
+        top_k=CATEGORY_TOP_K[category],
+    )
+
+
+BASELINE_PROBES: tuple[ProbeDefinition, ...] = (
+    _baseline(
+        probe_id="security.sql_nosql_injection",
+        category="security",
+        priority="high",
+        queries=(
+            "raw SQL execute request parameter string formatting",
+            "from_statement text query interpolation concatenation",
         ),
-    },
-    {
-        "probe_id": "security.command_injection",
-        "category": "security",
-        "priority": "high",
-        "risk_area": "security",
-        "query": (
-            "Find shell, process, subprocess, exec, system, spawn, or command "
-            "calls that include request-controlled input"
+        lexical_terms=("execute", "from_statement", "text", "select", "where"),
+        question=(
+            "Does request-controlled data reach a SQL, ORM, or NoSQL query without "
+            "safe parameter binding or allowlist validation?"
         ),
-    },
-    {
-        "probe_id": "security.xss_template_injection",
-        "category": "security",
-        "priority": "high",
-        "risk_area": "security",
-        "query": (
-            "Find unescaped HTML, template rendering, dangerouslySetInnerHTML, "
-            "markdown, or user content rendered without sanitization"
+    ),
+    _baseline(
+        probe_id="security.command_injection",
+        category="security",
+        priority="high",
+        queries=(
+            "subprocess shell true request parameter command execution",
+            "system exec spawn user controlled command argument",
         ),
-    },
-    {
-        "probe_id": "security.ssrf_external_calls",
-        "category": "security",
-        "priority": "high",
-        "risk_area": "security",
-        "query": (
-            "Find outbound HTTP, fetch, requests, axios, webhook, file, or URL "
-            "loads built from request input without allowlist validation"
+        lexical_terms=("subprocess", "popen", "shell", "system", "exec", "spawn"),
+        question=(
+            "Does request-controlled data reach a shell or process execution sink "
+            "without safe argument separation or validation?"
         ),
-    },
-    {
-        "probe_id": "security.unsafe_deserialization",
-        "category": "security",
-        "priority": "high",
-        "risk_area": "security",
-        "query": (
-            "Find pickle, yaml.load, eval, dynamic import, object deserialization, "
-            "or parser calls on untrusted input"
+    ),
+    _baseline(
+        probe_id="security.xss_template_injection",
+        category="security",
+        priority="high",
+        queries=(
+            "unescaped user HTML template rendering",
+            "dangerouslySetInnerHTML markdown sanitization",
         ),
-    },
-    {
-        "probe_id": "security.hardcoded_secret",
-        "category": "security",
-        "priority": "high",
-        "risk_area": "security",
-        "query": (
-            "Find hardcoded passwords, API keys, JWT secrets, tokens, private keys, "
-            "or fallback credentials in source or config"
+        lexical_terms=("dangerouslysetinnerhtml", "render", "html", "markdown"),
+        question=(
+            "Can untrusted content be rendered as executable HTML or template code?"
         ),
-    },
-    {
-        "probe_id": "security.jwt_session_auth",
-        "category": "security",
-        "priority": "high",
-        "risk_area": "security",
-        "query": (
-            "Find login, refresh, logout, JWT, session, cookie, password hashing, "
-            "token expiry, token validation, and revocation behavior"
+    ),
+    _baseline(
+        probe_id="security.ssrf_external_calls",
+        category="security",
+        priority="high",
+        queries=(
+            "HTTP client get request URL from route parameter",
+            "fetch axios requests webhook user controlled URL allowlist",
         ),
-    },
-    {
-        "probe_id": "security.authorization",
-        "category": "security",
-        "priority": "high",
-        "risk_area": "security",
-        "query": (
-            "Find authorization checks for user ownership, roles, permissions, "
-            "tenant boundaries, admin routes, and object-level access"
+        lexical_terms=("httpx", "requests", "axios", "fetch", "client.get", "url"),
+        question=(
+            "Can request-controlled input choose an outbound URL without an allowlist, "
+            "scheme restriction, or private-network protection?"
         ),
-    },
-    {
-        "probe_id": "security.input_validation_cors",
-        "category": "security",
-        "priority": "medium",
-        "risk_area": "security",
-        "query": (
-            "Find request body, query, header, file upload, CORS, and boundary "
-            "validation behavior that accepts unsafe or overly broad input"
+    ),
+    _baseline(
+        probe_id="security.unsafe_deserialization",
+        category="security",
+        priority="high",
+        queries=(
+            "untrusted pickle yaml load eval deserialization",
+            "dynamic import parser request payload execution",
         ),
-    },
-    {
-        "probe_id": "bug.error_none_edges",
-        "category": "bug",
-        "priority": "medium",
-        "risk_area": "bug",
-        "query": (
-            "Find missing error handling, None/null edge cases, unchecked optional "
-            "values, invalid states, and response paths that can crash"
+        lexical_terms=("pickle", "yaml.load", "eval", "loads", "deserialize"),
+        question="Is untrusted input passed to an unsafe parser or deserializer?",
+    ),
+    _baseline(
+        probe_id="security.hardcoded_secret",
+        category="security",
+        priority="high",
+        queries=(
+            "hardcoded password API key JWT secret token source",
+            "fallback credential private key configuration",
         ),
-    },
-    {
-        "probe_id": "bug.swallowed_exceptions",
-        "category": "bug",
-        "priority": "medium",
-        "risk_area": "bug",
-        "query": (
-            "Find broad except blocks, swallowed exceptions, failed retries, and "
-            "fallback behavior that hides runtime failures"
+        lexical_terms=("password", "secret", "api_key", "token", "private_key"),
+        question=(
+            "Does production source contain a usable hardcoded credential or secret?"
         ),
-    },
-    {
-        "probe_id": "bug.async_concurrency",
-        "category": "bug",
-        "priority": "medium",
-        "risk_area": "bug",
-        "query": (
-            "Find async tasks, background jobs, websocket handlers, race-prone "
-            "shared state, and fire-and-forget work without supervision"
+    ),
+    _baseline(
+        probe_id="security.object_authorization",
+        category="security",
+        priority="high",
+        queries=(
+            "route object id current user ownership get by id",
+            "authenticated endpoint resource user id authorization",
         ),
-    },
-    {
-        "probe_id": "bug.state_transaction_consistency",
-        "category": "bug",
-        "priority": "medium",
-        "risk_area": "bug",
-        "query": (
-            "Find multi-step state changes, database writes, commits, rollbacks, "
-            "cache updates, or external calls that can leave inconsistent state"
+        lexical_terms=("current_user", "get_by_id", "user_id", "order_id", "owner"),
+        question=(
+            "Can an authenticated caller read or mutate an object without proving "
+            "ownership or equivalent object-level permission?"
         ),
-    },
-    {
-        "probe_id": "bug.incomplete_branches",
-        "category": "bug",
-        "priority": "medium",
-        "risk_area": "bug",
-        "query": (
-            "Find incomplete branches, TODO pass-through logic, hardcoded returns, "
-            "stub implementations, and unreachable or unhandled cases"
+    ),
+    _baseline(
+        probe_id="security.role_authorization",
+        category="security",
+        priority="high",
+        queries=(
+            "admin route role permission dependency authorization",
+            "authenticated user privileged operation RBAC",
         ),
-    },
-    {
-        "probe_id": "performance.n_plus_one",
-        "category": "performance",
-        "priority": "medium",
-        "risk_area": "performance",
-        "query": (
-            "Find loops that call database queries, repository methods, ORM loads, "
-            "HTTP clients, or other I/O per item"
+        lexical_terms=("admin", "role", "permission", "get_current_user"),
+        question=(
+            "Can a non-privileged authenticated user invoke a privileged operation?"
         ),
-    },
-    {
-        "probe_id": "performance.pagination_bounds",
-        "category": "performance",
-        "priority": "medium",
-        "risk_area": "performance",
-        "query": (
-            "Find list, search, export, feed, sync, or query endpoints without "
-            "pagination, limits, streaming, or bounded iteration"
+    ),
+    _baseline(
+        probe_id="security.mass_assignment",
+        category="security",
+        priority="high",
+        queries=(
+            "request dictionary setattr model fields update",
+            "payload items arbitrary attribute assignment sensitive role",
         ),
-    },
-    {
-        "probe_id": "performance.repeated_external_calls",
-        "category": "performance",
-        "priority": "medium",
-        "risk_area": "performance",
-        "query": (
-            "Find repeated external API calls, network requests, embedding calls, "
-            "or expensive work inside request paths without batching or caching"
+        lexical_terms=("payload", "dict", "setattr", "model_dump", "items"),
+        question=(
+            "Can request data assign arbitrary model attributes, including sensitive "
+            "or authorization fields?"
         ),
-    },
-    {
-        "probe_id": "performance.memory_serialization_cache",
-        "category": "performance",
-        "priority": "medium",
-        "risk_area": "performance",
-        "query": (
-            "Find memory growth, large in-memory collections, inefficient "
-            "serialization, stale cache behavior, and cache misuse"
+    ),
+    _baseline(
+        probe_id="security.weak_password_hash",
+        category="security",
+        priority="high",
+        queries=(
+            "password hashing md5 sha1 weak digest",
+            "hashlib password update without adaptive hash",
         ),
-    },
-    {
-        "probe_id": "maintainability.dead_complex_code",
-        "category": "maintainability",
-        "priority": "medium",
-        "risk_area": "maintainability",
-        "query": (
-            "Find dead code, unused functions, overly complex functions, deep "
-            "nesting, and branches that are hard to reason about"
+        lexical_terms=("hashlib", "md5", "sha1", "hexdigest", "password"),
+        question="Are passwords stored or updated using a weak, fast hash?",
+    ),
+    _baseline(
+        probe_id="security.reset_token_lifecycle",
+        category="security",
+        priority="high",
+        queries=(
+            "password reset token Redis set expiration TTL",
+            "reset token generation reuse invalidation expiry",
         ),
-    },
-    {
-        "probe_id": "maintainability.duplication_side_effects",
-        "category": "maintainability",
-        "priority": "medium",
-        "risk_area": "maintainability",
-        "query": (
-            "Find duplicate business logic, hidden side effects, unclear state "
-            "mutation, long parameter lists, and misleading names"
+        lexical_terms=("reset", "redis.set", "setex", "expire", "ttl", "token"),
+        question=(
+            "Can a password-reset token remain valid without expiration, secure "
+            "generation, or one-time invalidation?"
         ),
-    },
-    {
-        "probe_id": "maintainability.layering_imports",
-        "category": "maintainability",
-        "priority": "medium",
-        "risk_area": "maintainability",
-        "query": (
-            "Find API/service/repository layering violations, circular imports, "
-            "business logic in routes, and infrastructure constructed in services"
+    ),
+    _baseline(
+        probe_id="security.refresh_token_validation",
+        category="security",
+        priority="high",
+        queries=(
+            "refresh token validate signature expiry issuer audience rotation",
+            "JWT refresh reuse revoke session",
         ),
-    },
-    {
-        "probe_id": "style.boundary_contracts",
-        "category": "style",
-        "priority": "low",
-        "risk_area": "general",
-        "query": (
-            "Find missing schema validation at boundaries, inconsistent response "
-            "contracts, unclear API names, and convention violations with user impact"
+        lexical_terms=("refresh", "jwt", "decode", "issuer", "audience", "revoke"),
+        question="Is refresh-token validation or rotation incomplete or bypassable?",
+    ),
+    _baseline(
+        probe_id="security.logout_revocation",
+        category="security",
+        priority="high",
+        queries=(
+            "logout revoke refresh token blacklist session",
+            "logout success without invalidating token",
         ),
-    },
-    {
-        "probe_id": "style.production_diagnostics",
-        "category": "style",
-        "priority": "low",
-        "risk_area": "general",
-        "query": (
-            "Find production prints, debug leftovers, commented-out code, noisy "
-            "diagnostics, and operational readability issues"
+        lexical_terms=("logout", "revoke", "blacklist", "delete", "session"),
+        question="Does logout leave issued credentials usable after returning success?",
+    ),
+    _baseline(
+        probe_id="security.input_validation_cors",
+        category="security",
+        priority="medium",
+        queries=(
+            "request boundary schema validation unsafe input",
+            "file upload header query CORS overly broad",
         ),
-    },
+        lexical_terms=("request", "query", "header", "upload", "cors"),
+        question="Does an external boundary accept unsafe or overly broad input?",
+    ),
+    _baseline(
+        probe_id="bug.error_none_edges",
+        category="bug",
+        priority="medium",
+        queries=(
+            "unchecked optional None invalid state crash",
+            "missing error response absent value",
+        ),
+        lexical_terms=("none", "null", "optional", "raise", "error"),
+        question=(
+            "Can an unchecked absent value or invalid state cause incorrect behavior?"
+        ),
+    ),
+    _baseline(
+        probe_id="bug.swallowed_exceptions",
+        category="bug",
+        priority="medium",
+        queries=(
+            "broad exception swallowed failure fallback",
+            "except pass retry error hidden",
+        ),
+        lexical_terms=("except", "pass", "error", "fallback", "retry"),
+        question="Is a runtime failure swallowed or converted into misleading success?",
+    ),
+    _baseline(
+        probe_id="bug.async_concurrency",
+        category="bug",
+        priority="high",
+        queries=(
+            "read modify write shared state race database",
+            "inventory stock check decrement without lock",
+            "async task fire and forget unsupervised",
+        ),
+        lexical_terms=("quantity", "stock", "update", "lock", "task", "await"),
+        question=(
+            "Can concurrent execution cause a lost update, race, or unsupervised "
+            "failure?"
+        ),
+    ),
+    _baseline(
+        probe_id="bug.state_transaction_consistency",
+        category="bug",
+        priority="high",
+        queries=(
+            "multiple database writes missing rollback transaction",
+            "state update external call inconsistent commit",
+        ),
+        lexical_terms=("commit", "rollback", "transaction", "update", "create"),
+        question="Can a failed multi-step operation leave durable state inconsistent?",
+    ),
+    _baseline(
+        probe_id="bug.incomplete_branches",
+        category="bug",
+        priority="medium",
+        queries=(
+            "incomplete branch hardcoded return stub TODO",
+            "unreachable unhandled behavior pass through",
+        ),
+        lexical_terms=("todo", "pass", "notimplemented", "hardcoded"),
+        question=(
+            "Is a reachable behavior incomplete, stubbed, or incorrectly bypassed?"
+        ),
+    ),
+    _baseline(
+        probe_id="performance.n_plus_one",
+        category="performance",
+        priority="high",
+        queries=(
+            "database execute await inside loop per item",
+            "repository query ORM load for each record",
+        ),
+        lexical_terms=("for", "execute", "await", "repository", "scalars"),
+        question="Does iteration perform database or network I/O once per item?",
+    ),
+    _baseline(
+        probe_id="performance.pagination_bounds",
+        category="performance",
+        priority="medium",
+        queries=(
+            "load all records filter paginate in memory",
+            "list query without limit offset bounded iteration",
+        ),
+        lexical_terms=("all", "limit", "offset", "page", "size", "filter"),
+        question="Can an operation load or process an unbounded result set?",
+    ),
+    _baseline(
+        probe_id="performance.repeated_external_calls",
+        category="performance",
+        priority="medium",
+        queries=(
+            "external network request inside loop without batching",
+            "repeated expensive call request path cache",
+        ),
+        lexical_terms=("client", "request", "await", "for", "cache"),
+        question="Is expensive I/O repeated where batching or caching is required?",
+    ),
+    _baseline(
+        probe_id="performance.memory_serialization_cache",
+        category="performance",
+        priority="medium",
+        queries=(
+            "large in memory collection serialization",
+            "cache stale growth misuse expiration",
+        ),
+        lexical_terms=("list", "all", "serialize", "cache", "expire"),
+        question=(
+            "Can collection, serialization, or cache behavior cause avoidable growth?"
+        ),
+    ),
+    _baseline(
+        probe_id="maintainability.resource_lifecycle",
+        category="maintainability",
+        priority="high",
+        queries=(
+            "create database engine client inside method",
+            "connection pool infrastructure lifecycle per request",
+        ),
+        lexical_terms=("create_engine", "create_async_engine", "client", "dispose"),
+        question=(
+            "Is shared infrastructure recreated inside request or repository logic?"
+        ),
+    ),
+    _baseline(
+        probe_id="maintainability.dead_complex_code",
+        category="maintainability",
+        priority="medium",
+        queries=("dead unused complex nested function branches",),
+        lexical_terms=("if", "else", "return", "unused"),
+        question="Is production logic dead or unnecessarily difficult to reason about?",
+    ),
+    _baseline(
+        probe_id="maintainability.duplication_side_effects",
+        category="maintainability",
+        priority="medium",
+        queries=("duplicate logic hidden state mutation side effect",),
+        lexical_terms=("setattr", "append", "update", "global"),
+        question="Does duplicated or hidden mutation make behavior unsafe to maintain?",
+    ),
+    _baseline(
+        probe_id="maintainability.layering_imports",
+        category="maintainability",
+        priority="medium",
+        queries=("API service repository layering infrastructure dependency",),
+        lexical_terms=("repository", "service", "engine", "session"),
+        question="Does code violate a meaningful application-layer ownership boundary?",
+    ),
+    _baseline(
+        probe_id="style.boundary_contracts",
+        category="style",
+        priority="low",
+        risk_area="general",
+        queries=("missing boundary schema inconsistent response contract",),
+        lexical_terms=("response_model", "schema", "dict", "request"),
+        question=(
+            "Does a boundary contract create a concrete correctness or safety risk?"
+        ),
+    ),
+    _baseline(
+        probe_id="style.production_diagnostics",
+        category="style",
+        priority="low",
+        risk_area="general",
+        queries=("production debug print noisy diagnostics commented code",),
+        lexical_terms=("print", "debug", "console.log"),
+        question="Does leftover diagnostic code create an operational problem?",
+    ),
 )
 
 
@@ -253,144 +397,158 @@ def build_semantic_audit_plan(
     roadmap_context: dict[str, object] | None,
     files_to_review: Sequence[dict[str, object]],
     static_issues: Sequence[dict[str, object]],
-) -> list[dict[str, object]]:
-    """Return dynamic semantic-search seeds without hard-coding benchmark bugs."""
+) -> list[ProbeDefinition]:
+    """Return defect, coverage, and roadmap probes with independent intent."""
 
-    plan: list[dict[str, object]] = []
-    seen_queries: set[str] = set()
-
-    for item in _probe_audit_items(
-        roadmap_context=roadmap_context,
-        files_to_review=files_to_review,
-    ):
-        _append_unique(plan, seen_queries, item)
-
-    for item in _file_audit_items(files_to_review):
-        _append_unique(plan, seen_queries, item)
-
-    for item in _static_audit_items(static_issues):
-        _append_unique(plan, seen_queries, item)
-
-    return plan[:MAX_AUDIT_PLAN_ITEMS]
+    _ = static_issues  # Static findings are intentionally isolated from AI review.
+    plan = list(BASELINE_PROBES)
+    plan.extend(_coverage_probes(files_to_review))
+    plan.extend(_roadmap_probes(roadmap_context))
+    return plan
 
 
-def _probe_audit_items(
-    *,
-    roadmap_context: dict[str, object] | None,
+def _coverage_probes(
     files_to_review: Sequence[dict[str, object]],
-) -> list[dict[str, object]]:
-    roadmap_rules_by_category = _roadmap_rules_by_category(roadmap_context)
-    baseline_probes_by_category = _baseline_probes_by_category()
-    path_hints_by_category = _path_hints_by_category(files_to_review)
-    categories = _ordered_categories(
-        baseline_by_category=baseline_probes_by_category,
-        roadmap_rules_by_category=roadmap_rules_by_category,
+) -> list[ProbeDefinition]:
+    candidates = [
+        file_info
+        for file_info in files_to_review
+        if _string(file_info.get("file_path"))
+        and _string(file_info.get("priority")) in {"high", "medium"}
+    ]
+    candidates.sort(
+        key=lambda item: (
+            _priority_rank(_string(item.get("priority"))),
+            _string(item.get("file_path")),
+        )
     )
-
-    items: list[dict[str, object]] = []
-    for category in categories:
-        path_hints = path_hints_by_category.get(category, [])
-        for baseline_probe in baseline_probes_by_category.get(category, []):
-            items.append(
-                _baseline_probe_item(
-                    baseline_probe=baseline_probe,
-                    path_hints=path_hints,
-                )
+    probes: list[ProbeDefinition] = []
+    for file_info in candidates[:MAX_FILE_AUDIT_ITEMS]:
+        file_path = _string(file_info.get("file_path"))
+        risk_area = _string(file_info.get("risk_area")) or "general"
+        probes.append(
+            ProbeDefinition(
+                probe_id=f"coverage.{_slug(file_path)}",
+                lane=ProbeLane.COVERAGE,
+                category=_category_for_risk(risk_area),
+                priority=_string(file_info.get("priority")) or "medium",
+                risk_area=risk_area,
+                retrieval_queries=(
+                    "end to end behavior insecure defaults hidden logic "
+                    "incomplete branch",
+                ),
+                lexical_terms=(),
+                judge_question=(
+                    "Does this high-risk file contain a concrete security, "
+                    "correctness, "
+                    "performance, or lifecycle defect?"
+                ),
+                top_k=6,
+                file_scope=file_path,
+                source_kinds=("coverage",),
+                reason="high_risk_file",
+                probe_kind="coverage",
             )
+        )
+    return probes
 
-        for probe_index, rule_batch in enumerate(
-            _roadmap_rule_probe_batches(roadmap_rules_by_category.get(category, [])),
+
+def _roadmap_probes(
+    roadmap_context: dict[str, object] | None,
+) -> list[ProbeDefinition]:
+    grouped = _roadmap_rules_by_group(roadmap_context)
+    probes: list[ProbeDefinition] = []
+    for category, rules in sorted(grouped.items()):
+        for batch_index, batch in enumerate(
+            _batched(_sorted_rules(rules), MAX_ROADMAP_RULES_PER_PROBE),
             start=1,
         ):
-            items.append(
-                _roadmap_probe_item(
+            rule_ids = tuple(_string(rule.get("rule_id")) for rule in batch)
+            skill_groups = " ".join(_string(rule.get("skill_group")) for rule in batch)
+            check_types = " ".join(_string(rule.get("check_type")) for rule in batch)
+            intent = " ".join(
+                _string(rule.get("verification_hint"))
+                or _string(rule.get("requirement"))
+                for rule in batch
+            )
+            requirement = " | ".join(_string(rule.get("requirement")) for rule in batch)
+            probes.append(
+                ProbeDefinition(
+                    probe_id=(f"roadmap.{_slug(category)}.{batch_index}"),
+                    lane=ProbeLane.ROADMAP,
                     category=category,
-                    probe_index=probe_index,
-                    path_hints=path_hints,
-                    rules=rule_batch,
+                    priority=_highest_priority(
+                        [_string(rule.get("priority")) for rule in batch]
+                    ),
+                    risk_area=_category_for_risk(category),
+                    retrieval_queries=(_bounded_query(intent or requirement),),
+                    lexical_terms=tuple(
+                        _unique_terms(f"{skill_groups} {check_types} {requirement}")[
+                            :12
+                        ]
+                    ),
+                    judge_question=(
+                        "Does the source evidence satisfy or contradict these roadmap "
+                        f"requirements: {requirement}?"
+                    ),
+                    top_k=1,
+                    related_rule_ids=rule_ids,
+                    source_kinds=("roadmap",),
+                    probe_kind="roadmap",
                 )
             )
+    return probes
 
-    return items[:MAX_PROBE_AUDIT_ITEMS]
 
-
-def _roadmap_rules_by_category(
+def _roadmap_rules_by_group(
     roadmap_context: dict[str, object] | None,
 ) -> dict[str, list[dict[str, object]]]:
     if roadmap_context is None:
         return {}
-
     raw_rules = roadmap_context.get("review_rules")
     if not isinstance(raw_rules, list):
         raw_rules = roadmap_context.get("ai_verification_rules", [])
     if not isinstance(raw_rules, list):
         return {}
 
-    grouped_rules: dict[str, list[dict[str, object]]] = {}
-    for raw_rule in raw_rules:
-        if not isinstance(raw_rule, dict):
+    grouped: dict[str, list[dict[str, object]]] = {}
+    for value in raw_rules:
+        if not isinstance(value, dict):
             continue
-
-        rule_id = _string(raw_rule.get("rule_id"))
-        requirement = _string(raw_rule.get("requirement"))
-        verification_hint = _string(raw_rule.get("verification_hint"))
-        skill_group = _string(raw_rule.get("skill_group"))
-        review_category = _string(raw_rule.get("review_category")) or "requirement"
-        check_type = _string(raw_rule.get("check_type"))
-        priority = _string(raw_rule.get("priority")) or "P1"
-        needs_ai_verification = raw_rule.get("needs_ai_verification") is True
+        rule_id = _string(value.get("rule_id"))
+        requirement = _string(value.get("requirement"))
+        verification_hint = _string(value.get("verification_hint"))
         if not rule_id or not (requirement or verification_hint):
             continue
-
-        grouped_rules.setdefault(review_category, []).append(
+        category = _string(value.get("review_category")) or "requirement"
+        grouped.setdefault(category, []).append(
             {
+                **value,
                 "rule_id": rule_id,
-                "skill_group": skill_group,
                 "requirement": requirement,
                 "verification_hint": verification_hint,
-                "review_category": review_category,
-                "check_type": check_type,
-                "needs_ai_verification": needs_ai_verification,
-                "priority": _priority(priority),
+                "priority": _priority(_string(value.get("priority"))),
             }
         )
-
-    return grouped_rules
-
-
-def _baseline_probes_by_category() -> dict[str, list[dict[str, object]]]:
-    grouped: dict[str, list[dict[str, object]]] = {}
-    for probe in BASELINE_PROBES:
-        category = _string(probe.get("category"))
-        if category:
-            grouped.setdefault(category, []).append(probe)
     return grouped
 
 
-def _ordered_categories(
-    *,
-    baseline_by_category: dict[str, list[dict[str, object]]],
-    roadmap_rules_by_category: dict[str, list[dict[str, object]]],
-) -> list[str]:
-    categories: list[str] = []
-    for probe in BASELINE_PROBES:
-        category = _string(probe.get("category"))
-        if category and category not in categories:
-            categories.append(category)
+def _bounded_query(value: str) -> str:
+    words = value.split()
+    if not words:
+        return "verify required runtime behavior from source evidence"
+    return " ".join(words[:MAX_RETRIEVAL_QUERY_TOKENS])
 
-    remaining_categories = [
-        category
-        for category in roadmap_rules_by_category
-        if category not in baseline_by_category
-    ]
-    remaining_categories.sort(
-        key=lambda category: (
-            _priority_rank(_highest_rule_priority(roadmap_rules_by_category[category])),
-            category,
-        )
-    )
-    categories.extend(remaining_categories)
-    return categories
+
+def _unique_terms(value: str) -> list[str]:
+    seen: set[str] = set()
+    terms: list[str] = []
+    for term in re.findall(r"[A-Za-z_][A-Za-z0-9_]+", value.lower()):
+        if len(term) < MIN_ROADMAP_TERM_LENGTH or term in seen:
+            continue
+        seen.add(term)
+        terms.append(term)
+    return terms
 
 
 def _sorted_rules(rules: list[dict[str, object]]) -> list[dict[str, object]]:
@@ -399,286 +557,19 @@ def _sorted_rules(rules: list[dict[str, object]]) -> list[dict[str, object]]:
         key=lambda rule: (
             not bool(rule.get("needs_ai_verification")),
             _priority_rank(_string(rule.get("priority"))),
-            str(rule["rule_id"]),
+            _string(rule.get("skill_group")),
+            _string(rule.get("check_type")),
+            _string(rule.get("rule_id")),
         ),
-    )
-
-
-def _roadmap_rule_probe_batches(
-    rules: list[dict[str, object]],
-) -> list[list[dict[str, object]]]:
-    grouped_rules: dict[tuple[str, str, str], list[dict[str, object]]] = {}
-    for rule in _sorted_rules(rules):
-        category = _string(rule.get("review_category")) or "requirement"
-        skill_group = _slug(_string(rule.get("skill_group")) or "general")
-        check_type = _slug(_string(rule.get("check_type")) or "behavior")
-        grouped_rules.setdefault((category, skill_group, check_type), []).append(rule)
-
-    batches: list[list[dict[str, object]]] = []
-    for key in sorted(grouped_rules):
-        batches.extend(_batched(grouped_rules[key], MAX_ROADMAP_RULES_PER_PROBE))
-    return batches
-
-
-def _baseline_probe_item(
-    *,
-    baseline_probe: dict[str, object],
-    path_hints: list[str],
-) -> dict[str, object]:
-    category = _string(baseline_probe.get("category")) or "maintainability"
-    probe_id = _string(baseline_probe.get("probe_id")) or f"{category}.baseline"
-    query_parts = [
-        f"Probe {probe_id} in {category} category",
-        _string(baseline_probe.get("query")),
-    ]
-    if path_hints:
-        query_parts.append(f"prioritize likely paths: {', '.join(path_hints[:5])}")
-    query_parts.append(_probe_evidence_instruction())
-
-    priority = _string(baseline_probe.get("priority")) or "medium"
-    return {
-        "audit_plan_item_id": f"category_probe:{probe_id}",
-        "probe_id": probe_id,
-        "probe_kind": "baseline",
-        "query": "; ".join(part for part in query_parts if part),
-        "reason": "category_probe",
-        "priority": _priority(priority),
-        "category": category,
-        "review_category": category,
-        "risk_area": _risk_area_for_category(category, baseline_probe),
-        "source_kinds": ["baseline"],
-        "related_rule_ids": [],
-        "top_k": 5,
-    }
-
-
-def _roadmap_probe_item(
-    *,
-    category: str,
-    probe_index: int,
-    path_hints: list[str],
-    rules: list[dict[str, object]],
-) -> dict[str, object]:
-    rule_ids = [str(rule["rule_id"]) for rule in rules]
-    probe_slug = _roadmap_probe_slug(
-        category=category,
-        probe_index=probe_index,
-        rules=rules,
-    )
-    query_parts = [
-        f"Probe {probe_slug} in {category} category",
-        f"roadmap rule ids: {', '.join(rule_ids)}",
-    ]
-    priorities: list[str] = []
-    if path_hints:
-        query_parts.append(f"prioritize likely paths: {', '.join(path_hints[:5])}")
-    skill_groups = _unique_strings(_string(rule.get("skill_group")) for rule in rules)
-    if skill_groups:
-        query_parts.append(f"focus area: {', '.join(skill_groups[:3])}")
-    check_types = _unique_strings(_string(rule.get("check_type")) for rule in rules)
-    if check_types:
-        query_parts.append(f"check type: {', '.join(check_types[:3])}")
-    hints = [
-        _truncate(_roadmap_hint_for_query(rule), 180)
-        for rule in rules
-        if _roadmap_hint_for_query(rule)
-    ]
-    if hints:
-        query_parts.append("behavior intent: " + " | ".join(hints[:3]))
-    requirements = [
-        _truncate(_string(rule.get("requirement")), 140)
-        for rule in rules
-        if _string(rule.get("requirement"))
-    ]
-    if requirements:
-        query_parts.append("required behavior: " + " | ".join(requirements[:3]))
-    priorities.extend(_string(rule.get("priority")) for rule in rules)
-    query_parts.append(_probe_evidence_instruction())
-
-    return {
-        "audit_plan_item_id": f"category_probe:{probe_slug}",
-        "probe_id": probe_slug,
-        "probe_kind": "roadmap",
-        "query": "; ".join(query_parts),
-        "reason": "category_probe",
-        "priority": _highest_priority(priorities),
-        "category": category,
-        "review_category": category,
-        "risk_area": _risk_area_for_category(category, None),
-        "source_kinds": ["roadmap"],
-        "related_rule_ids": rule_ids,
-        "top_k": 5,
-    }
-
-
-def _roadmap_probe_slug(
-    *,
-    category: str,
-    probe_index: int,
-    rules: list[dict[str, object]],
-) -> str:
-    first_rule = rules[0] if rules else {}
-    skill_group = _slug(_string(first_rule.get("skill_group")) or "general")
-    check_type = _slug(_string(first_rule.get("check_type")) or "behavior")
-    first_rule_id = _slug(_string(first_rule.get("rule_id")) or str(probe_index))
-    return f"{category}.{skill_group}.{check_type}.{first_rule_id}"
-
-
-def _probe_evidence_instruction() -> str:
-    return (
-        "retrieve source/config evidence for real control flow, data flow, "
-        "dependencies, integration boundaries, stubs, mocks, hardcoded returns, "
-        "fake pass-through logic, incomplete behavior, and contradiction checks"
     )
 
 
 def _batched(
     items: list[dict[str, object]],
     batch_size: int,
-) -> list[list[dict[str, object]]]:
-    return [
-        items[index : index + batch_size] for index in range(0, len(items), batch_size)
-    ]
-
-
-def _unique_strings(values: Iterable[str]) -> list[str]:
-    unique_values: list[str] = []
-    for value in values:
-        if value and value not in unique_values:
-            unique_values.append(value)
-    return unique_values
-
-
-def _truncate(value: str, max_length: int) -> str:
-    if len(value) <= max_length:
-        return value
-    return f"{value[: max_length - 3].rstrip()}..."
-
-
-def _slug(value: str) -> str:
-    normalized = re.sub(r"[^a-z0-9]+", "_", value.lower()).strip("_")
-    return normalized or "general"
-
-
-def _path_hints_by_category(
-    files_to_review: Sequence[dict[str, object]],
-) -> dict[str, list[str]]:
-    hints: dict[str, list[str]] = {
-        "security": [],
-        "bug": [],
-        "performance": [],
-        "maintainability": [],
-        "style": [],
-    }
-    for file_info in files_to_review:
-        file_path = _string(file_info.get("file_path"))
-        if not file_path:
-            continue
-
-        risk_area = _string(file_info.get("risk_area"))
-        category = risk_area if risk_area in hints else _category_from_path(file_path)
-        if category not in hints:
-            category = "maintainability"
-        if file_path not in hints[category]:
-            hints[category].append(file_path)
-
-    return {category: paths[:5] for category, paths in hints.items() if paths}
-
-
-def _category_from_path(file_path: str) -> str:
-    normalized = file_path.replace("\\", "/").lower()
-    path_parts = set(normalized.split("/"))
-    if path_parts & {"auth", "security", "crypto", "middleware"}:
-        return "security"
-    if path_parts & {"db", "database", "models", "repositories"}:
-        return "performance"
-    if path_parts & {"api", "routes", "routers", "services", "workers"}:
-        return "bug"
-    return "maintainability"
-
-
-def _file_audit_items(
-    files_to_review: Sequence[dict[str, object]],
-) -> list[dict[str, object]]:
-    items: list[dict[str, object]] = []
-    for file_info in files_to_review:
-        file_path = _string(file_info.get("file_path"))
-        priority = _string(file_info.get("priority")) or "low"
-        risk_area = _string(file_info.get("risk_area")) or "general"
-        if not file_path or priority not in {"high", "medium"}:
-            continue
-
-        items.append(
-            {
-                "query": (
-                    f"Review {file_path} for real end-to-end behavior, hidden "
-                    f"logic bugs, incomplete branches, insecure defaults, and "
-                    f"stubbed or hardcoded implementation paths"
-                ),
-                "reason": "high_risk_file",
-                "priority": priority,
-                "file_path": file_path,
-                "risk_area": risk_area,
-                "top_k": 3,
-            }
-        )
-
-    return sorted(
-        items,
-        key=lambda item: (
-            _priority_rank(_string(item.get("priority"))),
-            str(item.get("file_path")),
-        ),
-    )[:MAX_FILE_AUDIT_ITEMS]
-
-
-def _static_audit_items(
-    static_issues: Sequence[dict[str, object]],
-) -> list[dict[str, object]]:
-    grouped: Counter[tuple[str, str]] = Counter()
-    paths_by_group: dict[tuple[str, str], set[str]] = {}
-    for issue in static_issues:
-        category = _string(issue.get("category")) or "general"
-        severity = _string(issue.get("severity")) or "unknown"
-        key = (category, severity)
-        grouped[key] += 1
-        file_path = _string(issue.get("file_path"))
-        if file_path:
-            paths_by_group.setdefault(key, set()).add(file_path)
-
-    items: list[dict[str, object]] = []
-    for (category, severity), count in grouped.most_common(MAX_STATIC_AUDIT_ITEMS):
-        paths = sorted(paths_by_group.get((category, severity), set()))[:5]
-        path_text = ", ".join(paths) if paths else "affected files"
-        items.append(
-            {
-                "query": (
-                    f"Investigate whether {count} static {severity} {category} "
-                    f"finding(s) indicate broader runtime or cross-file logic flaws "
-                    f"around {path_text}"
-                ),
-                "reason": "static_finding_followup",
-                "priority": _priority(severity),
-                "category": category,
-                "top_k": 3,
-            }
-        )
-
-    return items
-
-
-def _append_unique(
-    plan: list[dict[str, object]],
-    seen_queries: set[str],
-    item: dict[str, object],
-) -> None:
-    query = _string(item.get("query"))
-    normalized_query = " ".join(query.lower().split())
-    if not normalized_query or normalized_query in seen_queries:
-        return
-
-    seen_queries.add(normalized_query)
-    plan.append(item)
+) -> Iterable[list[dict[str, object]]]:
+    for index in range(0, len(items), batch_size):
+        yield items[index : index + batch_size]
 
 
 def _priority(value: str) -> str:
@@ -691,52 +582,26 @@ def _priority(value: str) -> str:
 
 
 def _priority_rank(value: str) -> int:
-    return {"high": 0, "medium": 1, "low": 2}.get(value, 3)
+    return {"high": 0, "medium": 1, "low": 2}.get(_priority(value), 3)
 
 
 def _highest_priority(priorities: list[str]) -> str:
-    normalized_priorities = [_priority(priority) for priority in priorities if priority]
-    return min(normalized_priorities, key=_priority_rank, default="low")
+    return min((_priority(value) for value in priorities), key=_priority_rank)
 
 
-def _highest_rule_priority(rules: list[dict[str, object]]) -> str:
-    return _highest_priority([_string(rule.get("priority")) for rule in rules])
+def _category_for_risk(value: str) -> str:
+    if value in CATEGORY_TOP_K:
+        return value
+    return {
+        "api": "bug",
+        "database": "performance",
+        "config": "security",
+    }.get(value, "maintainability")
 
 
-def _risk_area_for_category(
-    category: str,
-    baseline_audit: dict[str, object] | None,
-) -> str:
-    if baseline_audit is not None:
-        risk_area = _string(baseline_audit.get("risk_area"))
-        if risk_area:
-            return risk_area
-    if category in {
-        "security",
-        "bug",
-        "performance",
-        "maintainability",
-        "style",
-        "structure",
-        "ai",
-        "realtime",
-        "requirement",
-    }:
-        return category
-    return "general"
-
-
-def _roadmap_hint_for_query(rule: dict[str, object]) -> str:
-    hint = _string(rule.get("verification_hint"))
-    if not hint:
-        return ""
-    if rule.get("needs_ai_verification") is True:
-        return hint
-
-    legacy_prefix = "Inspect evidence related to "
-    if hint.startswith(legacy_prefix):
-        return ""
-    return hint.split(" Historical evidence hints:", 1)[0].strip()
+def _slug(value: str) -> str:
+    normalized = re.sub(r"[^a-z0-9]+", "_", value.lower()).strip("_")
+    return normalized or "general"
 
 
 def _string(value: object) -> str:

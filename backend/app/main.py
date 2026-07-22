@@ -17,6 +17,7 @@ from app.core.exceptions import AppError
 from app.db.mongodb import close_mongodb_client, ensure_mongodb_indexes, ping_mongodb
 from app.db.postgres import close_postgres_engine, ping_postgres
 from app.db.redis import close_redis_client, get_redis_client
+from app.routers.admin import router as admin_router
 from app.routers.auth import router as auth_router
 from app.routers.health import router as health_router
 from app.routers.reports import router as reports_router
@@ -119,3 +120,4 @@ app.include_router(repositories_router, prefix=settings.api_prefix)
 app.include_router(review_jobs_router, prefix=settings.api_prefix)
 app.include_router(reports_router, prefix=settings.api_prefix)
 app.include_router(users_router, prefix=settings.api_prefix)
+app.include_router(admin_router, prefix=settings.api_prefix)

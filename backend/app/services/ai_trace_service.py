@@ -194,6 +194,7 @@ class AITraceService:
             read_chunk_documents,
             target_chunk_keys=target_chunk_keys,
         )
+        ai_retrieved_chunks, ai_judged_chunks = _probe_slot_counts(read_chunk_documents)
         static_analyzer_issues = sum(
             len(document.get("parsed_issues", []))
             for document in static_documents
@@ -210,6 +211,8 @@ class AITraceService:
             target_chunks=target_chunks,
             ai_read_files=ai_read_files,
             ai_read_chunks=ai_read_chunks,
+            ai_retrieved_chunks=ai_retrieved_chunks,
+            ai_judged_chunks=ai_judged_chunks,
             ai_read_target_chunks=ai_read_target_chunks,
             ai_read_file_percent=_percent(ai_read_files, max(target_files, 1)),
             ai_read_chunk_percent=_percent(ai_read_target_chunks, target_chunks),
@@ -455,6 +458,21 @@ def _read_chunk_coverage(
         read_target_chunks = len(read_chunks & target_chunk_keys)
 
     return len(read_files), len(read_chunks), read_target_chunks
+
+
+def _probe_slot_counts(documents: list[dict[str, Any]]) -> tuple[int, int]:
+    retrieved_count = 0
+    judged_count = 0
+    for document in documents:
+        if document.get("tool_name") != "probe_retrieval":
+            continue
+        output = document.get("output")
+        if not isinstance(output, dict):
+            continue
+        result_count = _safe_int(output.get("result_count"))
+        retrieved_count += _safe_int(output.get("selected_count")) or result_count
+        judged_count += _safe_int(output.get("sent_to_judge")) or result_count
+    return retrieved_count, judged_count
 
 
 def _percent(current: int, total: int) -> float:

@@ -10,10 +10,11 @@ import {
 import { Provider } from "react-redux";
 
 import { api } from "@/lib/api";
+import { subscribeToAuthEvents } from "@/lib/auth-events";
 import { clearSessionMarker, setSessionMarker } from "@/lib/session-marker";
 import { store } from "@/store";
-import { setCredentials } from "@/store/slices/authSlice";
-import type { AuthResponse } from "@/types/auth";
+import { clearCredentials, setCredentials } from "@/store/slices/authSlice";
+import type { AuthTokenResponse } from "@/types/auth";
 
 type ReduxProviderProps = {
   children: ReactNode;
@@ -31,7 +32,7 @@ export function ReduxProvider({ children }: ReduxProviderProps) {
   useEffect(() => {
     async function refreshSession() {
       try {
-        const response = await api.post<AuthResponse>(
+        const response = await api.post<AuthTokenResponse>(
           "/auth/refresh",
           undefined,
           { skipAuthRefresh: true },
@@ -52,6 +53,16 @@ export function ReduxProvider({ children }: ReduxProviderProps) {
     }
 
     void refreshSession();
+
+    return subscribeToAuthEvents((eventType) => {
+      if (eventType === "session-cleared") {
+        store.dispatch(clearCredentials());
+        clearSessionMarker();
+        return;
+      }
+
+      void refreshSession();
+    });
   }, []);
 
   return (

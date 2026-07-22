@@ -52,6 +52,8 @@ export type AITraceCoverage = {
   target_chunks: number;
   ai_read_files: number;
   ai_read_chunks: number;
+  ai_retrieved_chunks: number;
+  ai_judged_chunks: number;
   ai_read_target_chunks: number;
   ai_read_file_percent: number;
   ai_read_chunk_percent: number;

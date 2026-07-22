@@ -205,19 +205,15 @@ def _select_smart_chunks(
     if len(chunks) <= max_chunks:
         return {chunk.key: "small_repo_full_smart_audit" for chunk in chunks}
 
-    hard_required: dict[tuple[str, int], str] = {}
     soft_candidates: list[tuple[int, ChunkInfo, str]] = []
 
     for chunk in chunks:
         reason = _smart_selection_reason(chunk)
         if reason is None:
             continue
-        if reason == "static_issue":
-            hard_required[chunk.key] = reason
-            continue
         soft_candidates.append((_selection_rank(reason), chunk, reason))
 
-    selected = dict(hard_required)
+    selected: dict[tuple[str, int], str] = {}
     remaining_budget = max(0, max_chunks - len(selected))
     soft_chunks_per_file: dict[str, int] = defaultdict(int)
     for _, chunk, reason in sorted(
@@ -243,8 +239,6 @@ def _select_smart_chunks(
 def _smart_selection_reason(
     chunk: ChunkInfo,
 ) -> str | None:
-    if chunk.has_static_issues:
-        return "static_issue"
     if chunk.risk_area in SMART_RISK_AREAS:
         return f"risk_area:{chunk.risk_area}"
     if _path_parts(chunk.file_path) & SMART_PATH_PARTS:
@@ -350,31 +344,24 @@ def _file_plan_rank(
     selected_chunks: list[ChunkInfo],
     selected_reasons: dict[tuple[str, int], str],
 ) -> tuple[int, str]:
-    if any(
-        selected_reasons.get(chunk.key) == "static_issue" for chunk in selected_chunks
-    ):
-        return 0, file_path
-    return 1, file_path
+    _ = selected_chunks, selected_reasons
+    return 0, file_path
 
 
 def _chunk_plan_rank(
     chunk: ChunkInfo,
     selected_reasons: dict[tuple[str, int], str],
 ) -> int:
-    reason = selected_reasons.get(chunk.key, "")
-    if reason == "static_issue":
-        return 0
+    _ = selected_reasons
     return _chunk_review_rank(chunk)
 
 
 def _chunk_review_rank(chunk: ChunkInfo) -> int:
-    if chunk.has_static_issues:
-        return 0
     if chunk.chunk_type == "function":
-        return 1
+        return 0
     if chunk.chunk_type == "class":
-        return 2
-    return 3
+        return 1
+    return 2
 
 
 def _selection_rank(reason: str) -> int:
@@ -404,7 +391,8 @@ def _fallback_rank(chunk: ChunkInfo) -> int:
 
 
 def _path_parts(file_path: str) -> set[str]:
-    return {part.lower() for part in PurePosixPath(file_path.replace("\\", "/")).parts}
+    path = PurePosixPath(file_path.replace("\\", "/"))
+    return {*(part.lower() for part in path.parts), path.stem.lower()}
 
 
 def _is_config_file(file_path: str) -> bool:

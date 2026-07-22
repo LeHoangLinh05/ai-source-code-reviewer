@@ -7,6 +7,7 @@ import { useForm } from "react-hook-form";
 import { toast } from "sonner";
 import { z } from "zod";
 
+import { PasswordInput } from "@/components/auth/password-input";
 import { Button } from "@/components/ui/button";
 import {
   Form,
@@ -19,16 +20,14 @@ import {
 import { Input } from "@/components/ui/input";
 import { api } from "@/lib/api";
 import { getApiErrorMessage } from "@/lib/api-error";
-import { setSessionMarker } from "@/lib/session-marker";
-import { useAppDispatch } from "@/store/hooks";
-import { setCredentials } from "@/store/slices/authSlice";
-import type { AuthResponse, RegisterPayload } from "@/types/auth";
+import { emailSchema, strongPasswordSchema } from "@/lib/auth-validation";
+import type { RegisterPayload, RegisterResponse } from "@/types/auth";
 
 const registerSchema = z
   .object({
-    email: z.string().email("Enter a valid email address."),
-    password: z.string().min(8, "Password must be at least 8 characters."),
-    confirmPassword: z.string().min(8, "Confirm your password."),
+    email: emailSchema,
+    password: strongPasswordSchema,
+    confirmPassword: strongPasswordSchema,
   })
   .refine((values) => values.password === values.confirmPassword, {
     message: "Passwords do not match.",
@@ -38,9 +37,9 @@ const registerSchema = z
 type RegisterFormValues = z.infer<typeof registerSchema>;
 
 export function RegisterForm() {
-  const dispatch = useAppDispatch();
   const router = useRouter();
   const form = useForm<RegisterFormValues>({
+    mode: "onChange",
     resolver: zodResolver(registerSchema),
     defaultValues: {
       email: "",
@@ -50,20 +49,26 @@ export function RegisterForm() {
   });
 
   async function onSubmit(values: RegisterFormValues) {
+    form.clearErrors("root");
+
     try {
       const payload: RegisterPayload = {
         email: values.email,
         password: values.password,
       };
 
-      const response = await api.post<AuthResponse>("/auth/register", payload);
+      await api.post<RegisterResponse>("/auth/register", payload);
 
-      dispatch(setCredentials({ user: response.data.user }));
-      setSessionMarker();
       toast.success("Account created.");
-      router.replace("/dashboard");
+      router.replace("/login");
     } catch (error) {
-      toast.error(getApiErrorMessage(error, "Unable to create account."));
+      const errorMessage = getApiErrorMessage(error, "Unable to create account.");
+
+      form.setError("root", {
+        message: errorMessage,
+        type: "server",
+      });
+      toast.error(errorMessage);
     }
   }
 
@@ -95,10 +100,9 @@ export function RegisterForm() {
             <FormItem>
               <FormLabel>Password</FormLabel>
               <FormControl>
-                <Input
+                <PasswordInput
                   autoComplete="new-password"
                   placeholder="Minimum 8 characters"
-                  type="password"
                   {...field}
                 />
               </FormControl>
@@ -113,10 +117,9 @@ export function RegisterForm() {
             <FormItem>
               <FormLabel>Confirm password</FormLabel>
               <FormControl>
-                <Input
+                <PasswordInput
                   autoComplete="new-password"
                   placeholder="Repeat password"
-                  type="password"
                   {...field}
                 />
               </FormControl>
@@ -124,9 +127,14 @@ export function RegisterForm() {
             </FormItem>
           )}
         />
+        {form.formState.errors.root?.message ? (
+          <p className="text-sm font-medium text-destructive" role="alert">
+            {form.formState.errors.root.message}
+          </p>
+        ) : null}
         <Button
           className="w-full"
-          disabled={form.formState.isSubmitting}
+          disabled={form.formState.isSubmitting || !form.formState.isValid}
           type="submit"
         >
           {form.formState.isSubmitting ? "Creating account..." : "Create account"}

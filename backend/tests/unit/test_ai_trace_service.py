@@ -6,6 +6,7 @@ from app.models.review_job import ReviewJobStatus
 from app.schemas.ai_trace import AIToolCallTrace, AITraceCoverage
 from app.services.ai_trace_service import (
     _ai_stage_status,
+    _probe_slot_counts,
     _read_chunk_coverage,
     _report_stage_status,
     _token_totals,
@@ -47,6 +48,33 @@ def test_read_chunk_coverage_counts_only_successful_unique_chunks() -> None:
     assert files_read == 1
     assert chunks_read == 2
     assert target_chunks_read == 2
+
+
+def test_probe_slot_counts_distinguish_retrieved_from_judged() -> None:
+    retrieved, judged = _probe_slot_counts(
+        [
+            {
+                "tool_name": "probe_retrieval",
+                "output": {
+                    "status": "ok",
+                    "selected_count": 6,
+                    "trimmed_count": 3,
+                    "sent_to_judge": 3,
+                    "result_count": 3,
+                },
+            },
+            {
+                "tool_name": "probe_retrieval",
+                "output": {
+                    "status": "ok",
+                    "result_count": 2,
+                },
+            },
+        ]
+    )
+
+    assert retrieved == 8
+    assert judged == 5
 
 
 def test_ai_report_without_full_chunk_coverage_is_completed() -> None:

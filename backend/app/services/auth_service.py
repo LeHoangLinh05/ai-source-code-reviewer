@@ -50,18 +50,18 @@ class AuthService:
         self.token_blacklist_service = token_blacklist_service
         self.settings = settings
 
-    async def register(self, payload: RegisterRequest) -> TokenPairResponse:
-        """Create a user account and issue the first token pair."""
+    async def register(self, payload: RegisterRequest) -> UserResponse:
+        """Create a user account without starting an authenticated session."""
 
         existing_user = await self.user_repository.get_by_email(payload.email)
         if existing_user is not None:
-            raise ConflictError("Email is already registered")
+            raise ConflictError("Email already exists")
 
         user = await self.user_repository.create(
             email=payload.email,
             hashed_password=hash_password(payload.password),
         )
-        return await self._issue_token_pair(user)
+        return UserResponse.model_validate(user)
 
     async def login(self, payload: LoginRequest) -> TokenPairResponse:
         """Verify credentials and issue a fresh token pair."""

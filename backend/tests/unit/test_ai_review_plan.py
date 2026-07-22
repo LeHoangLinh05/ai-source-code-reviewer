@@ -15,27 +15,35 @@ def test_review_mode_defaults_to_smart() -> None:
     assert get_review_mode({"run_static_analysis": True}) == REVIEW_MODE_SMART
 
 
-def test_smart_review_plan_targets_risk_and_static_chunks() -> None:
-    plan = build_chunk_review_plan(
-        chunk_documents=[
-            _chunk("app/auth/routes.py", 0, total_chunks=2, risk_area="security"),
-            _chunk("app/auth/routes.py", 1, total_chunks=2, risk_area="security"),
-            _chunk("app/service.py", 0, has_static_issues=True),
-            _chunk("app/service.py", 1),
-            _chunk("docs/readme.md", 0, language="markdown"),
-        ],
+def test_smart_review_plan_ignores_static_issue_flags() -> None:
+    documents = [
+        _chunk("app/auth/routes.py", 0, total_chunks=2, risk_area="security"),
+        _chunk("app/auth/routes.py", 1, total_chunks=2, risk_area="security"),
+        _chunk("app/service.py", 0, has_static_issues=True),
+        _chunk("app/service.py", 1),
+        _chunk("docs/readme.md", 0, language="markdown"),
+    ]
+    with_static = build_chunk_review_plan(
+        chunk_documents=documents,
+        review_mode=REVIEW_MODE_SMART,
+        max_smart_chunks=3,
+    )
+    documents[2]["has_static_issues"] = False
+    without_static = build_chunk_review_plan(
+        chunk_documents=documents,
         review_mode=REVIEW_MODE_SMART,
         max_smart_chunks=3,
     )
 
-    assert plan["mode"] == REVIEW_MODE_SMART
-    assert plan["target_chunks"] == 3
-    assert expected_chunk_keys_from_plan(plan) == {
+    assert with_static == without_static
+    assert with_static["mode"] == REVIEW_MODE_SMART
+    assert with_static["target_chunks"] == 3
+    assert expected_chunk_keys_from_plan(with_static) == {
         ("app/auth/routes.py", 0),
         ("app/auth/routes.py", 1),
         ("app/service.py", 0),
     }
-    assert plan["total_available_chunks"] == 5
+    assert with_static["total_available_chunks"] == 5
 
 
 def test_full_audit_review_plan_targets_all_chunks() -> None:

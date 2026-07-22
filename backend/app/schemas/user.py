@@ -6,6 +6,11 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.models.user import UserRole
+from app.schemas.validation import (
+    MAX_PASSWORD_LENGTH,
+    MIN_PASSWORD_LENGTH,
+    validate_strong_password,
+)
 
 
 class UserProfileResponse(BaseModel):
@@ -42,8 +47,19 @@ class UserProfileUpdateRequest(BaseModel):
 class ChangePasswordRequest(BaseModel):
     """Payload for changing the current user's password."""
 
-    current_password: str = Field(..., min_length=1, max_length=128)
-    new_password: str = Field(..., min_length=8, max_length=128)
+    current_password: str = Field(..., min_length=1, max_length=MAX_PASSWORD_LENGTH)
+    new_password: str = Field(
+        ...,
+        min_length=MIN_PASSWORD_LENGTH,
+        max_length=MAX_PASSWORD_LENGTH,
+    )
+
+    @field_validator("new_password")
+    @classmethod
+    def validate_new_password_strength(cls, new_password: str) -> str:
+        """Validate replacement passwords before hashing them."""
+
+        return validate_strong_password(new_password)
 
 
 class ChangePasswordResponse(BaseModel):

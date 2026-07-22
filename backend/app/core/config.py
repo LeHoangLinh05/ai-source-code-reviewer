@@ -15,6 +15,7 @@ DEFAULT_SANDBOX_ROOT = PROJECT_ROOT / ".sandbox"
 GIT_EXECUTABLE_NAME = "git"
 GIT_TERMINAL_PROMPT_ENV = "GIT_TERMINAL_PROMPT"
 DISABLED_GIT_TERMINAL_PROMPT = "0"
+MIN_JWT_SECRET_LENGTH = 32
 
 
 class Settings(BaseSettings):
@@ -113,9 +114,12 @@ class Settings(BaseSettings):
     llm_job_call_budget: int = Field(default=96, ge=1, le=200)
     llm_rate_limit_failure_budget: int = Field(default=1, ge=1, le=5)
     probe_retrieval_chunks_per_probe: int = Field(default=3, ge=1, le=10)
-    probe_retrieval_max_chunks: int = Field(default=160, ge=1, le=500)
+    probe_retrieval_max_chunks: int = Field(default=188, ge=1, le=500)
+    probe_defect_max_chunks: int = Field(default=120, ge=1, le=300)
+    probe_coverage_max_chunks: int = Field(default=24, ge=1, le=200)
+    probe_roadmap_max_chunks: int = Field(default=44, ge=1, le=200)
     probe_semantic_query_batch_size: int = Field(default=16, ge=1, le=64)
-    probe_semantic_max_query_tokens: int = Field(default=256, ge=1, le=2048)
+    probe_semantic_max_query_tokens: int = Field(default=64, ge=1, le=2048)
     probe_judge_max_probes_per_batch: int = Field(default=8, ge=1, le=24)
     probe_judge_max_chunks_per_batch: int = Field(default=24, ge=1, le=80)
     mistral_api_key: SecretStr | None = None
@@ -175,6 +179,18 @@ class Settings(BaseSettings):
         return [
             origin.strip() for origin in normalized_value.split(",") if origin.strip()
         ]
+
+    @field_validator("jwt_secret_key")
+    @classmethod
+    def validate_jwt_secret_key(cls, value: SecretStr) -> SecretStr:
+        """Require a configured JWT signing secret before the app starts."""
+
+        if len(value.get_secret_value()) < MIN_JWT_SECRET_LENGTH:
+            raise ValueError(
+                "JWT_SECRET_KEY must be at least 32 characters long",
+            )
+
+        return value
 
 
 @lru_cache

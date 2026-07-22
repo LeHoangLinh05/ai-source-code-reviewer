@@ -27,26 +27,26 @@ async def test_update_profile_stores_full_name() -> None:
 
 @pytest.mark.asyncio
 async def test_change_password_updates_hash() -> None:
-    user = build_user(password="old-password")
+    user = build_user(password="OldPassword@123")
     repository = FakeUserRepository()
     service = UserService(repository)  # type: ignore[arg-type]
 
     await service.change_password(
         user,
         ChangePasswordRequest(
-            current_password="old-password",
-            new_password="new-password",
+            current_password="OldPassword@123",
+            new_password="NewPassword@123",
         ),
     )
 
-    assert verify_password("new-password", user.hashed_password)
+    assert verify_password("NewPassword@123", user.hashed_password)
     assert repository.committed is True
     assert repository.rolled_back is False
 
 
 @pytest.mark.asyncio
 async def test_change_password_rejects_wrong_current_password() -> None:
-    user = build_user(password="old-password")
+    user = build_user(password="OldPassword@123")
     service = UserService(FakeUserRepository())  # type: ignore[arg-type]
 
     with pytest.raises(AuthenticationError, match="Current password is incorrect"):
@@ -54,22 +54,22 @@ async def test_change_password_rejects_wrong_current_password() -> None:
             user,
             ChangePasswordRequest(
                 current_password="bad-password",
-                new_password="new-password",
+                new_password="NewPassword@123",
             ),
         )
 
 
 @pytest.mark.asyncio
 async def test_change_password_rejects_same_password() -> None:
-    user = build_user(password="same-password")
+    user = build_user(password="SamePassword@123")
     service = UserService(FakeUserRepository())  # type: ignore[arg-type]
 
     with pytest.raises(BadRequestError, match="New password must be different"):
         await service.change_password(
             user,
             ChangePasswordRequest(
-                current_password="same-password",
-                new_password="same-password",
+                current_password="SamePassword@123",
+                new_password="SamePassword@123",
             ),
         )
 

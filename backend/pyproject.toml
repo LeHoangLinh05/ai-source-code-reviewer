@@ -34,6 +34,7 @@ ignore = [
     "PLR2004",
     "PLW0108",
     "S101",
+    "S105",
     "S106",
     "S107",
     "S108",
@@ -60,3 +61,8 @@ ignore = [
 # Probe/review plan branchy returns model domain decision tables.
 "app/ai/probe_review.py" = ["PLR0911"]
 "app/ai/review_plan.py" = ["PLR0911"]
+
+[tool.pytest.ini_options]
+markers = [
+    "performance: opt-in smoke tests for local integration performance checks",
+]
