@@ -4,8 +4,8 @@ import logging
 import re
 from pathlib import Path
 
+from app.ai.json_utils import parse_json_object_text
 from app.ai.llm_config import run_with_configured_llm
-from app.ai.tools.common import parse_json_object_text
 from app.analyzers.file_filter import filter_files
 from app.analyzers.secret_scanner import mask_secret_values
 from app.analyzers.structure_analyzer import analyze_structure

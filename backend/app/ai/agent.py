@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -22,13 +21,11 @@ except ImportError:
         """Fallback base class when LangChain is not installed at app startup."""
 
 
-from langchain_core.agents import AgentAction, AgentFinish
-from langchain_core.exceptions import OutputParserException
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from pydantic import BaseModel
 
+from app.ai.final_report import synthesize_final_report
 from app.ai.probe_review import run_backend_directed_probe_review
-from app.ai.prompts import FINAL_REPORT_SYSTEM_PROMPT
 from app.ai.roadmap.knowledge import RoadmapRequirement, load_roadmap_requirements
 from app.ai.roadmap.selection import (
     RoadmapProfile,
@@ -48,121 +45,8 @@ from app.schemas.mongodb import ToolCallLogDocument
 
 logger = logging.getLogger(__name__)
 
-REPORT_AGENT_MAX_ITERATIONS = 6
 PROBE_REVIEW_COVERAGE_MISSING_CHUNK_LIMIT = 60
 ROADMAP_RULE_CATALOG_TOOL_NAME = "roadmap_rule_catalog"
-REACT_PARSING_ERROR_OBSERVATION = (
-    "Invalid ReAct format. Continue using exactly one of these forms: "
-    'Action: tool_name plus Action Input: {"field": "value"}, or Final Answer: ... '
-    "Do not call tools with an empty JSON object unless the tool schema allows it."
-)
-KNOWN_REACT_TOOL_NAMES = {"generate_final_report"}
-FINAL_REPORT_PAYLOAD_FIELDS = {
-    "executive_summary",
-    "maintainability_score",
-    "overall_score",
-    "performance_score",
-    "security_score",
-    "tech_stack",
-    "top_priorities",
-}
-REACT_PROMPT_SUFFIX_TEMPLATE = """
-
-You have access to the following tools:
-
-{tools}
-
-Use this format:
-
-Question: the input task you must complete
-Thought: think about what to do next
-Action: the action to take, should be one of [{tool_names}]
-Action Input: the JSON input to the action
-Observation: the result of the action
-... (repeat Thought/Action/Action Input/Observation as needed)
-Thought: I now know the final answer
-{final_answer_instruction}
-
-Question: {input}
-Thought:{agent_scratchpad}
-"""
-
-
-REPORT_FINAL_ANSWER_INSTRUCTION = (
-    "Final Answer: a concise completion note after generate_final_report has "
-    "returned status=created"
-)
-
-
-def build_react_prompt(
-    *,
-    system_prompt: str,
-    final_answer_instruction: str,
-) -> Any:
-    """Build the ReAct prompt around the exact system prompt contract."""
-
-    from langchain_core.prompts import PromptTemplate
-
-    return PromptTemplate.from_template(
-        system_prompt
-        + REACT_PROMPT_SUFFIX_TEMPLATE.format(
-            final_answer_instruction=final_answer_instruction,
-            input="{input}",
-            agent_scratchpad="{agent_scratchpad}",
-            tools="{tools}",
-            tool_names="{tool_names}",
-        )
-    )
-
-
-def create_report_agent_executor(llm: Any) -> Any:
-    """Create the report-phase executor that can only create the final report."""
-
-    from app.ai.tools import AI_REPORT_TOOLS
-
-    return _create_agent_executor(
-        llm=llm,
-        tools=AI_REPORT_TOOLS,
-        system_prompt=FINAL_REPORT_SYSTEM_PROMPT,
-        final_answer_instruction=REPORT_FINAL_ANSWER_INSTRUCTION,
-        max_iterations=REPORT_AGENT_MAX_ITERATIONS,
-    )
-
-
-def _create_agent_executor(
-    *,
-    llm: Any,
-    tools: list[Any],
-    system_prompt: str,
-    final_answer_instruction: str,
-    max_iterations: int,
-) -> Any:
-    """Create a LangChain ReAct executor with a specific tool surface."""
-
-    try:
-        from langchain.agents import (  # type: ignore[attr-defined]
-            AgentExecutor,
-            create_react_agent,
-        )
-    except ImportError:
-        from langchain_classic.agents import AgentExecutor, create_react_agent
-
-    agent = create_react_agent(
-        llm=llm,
-        tools=tools,
-        prompt=build_react_prompt(
-            system_prompt=system_prompt,
-            final_answer_instruction=final_answer_instruction,
-        ),
-        output_parser=MarkdownSafeReActOutputParser(),
-    )
-    return AgentExecutor(
-        agent=agent,
-        tools=tools,
-        max_iterations=max_iterations,
-        handle_parsing_errors=False,
-        verbose=True,
-    )
 
 
 async def run_ai_review(
@@ -194,7 +78,6 @@ async def run_ai_review(
     from app.core.config import get_settings
 
     async def run_with_model(llm: Any) -> dict[str, Any]:
-        report_executor = create_report_agent_executor(llm)
         settings = get_settings()
         callback = MongoToolCallLogger(
             job_id=job_id,
@@ -233,19 +116,13 @@ async def run_ai_review(
                 postgres_session=postgres_session,
             )
             callback.agent_type = "report"
-            report_result = await report_executor.ainvoke(
-                {
-                    "input": (
-                        f"Review job_id={job_id}. Backend-directed probe review "
-                        f"completed with source evidence coverage "
-                        f"{reviewed_chunks}/{total_chunks}. Now call "
-                        "generate_final_report exactly once. Use the review "
-                        "handoff and persisted issue context.\n\n"
-                        f"Review handoff:\n{review_result.get('output', '')}\n\n"
-                        f"Persisted issue context:\n{report_context}"
-                    )
-                },
-                config={"callbacks": [callback]},
+            report_result = await synthesize_final_report(
+                job_id=job_id,
+                review_handoff=str(review_result.get("output", "")),
+                report_context=report_context,
+                reviewed_chunks=reviewed_chunks,
+                total_chunks=total_chunks,
+                callback=callback,
             )
         return {"review": dict(review_result), "report": dict(report_result)}
 
@@ -345,7 +222,7 @@ async def _materialize_roadmap_rule_catalog(
         output={
             "status": "ok",
             "summary": (
-                "Loaded roadmap rule catalog outside the LLM tool-call budget. "
+                "Loaded roadmap rule catalog before the LLM judge. "
                 "This is not a code-review verdict; source-code verification "
                 "still requires AI source evidence."
             ),
@@ -397,7 +274,7 @@ def _roadmap_requirement_tool_result(
 
 
 def _loaded_roadmap_rule_ids(documents: list[object]) -> set[str]:
-    """Return roadmap rule ids loaded from successful KB/catalog tool calls."""
+    """Return roadmap rule ids loaded from successful KB/catalog traces."""
 
     loaded_rule_ids: set[str] = set()
     for document in documents:
@@ -501,235 +378,8 @@ def _persisted_issue_priority(issue: ReviewIssue) -> tuple[int, int]:
     return category_priority, severity_priority
 
 
-def _get_react_output_parser_base() -> type[Any]:
-    try:
-        from langchain.agents.output_parsers.react_single_input import (  # type: ignore[import-not-found]
-            ReActSingleInputOutputParser,
-        )
-    except ImportError:
-        from langchain_classic.agents.output_parsers.react_single_input import (
-            ReActSingleInputOutputParser,
-        )
-
-    return ReActSingleInputOutputParser
-
-
-class MarkdownSafeReActOutputParser(_get_react_output_parser_base()):  # type: ignore[misc]
-    """Normalize common final-report formatting drift before tool lookup."""
-
-    def parse(self, text: str) -> Any:
-        try:
-            parsed_output = super().parse(text)
-        except OutputParserException:
-            malformed_action = _coerce_malformed_json_action(text)
-            if malformed_action is not None:
-                return malformed_action
-
-            final_answer = _coerce_freeform_final_answer(text)
-            if final_answer is None:
-                raise
-
-            return AgentFinish(return_values={"output": final_answer}, log=text)
-
-        if not isinstance(parsed_output, AgentAction):
-            return parsed_output
-
-        tool_name = normalize_tool_name(parsed_output.tool)
-        tool_input = _normalize_structured_tool_input(parsed_output.tool_input)
-        if tool_name == parsed_output.tool and tool_input is parsed_output.tool_input:
-            return parsed_output
-
-        return AgentAction(
-            tool=tool_name,
-            tool_input=tool_input,
-            log=parsed_output.log,
-        )
-
-
-def _normalize_structured_tool_input(
-    tool_input: str | dict[Any, Any],
-) -> str | dict[Any, Any]:
-    """Decode JSON ReAct input before LangChain maps it to function arguments."""
-
-    if not isinstance(tool_input, str):
-        return tool_input
-
-    payload = _parse_json_object_prefix(tool_input)
-    return payload if payload is not None else tool_input
-
-
-def _coerce_malformed_json_action(text: str) -> AgentAction | None:
-    """Repair outputs where the model puts JSON directly after Action."""
-
-    if "Action:" not in text:
-        return _coerce_bare_tool_json_action(text)
-
-    payload = _extract_first_json_object(text)
-    if payload is None:
-        return None
-
-    tool_name = _infer_tool_name_from_payload(payload, text=text)
-    if tool_name is None:
-        return None
-
-    return AgentAction(tool=tool_name, tool_input=payload, log=text)
-
-
-def _coerce_bare_tool_json_action(text: str) -> AgentAction | None:
-    """Repair outputs like `tool_name` followed directly by a JSON object."""
-
-    payload = _extract_first_json_object(text)
-    if payload is None:
-        return None
-
-    tool_name = _infer_tool_name_from_payload(payload, text=text)
-    if tool_name is None:
-        return None
-
-    object_start = text.find("{")
-    if object_start < 0:
-        return None
-
-    prefix = text[:object_start]
-    if not prefix.strip() and _is_final_report_payload(payload):
-        return AgentAction(tool=tool_name, tool_input=payload, log=text)
-
-    pattern = rf"(?<![A-Za-z0-9_]){re.escape(tool_name)}(?![A-Za-z0-9_])"
-    if re.search(pattern, prefix) is None:
-        return None
-
-    return AgentAction(tool=tool_name, tool_input=payload, log=text)
-
-
-def _extract_first_json_object(text: str) -> dict[str, object] | None:
-    fenced_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
-    if fenced_match is not None:
-        parsed_fenced = _parse_json_object_prefix(fenced_match.group(1))
-        if parsed_fenced is not None:
-            return parsed_fenced
-
-    object_start = text.find("{")
-    if object_start < 0:
-        return None
-
-    return _parse_json_object_prefix(text[object_start:])
-
-
-def _parse_json_object_prefix(text: str) -> dict[str, object] | None:
-    stripped_text = text.strip()
-    try:
-        parsed, end_index = json.JSONDecoder().raw_decode(stripped_text)
-    except json.JSONDecodeError:
-        return None
-
-    if not isinstance(parsed, dict):
-        return None
-
-    return _merge_trailing_json_fields(parsed, stripped_text[end_index:])
-
-
-def _merge_trailing_json_fields(
-    payload: dict[str, object],
-    trailing_text: str,
-) -> dict[str, object]:
-    """Repair Action Input drift like {"a": 1},"b": 2 into one object."""
-
-    stripped_trailing = trailing_text.strip()
-    if not stripped_trailing.startswith(","):
-        return payload
-
-    extra_fields = _parse_trailing_json_fields(stripped_trailing)
-    if extra_fields is None:
-        return payload
-
-    merged_payload = dict(payload)
-    merged_payload.update(extra_fields)
-    return merged_payload
-
-
-def _parse_trailing_json_fields(trailing_text: str) -> dict[str, object] | None:
-    field_text = trailing_text.lstrip(", \t\r\n")
-    candidates = ["{" + field_text + "}"]
-    if field_text.endswith("}"):
-        candidates.append("{" + field_text[:-1].rstrip() + "}")
-
-    for candidate in candidates:
-        try:
-            extra_fields = json.loads(candidate)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(extra_fields, dict):
-            return extra_fields
-
-    return None
-
-
-def _infer_tool_name_from_payload(
-    payload: dict[str, object],
-    *,
-    text: str,
-) -> str | None:
-    _ = text
-    if FINAL_REPORT_PAYLOAD_FIELDS.intersection(payload):
-        return "generate_final_report"
-
-    return None
-
-
-def _is_final_report_payload(payload: dict[str, object]) -> bool:
-    return {
-        "executive_summary",
-        "maintainability_score",
-        "overall_score",
-        "performance_score",
-        "security_score",
-    }.issubset(payload)
-
-
-def _coerce_freeform_final_answer(text: str) -> str | None:
-    """Accept markdown handoffs when the model omits the ReAct Final Answer label."""
-
-    stripped_text = text.strip()
-    if not stripped_text:
-        return None
-    if _contains_react_action(stripped_text):
-        return None
-    if stripped_text == REACT_PARSING_ERROR_OBSERVATION:
-        return None
-
-    final_answer_marker = "Final Answer:"
-    if final_answer_marker in stripped_text:
-        return stripped_text.split(final_answer_marker, 1)[1].strip() or None
-
-    return stripped_text
-
-
-def _contains_react_action(text: str) -> bool:
-    lines = text.splitlines()
-    return any(line.strip().startswith("Action:") for line in lines)
-
-
-def normalize_tool_name(tool_name: str) -> str:
-    """Remove markdown/code quoting that LLMs sometimes add around Action names."""
-
-    normalized_tool_name = tool_name.strip()
-    normalized_tool_name = normalized_tool_name.strip("`")
-    normalized_tool_name = normalized_tool_name.strip()
-    normalized_tool_name = normalized_tool_name.strip("\"'")
-    normalized_tool_name = normalized_tool_name.strip()
-    if normalized_tool_name in KNOWN_REACT_TOOL_NAMES:
-        return normalized_tool_name
-
-    for known_tool_name in KNOWN_REACT_TOOL_NAMES:
-        pattern = rf"(?<![A-Za-z0-9_]){re.escape(known_tool_name)}(?![A-Za-z0-9_])"
-        if re.search(pattern, normalized_tool_name):
-            return known_tool_name
-
-    return normalized_tool_name
-
-
 class MongoToolCallLogger(AsyncCallbackHandler):
-    """Persist all LangChain tool calls in MongoDB from one callback."""
+    """Persist LangChain callback and backend trace events in MongoDB."""
 
     def __init__(
         self,

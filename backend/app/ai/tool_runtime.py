@@ -1,4 +1,4 @@
-"""Runtime context shared by LangChain tools during one agent session."""
+"""Runtime context shared during one AI review session."""
 
 from __future__ import annotations
 
@@ -47,7 +47,7 @@ class SearchDecision:
 
 @dataclass(slots=True)
 class AIToolRuntime:
-    """Infrastructure handles hidden from public tool schemas."""
+    """Infrastructure handles shared across review pipeline steps."""
 
     job_id: UUID
     session_id: UUID
@@ -268,7 +268,7 @@ _runtime: ContextVar[AIToolRuntime | None] = ContextVar(
 
 
 def get_ai_tool_runtime() -> AIToolRuntime:
-    """Return the runtime context for the current AI tool call."""
+    """Return the runtime context for the current AI review operation."""
 
     runtime = _runtime.get()
     if runtime is None:
@@ -278,7 +278,7 @@ def get_ai_tool_runtime() -> AIToolRuntime:
 
 
 async def ensure_ai_job_active() -> None:
-    """Stop tool execution if the backing review job was canceled/deleted."""
+    """Stop AI work if the backing review job was canceled/deleted."""
 
     runtime = get_ai_tool_runtime()
     result = await runtime.postgres_session.execute(
@@ -290,7 +290,7 @@ async def ensure_ai_job_active() -> None:
 
 @contextmanager
 def ai_tool_runtime(runtime: AIToolRuntime):
-    """Bind runtime context for all tool calls in one agent execution."""
+    """Bind runtime context for one AI review execution."""
 
     token = _runtime.set(runtime)
     try:

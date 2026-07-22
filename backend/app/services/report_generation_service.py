@@ -9,7 +9,7 @@ from app.models.review_report import ReviewReport
 from app.schemas.normalized_issue import NormalizedIssue
 
 STATIC_REPORT_MODEL = "static-pipeline-v1"
-AI_REPORT_MODEL = "langchain-react-agent-v1"
+AI_REPORT_MODEL = "langchain-structured-report-v1"
 
 SEVERITY_SCORE_WEIGHTS = {
     IssueSeverity.CRITICAL: 3.0,
