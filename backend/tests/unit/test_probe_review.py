@@ -474,6 +474,117 @@ def test_supporting_bundle_chunk_rejects_unsupported_reference() -> None:
     )
 
 
+def test_supporting_bundle_chunk_accepts_verified_multi_chunk_range() -> None:
+    file_path = "backend/app/api/auth.py"
+    candidate = ProbeJudgeResponse.model_validate(
+        {
+            "candidates": [
+                {
+                    "verdict": "issue",
+                    "title": "Reset token has no expiration",
+                    "description": "The token has no TTL and remains reusable.",
+                    "severity": "high",
+                    "category": "security",
+                    "confidence": 0.95,
+                    "file_path": file_path,
+                    "line_start": 76,
+                    "line_end": 109,
+                    "supporting_evidence": [
+                        {
+                            "file_path": file_path,
+                            "chunk_index": 9,
+                            "line_start": 83,
+                            "line_end": 86,
+                        },
+                        {
+                            "file_path": file_path,
+                            "chunk_index": 11,
+                            "line_start": 92,
+                            "line_end": 96,
+                        },
+                    ],
+                }
+            ]
+        }
+    ).candidates[0]
+    first_chunk = _candidate_chunk(
+        file_path=file_path,
+        chunk_index=9,
+        line_start=76,
+        line_end=88,
+        content="async def request_password_reset():\n    await redis.set(key, token)",
+    )
+    second_chunk = _candidate_chunk(
+        file_path=file_path,
+        chunk_index=11,
+        line_start=92,
+        line_end=109,
+        content="async def confirm_password_reset():\n    verify(token)",
+    )
+
+    evidence_chunk = _supporting_bundle_chunk(
+        candidate,
+        [
+            _bundle(
+                probe={"probe_id": "security.reset_token_lifecycle"},
+                chunks=[first_chunk, second_chunk],
+            )
+        ],
+    )
+
+    assert evidence_chunk is first_chunk
+
+
+def test_supporting_bundle_chunk_rejects_multi_chunk_range_without_end_anchor() -> None:
+    file_path = "backend/app/api/auth.py"
+    candidate = ProbeJudgeResponse.model_validate(
+        {
+            "candidates": [
+                {
+                    "verdict": "issue",
+                    "title": "Reset token has no expiration",
+                    "description": "The token has no TTL and remains reusable.",
+                    "severity": "high",
+                    "category": "security",
+                    "confidence": 0.95,
+                    "file_path": file_path,
+                    "line_start": 76,
+                    "line_end": 109,
+                    "supporting_evidence": [
+                        {
+                            "file_path": file_path,
+                            "chunk_index": 9,
+                            "line_start": 83,
+                            "line_end": 86,
+                        }
+                    ],
+                }
+            ]
+        }
+    ).candidates[0]
+
+    assert (
+        _supporting_bundle_chunk(
+            candidate,
+            [
+                _bundle(
+                    probe={"probe_id": "security.reset_token_lifecycle"},
+                    chunks=[
+                        _candidate_chunk(
+                            file_path=file_path,
+                            chunk_index=9,
+                            line_start=76,
+                            line_end=88,
+                            content="async def request_password_reset(): pass",
+                        )
+                    ],
+                )
+            ],
+        )
+        is None
+    )
+
+
 def test_trim_bundles_handles_tied_chunk_rank_without_comparing_chunks() -> None:
     bundles = [
         _bundle(
@@ -1131,15 +1242,22 @@ def _candidate_chunk(
     *,
     file_path: str,
     chunk_index: int = 0,
+    line_start: int = 1,
+    line_end: int | None = None,
     content: str,
     strategies: tuple[str, ...] = (),
     final_score: float = 1.2,
 ) -> ProbeCandidateChunk:
+    resolved_line_end = (
+        line_end
+        if line_end is not None
+        else line_start + max(0, len(content.splitlines()) - 1)
+    )
     return ProbeCandidateChunk(
         file_path=file_path,
         chunk_index=chunk_index,
-        line_start=1,
-        line_end=max(1, len(content.splitlines())),
+        line_start=line_start,
+        line_end=resolved_line_end,
         language="python",
         risk_area="security",
         content=content,
