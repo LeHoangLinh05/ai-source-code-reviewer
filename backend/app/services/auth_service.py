@@ -1,10 +1,10 @@
 """Authentication business workflows and token orchestration."""
 
-from datetime import UTC, datetime
 import logging
+from datetime import UTC, datetime
 from uuid import UUID
 
-from app.core.config import get_settings
+from app.core.config import Settings
 from app.core.exceptions import (
     AuthenticationError,
     ConflictError,
@@ -15,8 +15,8 @@ from app.core.security import (
     create_access_token,
     create_refresh_token,
     decode_token,
-    hash_token_for_storage,
     hash_password,
+    hash_token_for_storage,
     verify_password,
 )
 from app.models.refresh_token import RefreshToken
@@ -32,6 +32,7 @@ from app.schemas.auth import (
 from app.services.token_blacklist import TokenBlacklistService
 
 logger = logging.getLogger(__name__)
+SECONDS_PER_MINUTE = 60
 
 
 class AuthService:
@@ -42,10 +43,12 @@ class AuthService:
         user_repository: UserRepository,
         refresh_token_repository: RefreshTokenRepository,
         token_blacklist_service: TokenBlacklistService,
+        settings: Settings,
     ) -> None:
         self.user_repository = user_repository
         self.refresh_token_repository = refresh_token_repository
         self.token_blacklist_service = token_blacklist_service
+        self.settings = settings
 
     async def register(self, payload: RegisterRequest) -> TokenPairResponse:
         """Create a user account and issue the first token pair."""
@@ -106,11 +109,10 @@ class AuthService:
             decoded_access_token["token_id"],
             max(ttl_seconds, 0),
         )
-        settings = get_settings()
         await self.token_blacklist_service.invalidate_user_tokens_issued_before(
             decoded_access_token["subject"],
             datetime.now(UTC),
-            settings.jwt_access_token_expire_minutes * 60,
+            self.settings.jwt_access_token_expire_minutes * SECONDS_PER_MINUTE,
         )
         if refresh_token is None:
             return
@@ -147,11 +149,10 @@ class AuthService:
             decoded_access_token["token_id"],
             max(ttl_seconds, 0),
         )
-        settings = get_settings()
         await self.token_blacklist_service.invalidate_user_tokens_issued_before(
             user.id,
             now,
-            settings.jwt_access_token_expire_minutes * 60,
+            self.settings.jwt_access_token_expire_minutes * SECONDS_PER_MINUTE,
         )
 
     async def get_active_user(self, user_id: UUID) -> User:

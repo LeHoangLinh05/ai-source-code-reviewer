@@ -3,16 +3,16 @@
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Query, status
 
 from app.core.dependencies import (
-    get_ai_trace_service,
-    get_current_user,
-    get_review_job_service,
-    rate_limit_review_job_create,
+    AITraceServiceDep,
+    CurrentUserDep,
+    ReviewJobCreateRateLimitDep,
+    ReviewJobServiceDep,
 )
 from app.models.review_job import ReviewJobStatus
-from app.models.user import User
+from app.schemas.ai_trace import AITraceResponse
 from app.schemas.review_job import (
     ReviewJobCancelResponse,
     ReviewJobCreate,
@@ -20,11 +20,11 @@ from app.schemas.review_job import (
     ReviewJobResponse,
     ReviewJobStatusUpdate,
 )
-from app.schemas.ai_trace import AITraceResponse
-from app.services.ai_trace_service import AITraceService
-from app.services.job_service import ReviewJobService
 
 router = APIRouter(prefix="/review-jobs", tags=["review-jobs"])
+REVIEW_JOB_CANCELED_MESSAGE = "Review job canceled"
+ReviewJobStatusFilter = Annotated[ReviewJobStatus | None, Query(alias="status")]
+RepositoryIdFilter = Annotated[UUID | None, Query()]
 
 
 @router.post(
@@ -35,9 +35,9 @@ router = APIRouter(prefix="/review-jobs", tags=["review-jobs"])
 )
 async def create_review_job(
     payload: ReviewJobCreate,
-    current_user: Annotated[User, Depends(get_current_user)],
-    review_job_service: Annotated[ReviewJobService, Depends(get_review_job_service)],
-    _rate_limit: Annotated[None, Depends(rate_limit_review_job_create)],
+    current_user: CurrentUserDep,
+    review_job_service: ReviewJobServiceDep,
+    _rate_limit: ReviewJobCreateRateLimitDep,
 ) -> ReviewJobCreateResponse:
     """Create a pending review job for an owned repository."""
 
@@ -50,10 +50,10 @@ async def create_review_job(
     summary="List visible review jobs",
 )
 async def list_review_jobs(
-    current_user: Annotated[User, Depends(get_current_user)],
-    review_job_service: Annotated[ReviewJobService, Depends(get_review_job_service)],
-    job_status: Annotated[ReviewJobStatus | None, Query(alias="status")] = None,
-    repository_id: Annotated[UUID | None, Query()] = None,
+    current_user: CurrentUserDep,
+    review_job_service: ReviewJobServiceDep,
+    job_status: ReviewJobStatusFilter = None,
+    repository_id: RepositoryIdFilter = None,
 ) -> list[ReviewJobResponse]:
     """List jobs created by the user, or all jobs for admins."""
 
@@ -71,8 +71,8 @@ async def list_review_jobs(
 )
 async def get_review_job(
     job_id: UUID,
-    current_user: Annotated[User, Depends(get_current_user)],
-    review_job_service: Annotated[ReviewJobService, Depends(get_review_job_service)],
+    current_user: CurrentUserDep,
+    review_job_service: ReviewJobServiceDep,
 ) -> ReviewJobResponse:
     """Return one review job after owner/admin authorization."""
 
@@ -86,9 +86,9 @@ async def get_review_job(
 )
 async def get_review_job_ai_trace(
     job_id: UUID,
-    current_user: Annotated[User, Depends(get_current_user)],
-    review_job_service: Annotated[ReviewJobService, Depends(get_review_job_service)],
-    ai_trace_service: Annotated[AITraceService, Depends(get_ai_trace_service)],
+    current_user: CurrentUserDep,
+    review_job_service: ReviewJobServiceDep,
+    ai_trace_service: AITraceServiceDep,
 ) -> AITraceResponse:
     """Return compact AI tool-call trace and issue-source counts for one job."""
 
@@ -103,13 +103,13 @@ async def get_review_job_ai_trace(
 )
 async def cancel_review_job(
     job_id: UUID,
-    current_user: Annotated[User, Depends(get_current_user)],
-    review_job_service: Annotated[ReviewJobService, Depends(get_review_job_service)],
+    current_user: CurrentUserDep,
+    review_job_service: ReviewJobServiceDep,
 ) -> ReviewJobCancelResponse:
     """Cancel a non-completed review job."""
 
     await review_job_service.cancel_job(job_id, current_user)
-    return ReviewJobCancelResponse(message="Review job canceled")
+    return ReviewJobCancelResponse(message=REVIEW_JOB_CANCELED_MESSAGE)
 
 
 @router.patch(
@@ -120,8 +120,8 @@ async def cancel_review_job(
 async def update_review_job_status(
     job_id: UUID,
     payload: ReviewJobStatusUpdate,
-    current_user: Annotated[User, Depends(get_current_user)],
-    review_job_service: Annotated[ReviewJobService, Depends(get_review_job_service)],
+    current_user: CurrentUserDep,
+    review_job_service: ReviewJobServiceDep,
 ) -> ReviewJobResponse:
     """Dev-only helper for polling UI until the worker pipeline exists."""
 

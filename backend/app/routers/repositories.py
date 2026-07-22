@@ -1,26 +1,23 @@
 """Repository management API routes."""
 
-from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, status
 
 from app.core.dependencies import (
-    get_current_user,
-    get_repo_summary_query_service,
-    get_repository_service,
+    CurrentUserDep,
+    RepositoryServiceDep,
+    RepoSummaryQueryServiceDep,
 )
-from app.models.user import User
+from app.schemas.repo_summary import RepoSummaryResponse
 from app.schemas.repository import (
     DeleteResponse,
     RepositoryCreate,
     RepositoryResponse,
 )
-from app.schemas.repo_summary import RepoSummaryResponse
-from app.services.repo_summary_query_service import RepoSummaryQueryService
-from app.services.repository_service import RepositoryService
 
 router = APIRouter(prefix="/repositories", tags=["repositories"])
+REPOSITORY_DELETED_MESSAGE = "Repository deleted"
 
 
 @router.post(
@@ -31,8 +28,8 @@ router = APIRouter(prefix="/repositories", tags=["repositories"])
 )
 async def create_repository(
     payload: RepositoryCreate,
-    current_user: Annotated[User, Depends(get_current_user)],
-    repository_service: Annotated[RepositoryService, Depends(get_repository_service)],
+    current_user: CurrentUserDep,
+    repository_service: RepositoryServiceDep,
 ) -> RepositoryResponse:
     """Create a repository owned by the current user."""
 
@@ -49,8 +46,8 @@ async def create_repository(
     summary="List visible repositories",
 )
 async def list_repositories(
-    current_user: Annotated[User, Depends(get_current_user)],
-    repository_service: Annotated[RepositoryService, Depends(get_repository_service)],
+    current_user: CurrentUserDep,
+    repository_service: RepositoryServiceDep,
 ) -> list[RepositoryResponse]:
     """List repositories owned by the user, or all repositories for admins."""
 
@@ -68,11 +65,8 @@ async def list_repositories(
 )
 async def get_repository_summary(
     repository_id: UUID,
-    current_user: Annotated[User, Depends(get_current_user)],
-    summary_service: Annotated[
-        RepoSummaryQueryService,
-        Depends(get_repo_summary_query_service),
-    ],
+    current_user: CurrentUserDep,
+    summary_service: RepoSummaryQueryServiceDep,
 ) -> RepoSummaryResponse:
     """Return the newest generated project overview for an authorized repository."""
 
@@ -86,8 +80,8 @@ async def get_repository_summary(
 )
 async def get_repository(
     repository_id: UUID,
-    current_user: Annotated[User, Depends(get_current_user)],
-    repository_service: Annotated[RepositoryService, Depends(get_repository_service)],
+    current_user: CurrentUserDep,
+    repository_service: RepositoryServiceDep,
 ) -> RepositoryResponse:
     """Return one repository after owner/admin authorization."""
 
@@ -105,10 +99,10 @@ async def get_repository(
 )
 async def delete_repository(
     repository_id: UUID,
-    current_user: Annotated[User, Depends(get_current_user)],
-    repository_service: Annotated[RepositoryService, Depends(get_repository_service)],
+    current_user: CurrentUserDep,
+    repository_service: RepositoryServiceDep,
 ) -> DeleteResponse:
     """Delete one repository after owner/admin authorization."""
 
     await repository_service.delete_repository(repository_id, current_user)
-    return DeleteResponse(message="Repository deleted")
+    return DeleteResponse(message=REPOSITORY_DELETED_MESSAGE)

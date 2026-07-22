@@ -3,20 +3,38 @@
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Query
 
-from app.core.dependencies import get_current_user, get_report_service
+from app.core.dependencies import CurrentUserDep, ReportServiceDep
 from app.models.review_issue import IssueCategory, IssueSeverity, IssueSource
-from app.models.user import User
 from app.schemas.report import (
     IssueListResponse,
     IssueResponse,
     ReportResponse,
     ReportSummaryResponse,
 )
-from app.services.report_service import ReportService
 
 router = APIRouter(prefix="/reports", tags=["reports"])
+MIN_ISSUE_PAGE = 1
+DEFAULT_ISSUE_PAGE = 1
+DEFAULT_ISSUE_PER_PAGE = 20
+MAX_ISSUE_PER_PAGE = 100
+MAX_ISSUE_FILE_PATH_LENGTH = 255
+MAX_ISSUE_SORT_LENGTH = 32
+DEFAULT_ISSUE_SORT = "-created_at"
+IssueSeverityFilter = Annotated[IssueSeverity | None, Query()]
+IssueCategoryFilter = Annotated[IssueCategory | None, Query()]
+IssueSourceFilter = Annotated[IssueSource | None, Query()]
+IssueFilePathFilter = Annotated[
+    str | None,
+    Query(min_length=1, max_length=MAX_ISSUE_FILE_PATH_LENGTH),
+]
+IssuePageQuery = Annotated[int, Query(ge=MIN_ISSUE_PAGE)]
+IssuePerPageQuery = Annotated[int, Query(ge=MIN_ISSUE_PAGE, le=MAX_ISSUE_PER_PAGE)]
+IssueSortQuery = Annotated[
+    str,
+    Query(min_length=1, max_length=MAX_ISSUE_SORT_LENGTH),
+]
 
 
 @router.get(
@@ -26,8 +44,8 @@ router = APIRouter(prefix="/reports", tags=["reports"])
 )
 async def get_report(
     job_id: UUID,
-    current_user: Annotated[User, Depends(get_current_user)],
-    report_service: Annotated[ReportService, Depends(get_report_service)],
+    current_user: CurrentUserDep,
+    report_service: ReportServiceDep,
 ) -> ReportResponse:
     """Return the full report for an authorized completed review job."""
 
@@ -42,8 +60,8 @@ async def get_report(
 )
 async def get_report_summary(
     job_id: UUID,
-    current_user: Annotated[User, Depends(get_current_user)],
-    report_service: Annotated[ReportService, Depends(get_report_service)],
+    current_user: CurrentUserDep,
+    report_service: ReportServiceDep,
 ) -> ReportSummaryResponse:
     """Return executive summary and scores for an authorized report."""
 
@@ -57,15 +75,15 @@ async def get_report_summary(
 )
 async def list_report_issues(
     job_id: UUID,
-    current_user: Annotated[User, Depends(get_current_user)],
-    report_service: Annotated[ReportService, Depends(get_report_service)],
-    severity: Annotated[IssueSeverity | None, Query()] = None,
-    category: Annotated[IssueCategory | None, Query()] = None,
-    source: Annotated[IssueSource | None, Query()] = None,
-    file_path: Annotated[str | None, Query(min_length=1, max_length=255)] = None,
-    page: Annotated[int, Query(ge=1)] = 1,
-    per_page: Annotated[int, Query(ge=1, le=100)] = 20,
-    sort: Annotated[str, Query(min_length=1, max_length=32)] = "-created_at",
+    current_user: CurrentUserDep,
+    report_service: ReportServiceDep,
+    severity: IssueSeverityFilter = None,
+    category: IssueCategoryFilter = None,
+    source: IssueSourceFilter = None,
+    file_path: IssueFilePathFilter = None,
+    page: IssuePageQuery = DEFAULT_ISSUE_PAGE,
+    per_page: IssuePerPageQuery = DEFAULT_ISSUE_PER_PAGE,
+    sort: IssueSortQuery = DEFAULT_ISSUE_SORT,
 ) -> IssueListResponse:
     """Return filtered and paginated issues for an authorized report."""
 
@@ -90,8 +108,8 @@ async def list_report_issues(
 async def get_report_issue(
     job_id: UUID,
     issue_id: UUID,
-    current_user: Annotated[User, Depends(get_current_user)],
-    report_service: Annotated[ReportService, Depends(get_report_service)],
+    current_user: CurrentUserDep,
+    report_service: ReportServiceDep,
 ) -> IssueResponse:
     """Return one issue for an authorized report."""
 
