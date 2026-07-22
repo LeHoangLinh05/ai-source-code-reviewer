@@ -1,10 +1,10 @@
 """Project structure, language, framework, and file tree analysis."""
 
+import json
+import tomllib
 from collections import Counter
 from dataclasses import dataclass
-import json
 from pathlib import Path
-import tomllib
 
 from app.analyzers.file_filter import to_relative_posix_path
 

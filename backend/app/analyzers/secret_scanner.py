@@ -1,8 +1,8 @@
 """Secret scanning analyzer for detecting sensitive values in source code."""
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
-import re
 
 from app.analyzers.file_filter import to_relative_posix_path
 from app.models.review_issue import IssueCategory, IssueSeverity, IssueSource
@@ -24,7 +24,9 @@ SECRET_PATTERNS = (
         name="aws_access_key",
         regex=re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
         title="Potential AWS access key committed",
-        description="A value matching the AWS access key format appears in source code.",
+        description=(
+            "A value matching the AWS access key format appears in source code."
+        ),
     ),
     SecretPattern(
         name="private_key",

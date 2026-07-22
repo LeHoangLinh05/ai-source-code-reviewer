@@ -39,7 +39,8 @@ async def cleanup_expired_sandboxes_async() -> SandboxCleanupSummary:
             )
             summary = await cleanup_service.cleanup_expired_sandboxes()
             logger.info(
-                "Sandbox cleanup sweep finished scanned=%s cleaned=%s skipped=%s freed_bytes=%s",
+                "Sandbox cleanup sweep finished scanned=%s cleaned=%s "
+                "skipped=%s freed_bytes=%s",
                 summary.scanned_jobs,
                 summary.cleaned_jobs,
                 summary.skipped_jobs,

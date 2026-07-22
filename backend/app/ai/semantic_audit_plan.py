@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+import re
 from collections import Counter
 from collections.abc import Iterable, Sequence
-import re
 
 MAX_AUDIT_PLAN_ITEMS = 96
 MAX_ROADMAP_RULES_PER_PROBE = 3

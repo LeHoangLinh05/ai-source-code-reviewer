@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from hashlib import sha1
+from hashlib import sha256
 from pathlib import Path
-import re
 
 from app.ai.rag.bm25_index import BM25Document, BM25Index
 from app.ai.rag.vectorstore import ChromaVectorStore, get_vectorstore
@@ -163,5 +163,5 @@ def _tokenize_preserving_text(text: str) -> list[str]:
 
 def _chunk_id(source: str, chunk_index: int, content: str) -> str:
     source_slug = re.sub(r"[^a-zA-Z0-9_-]+", "-", source.lower()).strip("-")
-    digest = sha1(content.encode("utf-8")).hexdigest()[:12]
+    digest = sha256(content.encode("utf-8")).hexdigest()[:12]
     return f"{source_slug}-{chunk_index}-{digest}"

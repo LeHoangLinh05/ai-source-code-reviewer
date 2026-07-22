@@ -8,7 +8,7 @@ from typing import Any, cast
 import pytest
 from pydantic import SecretStr
 
-import app.ai.llm_config as llm_config
+from app.ai import llm_config
 
 
 def test_get_openai_llm_uses_configured_compatible_endpoint(

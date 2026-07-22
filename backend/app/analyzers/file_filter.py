@@ -1,9 +1,11 @@
 """Source file filtering for cloned review sandboxes."""
 
-from dataclasses import dataclass
 import os
-from pathlib import Path
 import subprocess
+from dataclasses import dataclass
+from pathlib import Path
+
+from app.core.config import build_git_subprocess_env, get_git_executable
 
 IGNORED_DIRECTORY_NAMES = {
     ".git",
@@ -143,14 +145,19 @@ def _git_tracked_files(root_path: Path) -> list[Path] | None:
     if not git_dir.exists():
         return None
 
+    try:
+        git_executable = get_git_executable()
+    except RuntimeError:
+        return None
+
     completed_process = subprocess.run(
-        ["git", "ls-files", "-z", "--cached"],
+        [git_executable, "ls-files", "-z", "--cached"],
         cwd=root_path,
         capture_output=True,
         check=False,
         text=False,
         timeout=15,
-        env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+        env=build_git_subprocess_env(),
     )
     if completed_process.returncode != 0:
         return None

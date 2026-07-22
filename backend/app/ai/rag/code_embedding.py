@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import hashlib
 import json
 import logging
-from pathlib import Path
 import re
 import time
-from typing import Any, Mapping, Protocol
+from collections.abc import Mapping
+from dataclasses import dataclass
+from http import HTTPStatus
+from pathlib import Path
+from typing import Any, Protocol
 from uuid import UUID
 
 from app.core.config import get_settings
@@ -22,6 +24,8 @@ CODE_EMBEDDING_MODEL_VERSION = "remote-api-v1"
 CODE_EMBEDDING_DIMENSION = 1536
 UNKNOWN_CODE_EMBEDDING_DIMENSION = 0
 CODE_CHUNKER_VERSION = "v1"
+MAX_RETRYABLE_HTTP_STATUS_CODE = 599
+MAX_EMBEDDING_RETRY_DELAY_SECONDS = 60.0
 
 
 @dataclass(slots=True, frozen=True)
@@ -731,8 +735,13 @@ def _should_retry_embedding_response(
     if attempt >= max_retries:
         return False
 
-    status_code = getattr(response, "status_code", 0)
-    return status_code == 429 or 500 <= status_code <= 599
+    status_code = int(getattr(response, "status_code", 0) or 0)
+    return (
+        status_code == HTTPStatus.TOO_MANY_REQUESTS
+        or HTTPStatus.INTERNAL_SERVER_ERROR
+        <= status_code
+        <= MAX_RETRYABLE_HTTP_STATUS_CODE
+    )
 
 
 def _embedding_retry_delay_seconds(
@@ -745,7 +754,10 @@ def _embedding_retry_delay_seconds(
     if retry_after is not None:
         return retry_after
 
-    return min(base_delay_seconds * (2**attempt), 60.0)
+    return min(
+        base_delay_seconds * (2**attempt),
+        MAX_EMBEDDING_RETRY_DELAY_SECONDS,
+    )
 
 
 def _retry_after_seconds(response: Any) -> float | None:
@@ -811,14 +823,13 @@ def _vector_results_from_query_payload(
     distances: list[object],
 ) -> list[CodeVectorSearchResult]:
     results: list[CodeVectorSearchResult] = []
-    for content, metadata, distance in zip(
+    for content, raw_metadata, distance in zip(
         documents,
         metadatas,
         distances,
         strict=True,
     ):
-        if not isinstance(metadata, Mapping):
-            metadata = {}
+        metadata = raw_metadata if isinstance(raw_metadata, Mapping) else {}
         results.append(
             CodeVectorSearchResult(
                 content=str(content),

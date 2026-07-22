@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import ast
+import re
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
-import re
-from typing import Iterable
 
 MAX_TOKENS_PER_CHUNK = 1500
 FALLBACK_CHUNK_LINES = 60

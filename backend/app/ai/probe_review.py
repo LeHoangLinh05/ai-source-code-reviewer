@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
 import json
 import logging
 import re
 import time
+from dataclasses import dataclass, replace
 from typing import Any, Protocol
 from uuid import UUID
 
@@ -38,6 +38,8 @@ logger = logging.getLogger(__name__)
 PROBE_RETRIEVAL_TOOL_NAME = "probe_retrieval"
 PROBE_JUDGE_TOOL_NAME = "probe_judge"
 MIN_PROBE_ISSUE_CONFIDENCE = 0.7
+MIN_IMPORTANT_QUERY_TERM_LENGTH = 3
+MIN_IMPORTANT_RULE_TERM_LENGTH = 4
 STOP_WORDS = {
     "and",
     "are",
@@ -477,9 +479,12 @@ class ProbeJudgeService:
         if not _candidate_has_required_fields(candidate):
             return False
 
-        assert candidate.file_path is not None
-        assert candidate.line_start is not None
-        assert candidate.line_end is not None
+        file_path = candidate.file_path
+        line_start = candidate.line_start
+        line_end = candidate.line_end
+        if file_path is None or line_start is None or line_end is None:
+            return False
+
         evidence_chunk = _supporting_bundle_chunk(candidate, bundles)
         if evidence_chunk is None:
             return False
@@ -488,8 +493,8 @@ class ProbeJudgeService:
         severity = _issue_severity(candidate.severity)
         existing_issue = await self._find_existing_issue(
             job_id=job_id,
-            file_path=candidate.file_path,
-            line_start=candidate.line_start,
+            file_path=file_path,
+            line_start=line_start,
             category=category,
         )
         if existing_issue is not None:
@@ -514,9 +519,9 @@ class ProbeJudgeService:
         )
         review_issue = ReviewIssue(
             job_id=job_id,
-            file_path=candidate.file_path,
-            line_start=candidate.line_start,
-            line_end=candidate.line_end,
+            file_path=file_path,
+            line_start=line_start,
+            line_end=line_end,
             severity=severity,
             category=category,
             title=str(candidate.title or "AI review finding")[:255],
@@ -1105,7 +1110,9 @@ def _exact_score(query: str, content: str, file_path: str) -> float:
 
 def _important_terms(query: str) -> list[str]:
     return [
-        term for term in tokenize(query) if len(term) >= 3 and term not in STOP_WORDS
+        term
+        for term in tokenize(query)
+        if len(term) >= MIN_IMPORTANT_QUERY_TERM_LENGTH and term not in STOP_WORDS
     ][:32]
 
 
@@ -1436,23 +1443,26 @@ def _supporting_bundle_chunk(
     candidate: ProbeJudgeIssueCandidate,
     bundles: list[ProbeEvidenceBundle],
 ) -> ProbeCandidateChunk | None:
-    assert candidate.file_path is not None
-    assert candidate.line_start is not None
-    assert candidate.line_end is not None
+    file_path = candidate.file_path
+    line_start = candidate.line_start
+    line_end = candidate.line_end
+    if file_path is None or line_start is None or line_end is None:
+        return None
+
     if not candidate.supporting_evidence:
         return None
 
-    candidate_range = range(candidate.line_start, candidate.line_end + 1)
+    candidate_range = range(line_start, line_end + 1)
     for bundle in bundles:
         for chunk in bundle.candidate_chunks:
             for evidence in candidate.supporting_evidence:
                 evidence_range = range(evidence.line_start, evidence.line_end + 1)
                 if (
-                    chunk.file_path == candidate.file_path
-                    and evidence.file_path == candidate.file_path
+                    chunk.file_path == file_path
+                    and evidence.file_path == file_path
                     and evidence.chunk_index == chunk.chunk_index
-                    and chunk.line_start <= candidate.line_start
-                    and chunk.line_end >= candidate.line_end
+                    and chunk.line_start <= line_start
+                    and chunk.line_end >= line_end
                     and chunk.line_start <= evidence.line_start
                     and chunk.line_end >= evidence.line_end
                     and _ranges_overlap(candidate_range, evidence_range)
@@ -1541,7 +1551,7 @@ def _rule_matches_candidate_text(
     requirement_terms = [
         term
         for term in tokenize(rule.requirement.lower())
-        if len(term) >= 4 and term not in STOP_WORDS
+        if len(term) >= MIN_IMPORTANT_RULE_TERM_LENGTH and term not in STOP_WORDS
     ]
     return bool(requirement_terms) and all(
         term in candidate_text for term in requirement_terms[:3]

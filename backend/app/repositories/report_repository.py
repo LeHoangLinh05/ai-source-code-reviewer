@@ -5,7 +5,6 @@ from uuid import UUID
 from sqlalchemy import Select, delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.schemas.normalized_issue import NormalizedIssue
 from app.models.review_issue import (
     IssueCategory,
     IssueSeverity,
@@ -14,6 +13,7 @@ from app.models.review_issue import (
 )
 from app.models.review_job import ReviewJob
 from app.models.review_report import ReviewReport
+from app.schemas.normalized_issue import NormalizedIssue
 
 
 class ReportRepository:

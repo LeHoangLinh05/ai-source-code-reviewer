@@ -1,8 +1,8 @@
 """Build and generate repository overview prompts."""
 
 import logging
-from pathlib import Path
 import re
+from pathlib import Path
 
 from app.ai.llm_config import run_with_configured_llm
 from app.ai.tools.common import parse_json_object_text

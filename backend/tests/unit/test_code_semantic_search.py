@@ -1,7 +1,7 @@
 """Tests for code-specific embeddings and job-isolated retrieval."""
 
-from pathlib import Path
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from uuid import uuid4
@@ -10,9 +10,9 @@ import pytest
 
 import app.ai.rag.code_embedding as code_embedding_module
 from app.ai.rag.code_embedding import (
+    CODE_CHUNKS_COLLECTION,
     CODE_EMBEDDING_DIMENSION,
     CODE_EMBEDDING_MODEL_VERSION,
-    CODE_CHUNKS_COLLECTION,
     CodeEmbeddingStore,
     CodeVectorSearchResult,
     build_index_generation_key,
@@ -543,7 +543,8 @@ def test_code_retriever_reranks_runtime_source_above_spec_files() -> None:
                 content=(
                     "async def login(payload):\n"
                     "    user = find_user(payload.email)\n"
-                    "    return {'access_token': 'fake-token', 'refresh_token': 'fake'}\n"
+                    "    return {'access_token': 'fake-token', "
+                    "'refresh_token': 'fake'}\n"
                 ),
                 score=0.72,
             ),

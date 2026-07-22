@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import re
+from dataclasses import dataclass
 from typing import Protocol
 from uuid import UUID
 
@@ -13,6 +13,8 @@ from app.ai.rag.code_embedding import (
     CodeVectorSearchResult,
 )
 from app.core.config import get_settings
+
+MIN_QUERY_TERM_LENGTH = 3
 
 
 class CodeVectorStore(Protocol):
@@ -462,7 +464,7 @@ def _query_terms(query: str) -> set[str]:
     terms = {
         token.lower()
         for token in re.findall(r"[A-Za-z0-9_/.:-]+", query)
-        if len(token) >= 3
+        if len(token) >= MIN_QUERY_TERM_LENGTH
     }
     return {
         term

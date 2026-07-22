@@ -26,11 +26,11 @@ from app.models.review_issue import IssueSource, ReviewIssue
 from app.models.review_job import ReviewJob, ReviewJobStatus
 from app.models.review_report import ReviewReport
 from app.schemas.ai_trace import (
+    AITokenTotals,
+    AIToolCallTrace,
     AITraceCoverage,
     AITraceResponse,
     AITraceStage,
-    AITokenTotals,
-    AIToolCallTrace,
 )
 from app.services.report_generation_service import AI_REPORT_MODEL, STATIC_REPORT_MODEL
 
@@ -485,10 +485,7 @@ def _is_full_ai_review(
     total_chunks: int,
 ) -> bool:
     _ = coverage_ai_chunks, total_chunks
-    if report_model != AI_REPORT_MODEL:
-        return False
-
-    return True
+    return report_model == AI_REPORT_MODEL
 
 
 def _safe_int(value: object) -> int:

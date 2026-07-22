@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import math
 import re
-from typing import Protocol, Sequence
+from collections.abc import Sequence
+from dataclasses import dataclass
+from typing import Protocol
 
 _TOKEN_PATTERN = re.compile(r"[a-zA-Z0-9_]+")
 

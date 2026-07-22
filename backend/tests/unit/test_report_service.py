@@ -7,10 +7,14 @@ from uuid import uuid4
 
 import pytest
 
-from app.models.review_issue import ReviewIssue
-from app.models.review_issue import IssueCategory, IssueSeverity, IssueSource
-from app.services.report_service import ReportService
+from app.models.review_issue import (
+    IssueCategory,
+    IssueSeverity,
+    IssueSource,
+    ReviewIssue,
+)
 from app.services.report_service import (
+    ReportService,
     _group_issues,
     _issue_group_key,
     _issue_group_response,

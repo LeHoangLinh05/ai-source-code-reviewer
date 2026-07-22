@@ -6,10 +6,10 @@ from pathlib import Path
 
 import pytest
 
+import app.ai.rag.vectorstore as vectorstore_module
 from app.ai.rag.bm25_index import BM25Index
 from app.ai.rag.ingestion import RAGDocument, RAGIngestionPipeline
 from app.ai.rag.retriever import HybridRetriever
-import app.ai.rag.vectorstore as vectorstore_module
 from app.ai.rag.vectorstore import (
     COLLECTION_NAME,
     KNOWLEDGE_EMBEDDING_MODEL,
@@ -142,7 +142,7 @@ def test_roadmap_ingestion_creates_one_document_per_rule() -> None:
     assert len(load_roadmap_documents()) == EXPECTED_ROADMAP_RULES
     assert len(chunks) == EXPECTED_ROADMAP_RULES
     assert len(vectorstore.documents) == EXPECTED_ROADMAP_RULES
-    assert all(REQUIRED_ROADMAP_METADATA <= chunk.metadata.keys() for chunk in chunks)
+    assert all(chunk.metadata.keys() >= REQUIRED_ROADMAP_METADATA for chunk in chunks)
     assert all(chunk.metadata["source"] == ROADMAP_PROFILE_ID for chunk in chunks)
 
 

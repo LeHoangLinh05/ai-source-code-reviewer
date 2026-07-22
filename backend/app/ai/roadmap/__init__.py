@@ -17,8 +17,8 @@ from app.ai.roadmap.selection import (
 __all__ = [
     "ROADMAP_PROFILE_ID",
     "ROADMAP_SOURCE_PATH",
-    "RoadmapRequirement",
     "RoadmapProfile",
+    "RoadmapRequirement",
     "build_roadmap_context",
     "get_applicable_rule_ids",
     "load_roadmap_documents",

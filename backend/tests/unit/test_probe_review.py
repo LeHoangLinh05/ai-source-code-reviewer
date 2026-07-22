@@ -14,11 +14,11 @@ from app.ai.probe_review import (
     ProbeJudgeIssueCandidate,
     ProbeJudgeResponse,
     ProbeRetrievalService,
-    _RoadmapMetadataStore,
     _candidate_rule_id,
     _dependency_manifest_contradicts_candidate,
     _judge_prompt,
     _probe_judge_response_from_payload,
+    _RoadmapMetadataStore,
     _supporting_bundle_chunk,
     _trim_bundles,
 )
@@ -121,7 +121,9 @@ def test_probe_judge_response_accepts_llm_text_and_null_evidence() -> None:
                     "verdict": "issue",
                     "claim_type": "bug",
                     "title": "Logout does not revoke refresh token",
-                    "description": "The provided chunk returns success without revocation.",
+                    "description": (
+                        "The provided chunk returns success without revocation."
+                    ),
                     "suggestion": "Revoke or blacklist refresh tokens on logout.",
                     "severity": "high",
                     "category": "security",
@@ -177,7 +179,9 @@ def test_probe_judge_response_keeps_valid_candidates_from_mixed_batch() -> None:
                 {
                     "verdict": "issue",
                     "title": "Logout does not revoke refresh token",
-                    "description": "The provided chunk returns success without revocation.",
+                    "description": (
+                        "The provided chunk returns success without revocation."
+                    ),
                     "severity": "high",
                     "category": "security",
                     "confidence": 0.91,
@@ -223,7 +227,9 @@ def test_batched_dependency_candidate_uses_matching_rule_id() -> None:
         [
             _bundle(
                 probe={
-                    "probe_id": "structure.frontend_next_js_15.required_dependency.rc_w4_01",
+                    "probe_id": (
+                        "structure.frontend_next_js_15.required_dependency.rc_w4_01"
+                    ),
                     "related_rule_ids": ["RC-W4-01", "RC-W4-02", "RC-W4-03"],
                 },
                 chunks=[],

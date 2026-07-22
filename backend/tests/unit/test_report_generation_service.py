@@ -7,8 +7,8 @@ from app.schemas.normalized_issue import NormalizedIssue
 from app.services.report_generation_service import (
     build_static_report,
     build_top_risky_files,
-    calculate_score,
     calculate_report_scores,
+    calculate_score,
 )
 
 

@@ -7,16 +7,16 @@ from motor.motor_asyncio import AsyncIOMotorCollection, AsyncIOMotorDatabase
 from pydantic import BaseModel
 
 from app.db.mongodb import (
-    CODE_INDEX_MANIFESTS_COLLECTION,
     CHUNK_METADATA_COLLECTION,
+    CODE_INDEX_MANIFESTS_COLLECTION,
     FILE_ANALYSIS_RESULTS_COLLECTION,
     RAW_STATIC_ANALYSIS_OUTPUTS_COLLECTION,
     REPO_SUMMARY_RESULTS_COLLECTION,
     TOOL_CALL_LOGS_COLLECTION,
 )
 from app.schemas.mongodb import (
-    CodeIndexManifestDocument,
     ChunkMetadataDocument,
+    CodeIndexManifestDocument,
     FileAnalysisResultDocument,
     RawStaticAnalysisOutputDocument,
     RepoSummaryResultDocument,

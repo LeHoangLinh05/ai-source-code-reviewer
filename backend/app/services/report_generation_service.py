@@ -123,19 +123,17 @@ def build_top_risky_files(
 
 
 def _report_priority(issue: NormalizedIssue) -> int:
+    category_priorities = {
+        IssueCategory.SECURITY: 1,
+        IssueCategory.BUG: 2,
+        IssueCategory.PERFORMANCE: 3,
+        IssueCategory.MAINTAINABILITY: 4,
+        IssueCategory.REQUIREMENT: 5,
+    }
     if (issue.raw_output or {}).get("priority") == "P0":
         return 0
-    if issue.category == IssueCategory.SECURITY:
-        return 1
-    if issue.category == IssueCategory.BUG:
-        return 2
-    if issue.category == IssueCategory.PERFORMANCE:
-        return 3
-    if issue.category == IssueCategory.MAINTAINABILITY:
-        return 4
-    if issue.category == IssueCategory.REQUIREMENT:
-        return 5
-    return 6
+
+    return category_priorities.get(issue.category, 6)
 
 
 def build_executive_summary(

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter
-from typing import Any
+from typing import Any, cast
 from uuid import UUID
 
 from langchain_core.tools import tool
@@ -12,8 +12,8 @@ from sqlalchemy import delete, select
 
 from app.ai.tool_runtime import ensure_ai_job_active, get_ai_tool_runtime
 from app.ai.tools.common import (
-    parse_json_object_text,
     parse_job_uuid_or_current,
+    parse_json_object_text,
     unwrap_react_json_input,
 )
 from app.db.mongodb import (
@@ -71,7 +71,7 @@ async def generate_final_report(
     top_priorities: list[str] | None = None,
     tech_stack: TechStackInput | None = None,
 ) -> dict[str, object]:
-    """Tổng hợp toàn bộ issue đã tạo trong session thành report cuối. BẮT BUỘC truyền executive_summary, security_score, maintainability_score, performance_score, overall_score; không gọi với Action Input rỗng {}."""
+    """Tổng hợp issue trong session thành report cuối."""
 
     parsed_input = parse_json_object_text(executive_summary)
     if parsed_input is not None:
@@ -127,11 +127,11 @@ async def generate_final_report(
     if rejection_reason is not None:
         return {"status": "rejected", "reason": rejection_reason}
 
-    assert executive_summary is not None
-    assert maintainability_score is not None
-    assert overall_score is not None
-    assert performance_score is not None
-    assert security_score is not None
+    executive_summary = cast(str, executive_summary)
+    maintainability_score = cast(float, maintainability_score)
+    overall_score = cast(float, overall_score)
+    performance_score = cast(float, performance_score)
+    security_score = cast(float, security_score)
 
     severity_counts = Counter(issue.severity for issue in normalized_issues)
     report = ReviewReport(

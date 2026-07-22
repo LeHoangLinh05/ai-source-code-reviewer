@@ -3,7 +3,7 @@
 from datetime import UTC, datetime
 
 from app.models.review_job import ReviewJobStatus
-from app.schemas.ai_trace import AITraceCoverage, AIToolCallTrace
+from app.schemas.ai_trace import AIToolCallTrace, AITraceCoverage
 from app.services.ai_trace_service import (
     _ai_stage_status,
     _read_chunk_coverage,

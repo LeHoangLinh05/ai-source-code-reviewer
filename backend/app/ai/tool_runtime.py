@@ -2,15 +2,15 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
+import re
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-import hashlib
-import json
 from pathlib import Path
-import re
-from uuid import UUID
 from typing import Any
+from uuid import UUID
 
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from sqlalchemy import select
@@ -20,6 +20,7 @@ from app.models.review_job import ReviewJob
 
 MAX_DISTINCT_SEARCHES_PER_INVESTIGATION = 5
 MAX_SOURCE_SEARCHES_PER_PASS = 24
+NEAR_DUPLICATE_MATCH_THRESHOLD = 0.8
 
 
 @dataclass(slots=True, frozen=True)
@@ -143,7 +144,7 @@ class AIToolRuntime:
         mode: str,
         result_chunk_keys: set[tuple[str, int]],
     ) -> CodeSearchAttempt | None:
-        """Record a search and return a near-duplicate attempt when no evidence changed."""
+        """Record a search and return a near-duplicate attempt."""
 
         attempts = self.search_attempts.setdefault(investigation_id, [])
         near_duplicate = next(
@@ -155,8 +156,9 @@ class AIToolRuntime:
                     decision.normalized_query,
                     attempt.normalized_query,
                 )
-                >= 0.8
-                and _result_overlap(result_chunk_keys, attempt.result_chunk_keys) >= 0.8
+                >= NEAR_DUPLICATE_MATCH_THRESHOLD
+                and _result_overlap(result_chunk_keys, attempt.result_chunk_keys)
+                >= NEAR_DUPLICATE_MATCH_THRESHOLD
             ),
             None,
         )

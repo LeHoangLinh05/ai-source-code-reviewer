@@ -6,7 +6,7 @@ import pytest
 
 from app.analyzers.secret_scanner import SECRET_MASK
 from app.schemas.repo_summary import RepoSummary
-import app.services.repo_summary_service as repo_summary_service
+from app.services import repo_summary_service
 from app.services.repo_summary_service import (
     RepoSummaryGenerationError,
     RepoSummaryService,

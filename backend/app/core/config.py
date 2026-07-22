@@ -1,5 +1,7 @@
 """Application settings loaded from environment variables and .env."""
 
+import os
+import shutil
 from functools import lru_cache
 from pathlib import Path
 from typing import Annotated, Literal
@@ -9,6 +11,10 @@ from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 BACKEND_DIR = Path(__file__).resolve().parents[2]
 PROJECT_ROOT = BACKEND_DIR.parent
+DEFAULT_SANDBOX_ROOT = PROJECT_ROOT / ".sandbox"
+GIT_EXECUTABLE_NAME = "git"
+GIT_TERMINAL_PROMPT_ENV = "GIT_TERMINAL_PROMPT"
+DISABLED_GIT_TERMINAL_PROMPT = "0"
 
 
 class Settings(BaseSettings):
@@ -67,7 +73,7 @@ class Settings(BaseSettings):
     redis_health_check_interval_seconds: int = 30
     celery_broker_url: str = "redis://localhost:6379/1"
     celery_result_backend: str = "redis://localhost:6379/2"
-    sandbox_root: str = "/tmp/sandbox"
+    sandbox_root: str = str(DEFAULT_SANDBOX_ROOT)
     sandbox_ttl_hours: int = 1
     max_repo_size_mb: int = 500
     max_source_file_size_bytes: int = 1_048_576
@@ -176,3 +182,22 @@ def get_settings() -> Settings:
     """Return cached application settings."""
 
     return Settings()
+
+
+def get_git_executable() -> str:
+    """Resolve the Git executable before spawning Git subprocesses."""
+
+    git_executable = shutil.which(GIT_EXECUTABLE_NAME)
+    if git_executable is None:
+        raise RuntimeError("Git executable is unavailable on PATH")
+
+    return git_executable
+
+
+def build_git_subprocess_env() -> dict[str, str]:
+    """Return an environment that disables interactive Git prompts."""
+
+    return {
+        **os.environ,
+        GIT_TERMINAL_PROMPT_ENV: DISABLED_GIT_TERMINAL_PROMPT,
+    }

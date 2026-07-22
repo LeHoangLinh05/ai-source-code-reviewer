@@ -1,12 +1,14 @@
 """ESLint static analysis adapter for JavaScript and TypeScript findings."""
 
-from pathlib import Path
 import json
+from pathlib import Path
 
 from app.analyzers.file_filter import to_relative_posix_path
 from app.analyzers.static_analysis.base import StaticAnalysisRun, run_static_command
 from app.models.review_issue import IssueCategory, IssueSeverity, IssueSource
 from app.schemas.normalized_issue import NormalizedIssue
+
+ESLINT_ERROR_SEVERITY = 2
 
 
 def run_eslint(
@@ -103,7 +105,9 @@ def eslint_to_normalized(
 
 
 def _eslint_severity(severity: object) -> IssueSeverity:
-    return IssueSeverity.MEDIUM if severity == 2 else IssueSeverity.LOW
+    return (
+        IssueSeverity.MEDIUM if severity == ESLINT_ERROR_SEVERITY else IssueSeverity.LOW
+    )
 
 
 def _normalize_file_path(file_path: str, sandbox_path: Path | None) -> str:

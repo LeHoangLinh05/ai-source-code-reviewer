@@ -1,13 +1,12 @@
 """Celery worker pipeline for real repository analysis jobs."""
 
 import asyncio
-from datetime import UTC, datetime
 import logging
-import os
-from pathlib import Path
 import shutil
 import subprocess
 import time
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import Literal, cast
 from uuid import UUID, uuid4
 
@@ -39,11 +38,16 @@ from app.analyzers.structure_analyzer import (
     StructureAnalysisResult,
     analyze_structure,
 )
-from app.core.config import BACKEND_DIR, Settings
+from app.core.config import (
+    BACKEND_DIR,
+    Settings,
+    build_git_subprocess_env,
+    get_git_executable,
+)
 from app.models.review_job import ReviewJob, ReviewJobStatus
 from app.repositories.mongodb_repository import (
-    CodeIndexManifestRepository,
     ChunkMetadataRepository,
+    CodeIndexManifestRepository,
     FileAnalysisResultRepository,
     RawStaticAnalysisOutputRepository,
     RepoSummaryResultRepository,
@@ -53,10 +57,10 @@ from app.repositories.report_repository import ReportRepository
 from app.repositories.repository_repository import RepositoryRepository
 from app.repositories.review_job_repository import ReviewJobRepository
 from app.schemas.mongodb import (
+    ChunkMetadataDocument,
     CodeIndexManifestDocument,
     FileAnalysisResultDocument,
     FileTreeEntry,
-    ChunkMetadataDocument,
     ParsedStaticIssue,
     RawStaticAnalysisOutputDocument,
     RepoSummaryResultDocument,
@@ -760,10 +764,11 @@ def clone_repository(review_job: ReviewJob, sandbox_path: Path) -> None:
 
     cleanup_sandbox(sandbox_path, sandbox_path.parent)
     sandbox_path.parent.mkdir(parents=True, exist_ok=True)
+    git_executable = _get_required_git_executable()
     repository_url = review_job.repository.url
     branch = review_job.branch or review_job.repository.default_branch
     command = [
-        "git",
+        git_executable,
         "clone",
         "--depth",
         "1",
@@ -777,7 +782,7 @@ def clone_repository(review_job: ReviewJob, sandbox_path: Path) -> None:
         command,
         capture_output=True,
         check=False,
-        env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+        env=build_git_subprocess_env(),
         text=True,
         timeout=CLONE_TIMEOUT_SECONDS,
     )
@@ -814,8 +819,9 @@ def validate_repo_size(sandbox_path: Path, *, max_size_bytes: int) -> None:
 def get_commit_sha(sandbox_path: Path) -> str:
     """Return the current cloned commit SHA."""
 
+    git_executable = _get_required_git_executable()
     completed_process = subprocess.run(
-        ["git", "rev-parse", "HEAD"],
+        [git_executable, "rev-parse", "HEAD"],
         cwd=sandbox_path,
         capture_output=True,
         check=False,
@@ -826,6 +832,13 @@ def get_commit_sha(sandbox_path: Path) -> str:
         raise ReviewPipelineError("Unable to read cloned repository commit SHA")
 
     return completed_process.stdout.strip()
+
+
+def _get_required_git_executable() -> str:
+    try:
+        return get_git_executable()
+    except RuntimeError as error:
+        raise ReviewPipelineError(str(error)) from error
 
 
 def build_static_analysis_runs(

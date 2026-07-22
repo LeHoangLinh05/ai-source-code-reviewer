@@ -1,8 +1,8 @@
 """Report aggregation, scoring, and issue query workflows."""
 
+import re
 from collections.abc import Sequence
 from uuid import UUID
-import re
 
 from app.core.exceptions import AuthorizationError, BadRequestError, NotFoundError
 from app.models.review_issue import (

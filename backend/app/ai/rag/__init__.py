@@ -10,12 +10,12 @@ from app.ai.rag.vectorstore import (
 )
 
 __all__ = [
+    "KNOWLEDGE_EMBEDDING_MODEL",
     "BM25Document",
     "BM25Index",
     "BM25SearchResult",
     "ChromaVectorStore",
     "HybridRetriever",
-    "KNOWLEDGE_EMBEDDING_MODEL",
     "RAGDocument",
     "RAGIngestionPipeline",
     "RetrievedChunk",

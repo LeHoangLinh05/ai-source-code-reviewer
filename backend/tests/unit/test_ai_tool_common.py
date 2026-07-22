@@ -4,8 +4,8 @@ from pathlib import Path
 from typing import cast
 from uuid import UUID, uuid4
 
-from motor.motor_asyncio import AsyncIOMotorDatabase
 import pytest
+from motor.motor_asyncio import AsyncIOMotorDatabase
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai.review_coverage import load_chunk_review_coverage

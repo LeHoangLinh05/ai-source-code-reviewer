@@ -7,10 +7,11 @@ from uuid import uuid4
 
 import pytest
 
-from app.analyzers.file_filter import FileManifest
 from app.ai.roadmap.knowledge import ROADMAP_PROFILE_ID
+from app.analyzers.file_filter import FileManifest
 from app.models.review_job import ReviewJobStatus
 from app.schemas.repo_summary import RepoSummary
+from app.services import review_pipeline_service
 from app.services.review_pipeline_service import (
     ReviewJobCanceled,
     ReviewPipelineError,
@@ -20,7 +21,6 @@ from app.services.review_pipeline_service import (
     build_plain_file_chunk_metadata_documents,
     get_rule_profile,
 )
-import app.services.review_pipeline_service as review_pipeline_service
 
 
 def test_get_rule_profile_is_disabled_when_options_missing() -> None:

@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
 import json
 import logging
 import re
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 from uuid import UUID, uuid4
@@ -22,11 +22,12 @@ except ImportError:
         """Fallback base class when LangChain is not installed at app startup."""
 
 
-from motor.motor_asyncio import AsyncIOMotorDatabase
-from pydantic import BaseModel
 from langchain_core.agents import AgentAction, AgentFinish
 from langchain_core.exceptions import OutputParserException
+from motor.motor_asyncio import AsyncIOMotorDatabase
+from pydantic import BaseModel
 
+from app.ai.probe_review import run_backend_directed_probe_review
 from app.ai.prompts import FINAL_REPORT_SYSTEM_PROMPT
 from app.ai.roadmap.knowledge import RoadmapRequirement, load_roadmap_requirements
 from app.ai.roadmap.selection import (
@@ -34,7 +35,6 @@ from app.ai.roadmap.selection import (
     get_applicable_rule_ids,
     parse_roadmap_profile,
 )
-from app.ai.probe_review import run_backend_directed_probe_review
 from app.ai.tool_runtime import (
     AIToolRuntime,
     ai_tool_runtime,
@@ -256,7 +256,7 @@ async def run_ai_review(
 async def _ensure_roadmap_catalog_loaded(
     *,
     job_id: UUID,
-    callback: "MongoToolCallLogger",
+    callback: MongoToolCallLogger,
 ) -> None:
     roadmap_required, roadmap_catalog_loaded = await _load_roadmap_catalog_state(job_id)
     if roadmap_required and not roadmap_catalog_loaded:
@@ -296,7 +296,7 @@ async def _load_roadmap_catalog_state(job_id: UUID) -> tuple[bool, bool]:
 async def _materialize_roadmap_rule_catalog(
     *,
     job_id: UUID,
-    callback: "MongoToolCallLogger",
+    callback: MongoToolCallLogger,
 ) -> None:
     """Record deterministic roadmap rule catalog outside LLM call budget."""
 
@@ -884,19 +884,24 @@ def _normalize_tool_output(value: Any) -> dict[str, object]:
         return _json_safe_dict(value)
     if isinstance(value, BaseModel):
         return _json_safe_dict(value.model_dump(mode="json"))
+
     content = getattr(value, "content", None)
     if content is not None:
         return _normalize_tool_output(content)
+
     if isinstance(value, str):
         try:
             parsed = json.loads(value)
         except json.JSONDecodeError:
-            return {"output": value}
-        if isinstance(parsed, dict):
-            return _json_safe_dict(parsed)
-        return {"output": parsed}
+            normalized_output: object = value
+        else:
+            if isinstance(parsed, dict):
+                return _json_safe_dict(parsed)
+            normalized_output = parsed
+    else:
+        normalized_output = _json_safe(value)
 
-    return {"output": _json_safe(value)}
+    return {"output": normalized_output}
 
 
 def _tool_log_status(output: dict[str, object]) -> str:

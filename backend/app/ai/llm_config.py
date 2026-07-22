@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime
 import hashlib
 import json
 import logging
@@ -13,11 +12,13 @@ from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
+from datetime import UTC, datetime
+from http import HTTPStatus
 from typing import Any, TypeVar
 from uuid import uuid4
 
-from langchain_core.runnables import Runnable, RunnableConfig
 from langchain_core.outputs import ChatResult
+from langchain_core.runnables import Runnable, RunnableConfig
 from langchain_openai import ChatOpenAI
 from openai import BaseModel
 
@@ -28,6 +29,7 @@ logger = logging.getLogger(__name__)
 ResultT = TypeVar("ResultT")
 MAX_LLM_TRACE_PREVIEW = 500
 MAX_LLM_TRACE_MESSAGES = 8
+MIN_TRACE_TUPLE_ITEMS = 2
 
 
 class OpenAICompatibleChatOpenAI(ChatOpenAI):
@@ -490,7 +492,7 @@ def _llm_output_trace(value: object) -> dict[str, object]:
 
 
 def _message_trace(value: object) -> dict[str, object]:
-    if isinstance(value, tuple) and len(value) >= 2:
+    if isinstance(value, tuple) and len(value) >= MIN_TRACE_TUPLE_ITEMS:
         tuple_role = str(value[0])
         tuple_content = str(value[1])
         return {"role": tuple_role, "content": _text_trace(tuple_content)}
@@ -632,7 +634,7 @@ def _get_or_create_session_state() -> tuple[
 
 def _is_rate_limit_error(error: Exception) -> bool:
     status_code = getattr(error, "status_code", None)
-    if status_code == 429:
+    if status_code == HTTPStatus.TOO_MANY_REQUESTS:
         return True
 
     error_name = type(error).__name__.lower()

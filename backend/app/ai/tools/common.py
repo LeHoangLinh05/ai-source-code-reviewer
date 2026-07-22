@@ -9,6 +9,8 @@ from uuid import UUID
 
 from app.ai.tool_runtime import get_ai_tool_runtime
 
+MIN_MARKDOWN_FENCE_LINES = 2
+
 
 def tool_validation_error_observation(error: Exception) -> str:
     """Return a retryable observation instead of failing the review pipeline."""
@@ -155,7 +157,7 @@ def _strip_json_markdown_fence(raw_text: str) -> str:
         return raw_text
 
     lines = raw_text.splitlines()
-    if len(lines) < 2:
+    if len(lines) < MIN_MARKDOWN_FENCE_LINES:
         return raw_text
 
     opening_fence = lines[0].strip().lower()
