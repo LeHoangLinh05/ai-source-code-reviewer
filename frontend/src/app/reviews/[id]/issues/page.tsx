@@ -14,6 +14,8 @@ import { useParams, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 
+import { SeverityBadge } from "@/components/reviews/review-badges";
+import { ReviewWorkspaceTabs } from "@/components/reviews/review-workspace-tabs";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -154,34 +156,22 @@ export default function ReviewIssuesPage() {
 
   return (
     <>
-      <header className="flex flex-col gap-4 border-b border-border pb-5 md:flex-row md:items-end md:justify-between">
-        <div>
-          <Button asChild className="mb-4" size="sm" variant="ghost">
-            <Link href={`/reviews/${jobId}`}>
-              <ArrowLeft aria-hidden="true" />
-              Review Job
-            </Link>
-          </Button>
-          <p className="text-xs font-medium uppercase text-muted-foreground">
-            Finding triage
-          </p>
-          <h1 className="mt-2 text-3xl font-extrabold tracking-normal">
-            Issues
-          </h1>
-          <p className="mt-1 text-[15px] leading-6 text-muted-foreground">
-            Filter static analyzer and AI findings by severity, source, and file.
-          </p>
-        </div>
+      <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+        <Button asChild size="sm" variant="ghost">
+          <Link href={`/reviews/${jobId}`}>
+            <ArrowLeft aria-hidden="true" />
+            Review Job
+          </Link>
+        </Button>
         <div className="flex flex-wrap gap-2">
-          <Button asChild variant="secondary">
-            <Link href={`/reviews/${jobId}/report`}>Report</Link>
-          </Button>
           <Button disabled={isLoading} onClick={() => void loadIssues()}>
             <RefreshCw aria-hidden="true" />
             Refresh
           </Button>
         </div>
-      </header>
+      </div>
+
+      <ReviewWorkspaceTabs activeTab="issues" jobId={jobId} />
 
       <Card>
         <CardHeader>
@@ -330,17 +320,16 @@ function IssueTable({
 }) {
   return (
     <div className="overflow-x-auto border-t border-border">
-      <table className="w-full min-w-[980px] text-left text-[15px]">
+      <table className="w-full min-w-[900px] text-left text-[15px]">
         <thead className="bg-muted/50 text-xs uppercase text-muted-foreground">
           <tr>
             <th className="px-6 py-3 font-medium">Severity</th>
             <th className="px-6 py-3 font-medium">Category</th>
             <th className="px-6 py-3 font-medium">Source</th>
-            <th className="px-6 py-3 font-medium">File</th>
+            <th className="px-6 py-3 font-medium">Location</th>
             <th className="px-6 py-3 font-medium">Title</th>
             <th className="px-6 py-3 font-medium">Occurrences</th>
             <th className="px-6 py-3 font-medium">Affected files</th>
-            <th className="px-6 py-3 font-medium">Confidence</th>
           </tr>
         </thead>
         <tbody>
@@ -360,7 +349,7 @@ function IssueTable({
                 {issue.source}
               </td>
               <td className="max-w-[260px] truncate px-6 py-4">
-                {formatIssuePath(issue.file_path)}
+                {formatIssueTableLocation(issue)}
               </td>
               <td className="px-6 py-4 font-medium">{issue.title}</td>
               <td className="px-6 py-4 text-muted-foreground">
@@ -369,35 +358,11 @@ function IssueTable({
               <td className="px-6 py-4 text-muted-foreground">
                 {issue.affected_files.length}
               </td>
-              <td className="px-6 py-4 text-muted-foreground">
-                {issue.confidence ? `${Math.round(issue.confidence * 100)}%` : "-"}
-              </td>
             </tr>
           ))}
         </tbody>
       </table>
     </div>
-  );
-}
-
-function SeverityBadge({ severity }: { severity: IssueSeverity }) {
-  const className =
-    severity === "critical"
-      ? "border-rose-500/50 bg-rose-500/10 text-rose-700 dark:text-rose-200"
-      : severity === "high"
-        ? "border-orange-500/50 bg-orange-500/10 text-orange-700 dark:text-orange-200"
-        : severity === "medium"
-          ? "border-amber-500/50 bg-amber-500/10 text-amber-800 dark:text-amber-100"
-          : severity === "low"
-            ? "border-sky-500/50 bg-sky-500/10 text-sky-700 dark:text-sky-200"
-            : "border-border bg-muted text-muted-foreground";
-
-  return (
-    <span
-      className={`inline-flex rounded-md border px-2 py-1 text-xs font-medium capitalize ${className}`}
-    >
-      {severity}
-    </span>
   );
 }
 
@@ -448,11 +413,19 @@ function IssueDrawer({
   issue: ReviewIssue;
   onClose: () => void;
 }) {
+  const locationSummary = getIssueLocationSummary(issue);
+  const occurrences = getIssueOccurrences(issue);
+  const suggestionText = getIssueSuggestionText(issue, occurrences);
+
   return (
-    <div className="fixed inset-0 z-50 flex justify-end bg-background/80 backdrop-blur-sm">
+    <div
+      className="fixed inset-0 z-50 flex justify-end bg-background/80 backdrop-blur-sm"
+      onClick={onClose}
+    >
       <aside
         aria-label="Issue details"
         className="h-full w-full max-w-3xl overflow-y-auto border-l border-border bg-card p-6 shadow-xl shadow-foreground/10 transition-transform duration-200 ease-out"
+        onClick={(event) => event.stopPropagation()}
       >
         <div className="flex items-start justify-between gap-4">
           <div>
@@ -461,12 +434,13 @@ function IssueDrawer({
               {issue.title}
             </h2>
             <p className="mt-2 break-all text-sm text-muted-foreground">
-            {formatIssuePath(issue.file_path)}
-            {issue.line_start ? `:${issue.line_start}` : ""}
-            {issue.occurrence_count > 1
-              ? ` · ${issue.occurrence_count} occurrences`
-              : ""}
+              {locationSummary.primary}
             </p>
+            {locationSummary.secondary ? (
+              <p className="mt-1 break-all text-sm text-muted-foreground">
+                {locationSummary.secondary}
+              </p>
+            ) : null}
           </div>
           <Button
             aria-label="Close issue details"
@@ -482,22 +456,30 @@ function IssueDrawer({
           {isLoading ? (
             <div className="h-20 animate-pulse rounded-md bg-muted" />
           ) : null}
-          <DetailSection title="Description">{issue.description}</DetailSection>
-          {issue.suggestion ? (
-            <DetailSection title="Suggestion">{issue.suggestion}</DetailSection>
+          <div className="grid gap-3 rounded-md border border-border bg-background p-4 sm:grid-cols-3">
+            <DrawerMetric label="Category" value={issue.category} />
+            <DrawerMetric label="Source" value={issue.source} />
+            <DrawerMetric
+              label="Confidence"
+              value={formatConfidence(issue.confidence)}
+            />
+          </div>
+          <DetailSection title="Description">
+            {getIssueDescriptionText(issue, occurrences)}
+          </DetailSection>
+          {suggestionText ? (
+            <DetailSection title="Suggestion">
+              {suggestionText}
+            </DetailSection>
           ) : null}
           <DetailSection title="Code Context">
             <div className="grid gap-4">
-              {issue.occurrences.length > 0 ? (
-                issue.occurrences.map((occurrence) => (
-                  <CodeSnippetViewer
-                    key={occurrence.issue_id}
-                    occurrence={occurrence}
-                  />
-                ))
-              ) : (
-                <CodeSnippetViewer occurrence={issueToOccurrence(issue)} />
-              )}
+              {occurrences.map((occurrence) => (
+                <CodeSnippetViewer
+                  key={occurrence.issue_id}
+                  occurrence={occurrence}
+                />
+              ))}
             </div>
           </DetailSection>
         </div>
@@ -515,9 +497,16 @@ function CodeSnippetViewer({
   const sourceContext = getSourceContext(occurrence);
 
   if (sourceContext === null) {
+    const displayPath = formatIssuePath(occurrence.file_path);
+
     return (
-      <div className="rounded-md border border-border bg-background p-4 text-sm text-muted-foreground">
-        Source context is not available for this finding yet.
+      <div className="rounded-md border border-border bg-background p-4">
+        <p className="font-mono text-sm text-muted-foreground">
+          {displayPath}:{lineStart}
+        </p>
+        <p className="mt-2 text-sm text-muted-foreground">
+          Source context is not available for this finding yet.
+        </p>
       </div>
     );
   }
@@ -527,8 +516,8 @@ function CodeSnippetViewer({
   const displayPath = formatIssuePath(occurrence.file_path);
 
   return (
-    <div className="overflow-hidden rounded-md border border-border bg-background font-mono text-xs">
-      <div className="flex items-center justify-between border-b border-border px-3 py-2">
+    <div className="overflow-hidden rounded-md border border-border bg-background text-xs">
+      <div className="flex items-center justify-between border-b border-border px-3 py-2 font-mono">
         <span className="truncate text-muted-foreground">
           {displayPath}:{lineStart}
         </span>
@@ -544,7 +533,7 @@ function CodeSnippetViewer({
           <Copy aria-hidden="true" />
         </Button>
       </div>
-      <div className="overflow-x-auto">
+      <div className="overflow-x-auto font-mono">
         {lines.map((line, index) => {
           const lineNumber = startLine + index;
           const isIssueLine = lineNumber >= lineStart && lineNumber <= lineEnd;
@@ -553,7 +542,7 @@ function CodeSnippetViewer({
             <div
               className={`grid min-w-[640px] grid-cols-[42px_32px_1fr] border-l-4 py-1.5 pr-4 ${
                 isIssueLine
-                  ? "border-l-destructive bg-destructive/10 text-foreground"
+                  ? "border-l-foreground bg-muted/60 text-foreground"
                   : "border-l-transparent text-muted-foreground"
               }`}
               key={lineNumber}
@@ -561,7 +550,7 @@ function CodeSnippetViewer({
               <span className="select-none text-right text-muted-foreground">
                 {lineNumber}
               </span>
-              <span className="select-none text-center text-destructive">
+              <span className="select-none text-center text-foreground">
                 {isIssueLine ? <AlertTriangle className="mx-auto size-3.5" /> : ""}
               </span>
               <code className="whitespace-pre">{line}</code>
@@ -617,14 +606,146 @@ function issueToOccurrence(issue: ReviewIssue): IssueOccurrence {
     file_path: issue.file_path,
     line_start: issue.line_start,
     line_end: issue.line_end,
+    title: issue.title,
+    description: issue.description,
+    suggestion: issue.suggestion,
     confidence: issue.confidence,
     raw_output: issue.raw_output,
     created_at: issue.created_at,
   };
 }
 
+function getIssueOccurrences(issue: ReviewIssue) {
+  if (issue.occurrences.length > 0) {
+    return issue.occurrences;
+  }
+
+  return [issueToOccurrence(issue)];
+}
+
+function getIssueDescriptionText(
+  issue: ReviewIssue,
+  occurrences: IssueOccurrence[],
+) {
+  if (occurrences.length <= 1) {
+    return issue.description;
+  }
+
+  const affectedFileCount = getDisplayAffectedFiles(issue).length;
+  const fileLabel = `${affectedFileCount} ${
+    affectedFileCount === 1 ? "file" : "files"
+  }`;
+
+  return `${getIssueDisplayName(issue)} appears in ${formatOccurrenceCount(
+    occurrences.length,
+  )} across ${fileLabel}.`;
+}
+
+function getIssueSuggestionText(
+  issue: ReviewIssue,
+  occurrences: IssueOccurrence[],
+) {
+  if (occurrences.length <= 1) {
+    return issue.suggestion;
+  }
+
+  if (!occurrences.some((occurrence) => occurrence.suggestion)) {
+    return null;
+  }
+
+  if (getIssueRuleId(issue) === "F401") {
+    return "Remove the highlighted unused imports.";
+  }
+
+  return "Apply the relevant fix at each highlighted occurrence.";
+}
+
+function getIssueDisplayName(issue: ReviewIssue) {
+  const ruleId = getIssueRuleId(issue);
+
+  if (ruleId === "F401") {
+    return "Unused imports";
+  }
+
+  return ruleId ? `${formatIssueSource(issue.source)} ${ruleId}` : issue.title;
+}
+
+function getIssueRuleId(issue: ReviewIssue) {
+  return getRawIssueRuleId(issue.raw_output) ?? getRawIssueRuleId(
+    issue.occurrences[0]?.raw_output ?? null,
+  );
+}
+
+function getRawIssueRuleId(rawOutput: Record<string, unknown> | null) {
+  if (rawOutput === null) {
+    return null;
+  }
+
+  for (const key of ["code", "test_id", "ruleId"]) {
+    const value = rawOutput[key];
+    if (typeof value === "string" && value.trim()) {
+      return value.trim();
+    }
+  }
+
+  return null;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+type IssueLocationSummary = {
+  primary: string;
+  secondary: string | null;
+};
+
+function getIssueLocationSummary(issue: ReviewIssue): IssueLocationSummary {
+  const affectedFiles = getDisplayAffectedFiles(issue);
+  const occurrenceLabel = formatOccurrenceCount(issue.occurrence_count);
+
+  if (affectedFiles.length > 1) {
+    return {
+      primary: `${occurrenceLabel} across ${affectedFiles.length} files`,
+      secondary: `Affected files: ${affectedFiles.join(", ")}`,
+    };
+  }
+
+  const filePath = affectedFiles[0] ?? formatIssuePath(issue.file_path);
+  const lineNumber = issue.line_start ? `:${issue.line_start}` : "";
+  const groupedCount = issue.occurrence_count > 1 ? ` · ${occurrenceLabel}` : "";
+
+  return {
+    primary: `${filePath}${lineNumber}${groupedCount}`,
+    secondary: null,
+  };
+}
+
+function formatIssueTableLocation(issue: ReviewIssue) {
+  const affectedFiles = getDisplayAffectedFiles(issue);
+
+  if (affectedFiles.length > 1) {
+    return `${affectedFiles.length} files`;
+  }
+
+  return affectedFiles[0] ?? formatIssuePath(issue.file_path);
+}
+
+function getDisplayAffectedFiles(issue: ReviewIssue) {
+  const filePaths =
+    issue.affected_files.length > 0
+      ? issue.affected_files
+      : issue.occurrences.map((occurrence) => occurrence.file_path);
+
+  return Array.from(new Set(filePaths.map((filePath) => formatIssuePath(filePath))));
+}
+
+function formatOccurrenceCount(count: number) {
+  return `${count} ${count === 1 ? "occurrence" : "occurrences"}`;
+}
+
+function formatIssueSource(source: IssueSource) {
+  return source === "KB" ? source : source.replaceAll("_", " ");
 }
 
 function formatIssuePath(filePath: string | null) {
@@ -659,7 +780,7 @@ function IssueTableSkeleton() {
     <div className="border-t border-border">
       {Array.from({ length: 5 }).map((_, index) => (
         <div
-          className="grid grid-cols-1 gap-3 border-b border-border px-6 py-4 md:grid-cols-[0.6fr_0.8fr_0.6fr_1fr_1.2fr_0.5fr_0.5fr_0.5fr]"
+          className="grid grid-cols-1 gap-3 border-b border-border px-6 py-4 md:grid-cols-[0.6fr_0.8fr_0.6fr_1fr_1.2fr_0.5fr_0.5fr]"
           key={index}
         >
           <div className="h-5 w-20 animate-pulse rounded bg-muted" />
@@ -669,9 +790,25 @@ function IssueTableSkeleton() {
           <div className="h-5 w-56 animate-pulse rounded bg-muted" />
           <div className="h-5 w-16 animate-pulse rounded bg-muted" />
           <div className="h-5 w-16 animate-pulse rounded bg-muted" />
-          <div className="h-5 w-12 animate-pulse rounded bg-muted" />
         </div>
       ))}
     </div>
   );
+}
+
+function DrawerMetric({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <p className="text-xs font-medium uppercase text-muted-foreground">
+        {label}
+      </p>
+      <p className="mt-1 break-all text-sm font-semibold capitalize text-foreground">
+        {value}
+      </p>
+    </div>
+  );
+}
+
+function formatConfidence(confidence: number | null) {
+  return confidence === null ? "Not provided" : `${Math.round(confidence * 100)}%`;
 }

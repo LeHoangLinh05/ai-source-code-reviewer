@@ -21,6 +21,9 @@ export type IssueOccurrence = {
   file_path: string;
   line_start: number;
   line_end: number;
+  title: string;
+  description: string;
+  suggestion: string | null;
   confidence: number | null;
   raw_output: Record<string, unknown> | null;
   created_at: string;

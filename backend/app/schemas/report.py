@@ -57,6 +57,9 @@ class IssueOccurrenceResponse(BaseModel):
     file_path: str
     line_start: int
     line_end: int
+    title: str
+    description: str
+    suggestion: str | None
     confidence: float | None
     raw_output: dict[str, object] | None
     created_at: datetime

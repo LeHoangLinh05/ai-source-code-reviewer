@@ -228,17 +228,27 @@ class ReportService:
             severity: sum(1 for issue in issues if issue.severity == severity)
             for severity in IssueSeverity
         }
-        report.total_issues = len(issues)
-        report.critical_count = severity_counts[IssueSeverity.CRITICAL]
-        report.high_count = severity_counts[IssueSeverity.HIGH]
-        report.medium_count = severity_counts[IssueSeverity.MEDIUM]
-        report.low_count = severity_counts[IssueSeverity.LOW]
-        report.info_count = severity_counts[IssueSeverity.INFO]
-        report.security_score = scores["security_score"]
-        report.maintainability_score = scores["maintainability_score"]
-        report.performance_score = scores["performance_score"]
-        report.overall_score = scores["overall_score"]
-        report.top_risky_files = build_top_risky_files(normalized_issues)
+        refreshed_values = {
+            "total_issues": len(issues),
+            "critical_count": severity_counts[IssueSeverity.CRITICAL],
+            "high_count": severity_counts[IssueSeverity.HIGH],
+            "medium_count": severity_counts[IssueSeverity.MEDIUM],
+            "low_count": severity_counts[IssueSeverity.LOW],
+            "info_count": severity_counts[IssueSeverity.INFO],
+            "security_score": scores["security_score"],
+            "maintainability_score": scores["maintainability_score"],
+            "performance_score": scores["performance_score"],
+            "overall_score": scores["overall_score"],
+            "top_risky_files": build_top_risky_files(normalized_issues),
+        }
+        has_changes = any(
+            getattr(report, field_name) != field_value
+            for field_name, field_value in refreshed_values.items()
+        )
+        for field_name, field_value in refreshed_values.items():
+            setattr(report, field_name, field_value)
+        if has_changes:
+            await self.report_repository.save_report(report)
 
     def _parse_sort(self, sort: str) -> tuple[str, bool]:
         is_descending = sort.startswith("-")
@@ -335,6 +345,9 @@ def _issue_group_response(
                 file_path=issue.file_path,
                 line_start=issue.line_start,
                 line_end=issue.line_end,
+                title=issue.title,
+                description=issue.description,
+                suggestion=issue.suggestion,
                 confidence=issue.confidence,
                 raw_output=issue.raw_output,
                 created_at=issue.created_at,

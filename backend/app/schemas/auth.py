@@ -58,6 +58,7 @@ class UserResponse(BaseModel):
 
     id: UUID
     email: str
+    full_name: str | None
     role: UserRole
     is_active: bool
     created_at: datetime

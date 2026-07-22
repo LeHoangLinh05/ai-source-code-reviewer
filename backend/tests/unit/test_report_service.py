@@ -52,10 +52,10 @@ async def test_refresh_report_aggregates_recalculates_scores_from_all_issues() -
     assert report.critical_count == 1
     assert report.high_count == 1
     assert report.low_count == 1
-    assert report.security_score == 7.0
-    assert report.maintainability_score == 8.0
+    assert report.security_score == 7.4
+    assert report.maintainability_score == 8.2
     assert report.performance_score == 10.0
-    assert report.overall_score == 4.7
+    assert report.overall_score == 5.9
 
 
 def test_source_context_falls_back_to_persisted_chunk() -> None:
@@ -106,6 +106,8 @@ def test_issue_group_response_counts_occurrences_and_files() -> None:
             IssueSeverity.HIGH,
             IssueCategory.SECURITY,
             file_path="app/auth.py",
+            description="Hardcoded password literal in auth flow",
+            suggestion="Move the password to a secret manager.",
             raw_output={"test_id": "B105"},
         ),
         _issue(
@@ -113,6 +115,8 @@ def test_issue_group_response_counts_occurrences_and_files() -> None:
             IssueSeverity.HIGH,
             IssueCategory.SECURITY,
             file_path="app/settings.py",
+            description="Hardcoded secret-like value in settings",
+            suggestion="Read the setting from an environment variable.",
             raw_output={"test_id": "B105"},
         ),
     ]
@@ -131,6 +135,14 @@ def test_issue_group_response_counts_occurrences_and_files() -> None:
         "app/auth.py",
         "app/settings.py",
     ]
+    assert [occurrence.description for occurrence in response.occurrences] == [
+        "Hardcoded password literal in auth flow",
+        "Hardcoded secret-like value in settings",
+    ]
+    assert [occurrence.suggestion for occurrence in response.occurrences] == [
+        "Move the password to a secret manager.",
+        "Read the setting from an environment variable.",
+    ]
 
 
 class _IssueRepository:
@@ -139,6 +151,9 @@ class _IssueRepository:
 
     async def list_all_issues(self, job_id: object) -> list[SimpleNamespace]:
         return [issue for issue in self.issues if issue.job_id == job_id]
+
+    async def save_report(self, report: object) -> object:
+        return report
 
 
 def _issue(
@@ -149,6 +164,8 @@ def _issue(
     file_path: str | None = None,
     raw_output: dict[str, object] | None = None,
     title: str = "Finding",
+    description: str = "Finding description",
+    suggestion: str | None = None,
 ) -> SimpleNamespace:
     return SimpleNamespace(
         id=uuid4(),
@@ -159,8 +176,8 @@ def _issue(
         severity=severity,
         category=category,
         title=title,
-        description="Finding description",
-        suggestion=None,
+        description=description,
+        suggestion=suggestion,
         source=IssueSource.AI_REVIEW,
         confidence=0.9,
         raw_output=raw_output,

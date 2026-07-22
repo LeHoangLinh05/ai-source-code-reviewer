@@ -151,10 +151,10 @@ def test_generate_report_fallback_scores_from_persisted_issues() -> None:
         ]
     )
 
-    assert scores["security_score"] == 8.0
+    assert scores["security_score"] == 8.2
     assert scores["performance_score"] == 9.0
     assert scores["maintainability_score"] == 9.7
-    assert scores["overall_score"] == 6.7
+    assert scores["overall_score"] == 7.2
 
 
 @pytest.mark.asyncio

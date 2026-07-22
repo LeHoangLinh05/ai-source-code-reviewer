@@ -170,25 +170,12 @@ export default function RepositoriesPage() {
 
   return (
     <>
-      <header className="flex flex-col gap-4 border-b border-border pb-5 md:flex-row md:items-end md:justify-between">
-        <div>
-          <p className="text-xs font-medium uppercase text-muted-foreground">
-            Source inventory
-          </p>
-          <h1 className="mt-2 text-3xl font-extrabold tracking-normal">
-            Repositories
-          </h1>
-          <p className="mt-1 text-[15px] leading-6 text-muted-foreground">
-            GitHub and GitLab sources connected to RepoGuard AI.
-          </p>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <Button onClick={() => setIsFormOpen(true)}>
-            <Plus aria-hidden="true" />
-            Add Repository
-          </Button>
-        </div>
-      </header>
+      <div className="flex flex-wrap justify-end gap-2">
+        <Button onClick={() => setIsFormOpen(true)}>
+          <Plus aria-hidden="true" />
+          Add Repository
+        </Button>
+      </div>
 
       <section className="grid gap-4 md:grid-cols-3">
         <MetricCard label="Total repositories" value={items.length.toString()} />

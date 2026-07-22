@@ -10,6 +10,7 @@ import app.services.repo_summary_service as repo_summary_service
 from app.services.repo_summary_service import (
     RepoSummaryGenerationError,
     RepoSummaryService,
+    coerce_repo_summary,
     extract_file_tree_paths_from_prompt,
 )
 
@@ -57,7 +58,7 @@ def test_repo_summary_prompt_uses_project_context_and_masks_secrets(
 
 
 @pytest.mark.asyncio
-async def test_generate_summary_calls_structured_output(
+async def test_generate_summary_calls_llm_and_parses_json_output(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     prompt = "\n".join(
@@ -74,7 +75,7 @@ async def test_generate_summary_calls_structured_output(
         ]
     )
     before_validate = build_summary()
-    fake_llm = FakeStructuredLLM([before_validate])
+    fake_llm = FakeSummaryLLM([before_validate.model_dump_json()])
     monkeypatch.setattr(
         repo_summary_service,
         "run_with_configured_llm",
@@ -83,7 +84,6 @@ async def test_generate_summary_calls_structured_output(
 
     summary = await RepoSummaryService().generate_summary(prompt)
 
-    assert fake_llm.schema is RepoSummary
     assert fake_llm.prompts == [prompt]
     assert summary == before_validate
     assert summary.purpose == (
@@ -103,7 +103,7 @@ async def test_generate_summary_retries_once_then_raises(
             "",
         ]
     )
-    fake_llm = FakeStructuredLLM([RuntimeError("timeout"), RuntimeError("parse error")])
+    fake_llm = FakeSummaryLLM([RuntimeError("timeout"), RuntimeError("parse error")])
     monkeypatch.setattr(
         repo_summary_service,
         "run_with_configured_llm",
@@ -114,6 +114,24 @@ async def test_generate_summary_retries_once_then_raises(
         await RepoSummaryService().generate_summary(prompt)
 
     assert fake_llm.prompts == [prompt, prompt]
+
+
+def test_coerce_repo_summary_accepts_fenced_json_message_content() -> None:
+    summary = coerce_repo_summary(
+        _FakeMessage(
+            "```json\n"
+            "{\n"
+            '  "purpose": "A small API service for review jobs.",\n'
+            '  "project_type": "REST API backend",\n'
+            '  "tech_stack": ["Python", "FastAPI"],\n'
+            '  "architecture_overview": "Routes call services."\n'
+            "}\n"
+            "```"
+        )
+    )
+
+    assert summary.project_type == "REST API backend"
+    assert summary.tech_stack == ["Python", "FastAPI"]
 
 
 def test_extract_file_tree_paths_from_prompt_reconstructs_nested_paths() -> None:
@@ -137,19 +155,14 @@ def test_extract_file_tree_paths_from_prompt_reconstructs_nested_paths() -> None
     }
 
 
-class FakeStructuredLLM:
-    """Tiny LangChain-like fake for structured-output tests."""
+class FakeSummaryLLM:
+    """Tiny LangChain-like fake for repository summary tests."""
 
-    def __init__(self, responses: list[RepoSummary | Exception]) -> None:
+    def __init__(self, responses: list[str | Exception]) -> None:
         self.responses = responses
         self.prompts: list[str] = []
-        self.schema: type[RepoSummary] | None = None
 
-    def with_structured_output(self, schema: type[RepoSummary]) -> "FakeStructuredLLM":
-        self.schema = schema
-        return self
-
-    async def ainvoke(self, prompt: str) -> RepoSummary:
+    async def ainvoke(self, prompt: str) -> str:
         self.prompts.append(prompt)
         response = self.responses.pop(0)
         if isinstance(response, Exception):
@@ -158,7 +171,12 @@ class FakeStructuredLLM:
         return response
 
 
-def _run_with_fake_llm(fake_llm: FakeStructuredLLM):
+class _FakeMessage:
+    def __init__(self, content: str) -> None:
+        self.content = content
+
+
+def _run_with_fake_llm(fake_llm: FakeSummaryLLM):
     async def run(call, *, allow_fallback: bool = False):  # type: ignore[no-untyped-def]
         _ = allow_fallback
         return await call(fake_llm)

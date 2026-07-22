@@ -34,6 +34,14 @@ class ReportRepository:
         result = await self.session.execute(statement)
         return result.scalar_one_or_none()
 
+    async def save_report(self, report: ReviewReport) -> ReviewReport:
+        """Persist report aggregate changes."""
+
+        self.session.add(report)
+        await self.session.commit()
+        await self.session.refresh(report)
+        return report
+
     async def count_issues(
         self,
         *,

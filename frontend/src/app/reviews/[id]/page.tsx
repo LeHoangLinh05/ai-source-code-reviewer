@@ -33,6 +33,7 @@ import {
   getReviewJobAiTrace,
 } from "@/lib/review-jobs";
 import { TraceEventList, TraceTokenSummary } from "@/components/reviews/ai-trace-log";
+import { ReviewWorkspaceTabs } from "@/components/reviews/review-workspace-tabs";
 import { useAppDispatch, useAppSelector } from "@/store/hooks";
 import {
   setCurrentJob,
@@ -64,6 +65,7 @@ export default function ReviewJobDetailPage() {
   const [aiTrace, setAiTrace] = useState<AITrace | null>(null);
   const [aiTraceError, setAiTraceError] = useState<string | null>(null);
   const [isCanceling, setIsCanceling] = useState(false);
+  const [nowMs, setNowMs] = useState(() => Date.now());
 
   const loadJob = useCallback(async () => {
     dispatch(setJobLoading(true));
@@ -116,6 +118,21 @@ export default function ReviewJobDetailPage() {
     };
   }, [currentJobStatus, loadAiTrace, loadJob]);
 
+  useEffect(() => {
+    const shouldTickDuration =
+      currentJob?.started_at !== null && currentJob?.completed_at === null;
+    if (!shouldTickDuration) {
+      return;
+    }
+
+    setNowMs(Date.now());
+    const intervalId = window.setInterval(() => setNowMs(Date.now()), 1_000);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [currentJob?.completed_at, currentJob?.started_at]);
+
   async function handleCancelJob() {
     if (!currentJob || TERMINAL_STATUSES.has(currentJob.status)) {
       return;
@@ -140,24 +157,13 @@ export default function ReviewJobDetailPage() {
 
   return (
     <>
-      <header className="flex flex-col gap-4 border-b border-border pb-5 md:flex-row md:items-end md:justify-between">
-        <div>
-          <Button asChild className="mb-4" size="sm" variant="ghost">
-            <Link href="/reviews">
-              <ArrowLeft aria-hidden="true" />
-              Reviews
-            </Link>
-          </Button>
-          <p className="text-xs font-medium uppercase text-muted-foreground">
-            Review execution
-          </p>
-          <h1 className="mt-2 text-3xl font-extrabold tracking-normal">
-            {currentJob?.repository_name ?? "Review Job"}
-          </h1>
-          <p className="mt-1 text-[15px] leading-6 text-muted-foreground">
-            Polling status every 4 seconds until terminal state.
-          </p>
-        </div>
+      <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+        <Button asChild size="sm" variant="ghost">
+          <Link href="/reviews">
+            <ArrowLeft aria-hidden="true" />
+            Reviews
+          </Link>
+        </Button>
         <div className="flex flex-wrap gap-2">
           {currentJob && !TERMINAL_STATUSES.has(currentJob.status) ? (
             <Button
@@ -167,21 +173,6 @@ export default function ReviewJobDetailPage() {
             >
               <Trash2 aria-hidden="true" />
               Cancel
-            </Button>
-          ) : null}
-          {currentJob?.status === "COMPLETED" ? (
-            <>
-              <Button asChild variant="secondary">
-                <Link href={`/reviews/${jobId}/report`}>Report</Link>
-              </Button>
-              <Button asChild variant="secondary">
-                <Link href={`/reviews/${jobId}/issues`}>Issues</Link>
-              </Button>
-            </>
-          ) : null}
-          {currentJob ? (
-            <Button asChild variant="secondary">
-              <Link href={`/reviews/${jobId}/trace`}>Trace</Link>
             </Button>
           ) : null}
           <Button
@@ -195,7 +186,9 @@ export default function ReviewJobDetailPage() {
             Refresh
           </Button>
         </div>
-      </header>
+      </div>
+
+      <ReviewWorkspaceTabs activeTab="overview" jobId={jobId} />
 
       {isLoading && !currentJob ? <ReviewJobSkeleton /> : null}
 
@@ -212,6 +205,7 @@ export default function ReviewJobDetailPage() {
           aiTrace={aiTrace}
           aiTraceError={aiTraceError}
           job={currentJob}
+          nowMs={nowMs}
         />
       ) : null}
     </>
@@ -222,10 +216,12 @@ function ReviewJobDetail({
   aiTrace,
   aiTraceError,
   job,
+  nowMs,
 }: {
   aiTrace: AITrace | null;
   aiTraceError: string | null;
   job: ReviewJob;
+  nowMs: number;
 }) {
   return (
     <>
@@ -237,7 +233,7 @@ function ReviewJobDetail({
         />
         <InfoCard
           label="Duration"
-          value={formatDuration(job.started_at, job.completed_at)}
+          value={formatDuration(job.started_at, job.completed_at, nowMs)}
         />
       </section>
 
@@ -592,18 +588,19 @@ function formatCommitSha(value: string | null) {
   return value ? value.slice(0, 7) : "Not available";
 }
 
-function formatDuration(startedAt: string | null, completedAt: string | null) {
+function formatDuration(
+  startedAt: string | null,
+  completedAt: string | null,
+  nowMs: number,
+) {
   if (!startedAt) {
     return "Not started";
   }
 
-  if (!completedAt) {
-    return "In progress";
-  }
-
+  const endedAtMs = completedAt ? new Date(completedAt).getTime() : nowMs;
   const durationSeconds = Math.max(
     0,
-    Math.round((new Date(completedAt).getTime() - new Date(startedAt).getTime()) / 1000),
+    Math.floor((endedAtMs - new Date(startedAt).getTime()) / 1000),
   );
 
   if (durationSeconds < 60) {
@@ -612,7 +609,13 @@ function formatDuration(startedAt: string | null, completedAt: string | null) {
 
   const minutes = Math.floor(durationSeconds / 60);
   const seconds = durationSeconds % 60;
-  return seconds === 0 ? `${minutes}m` : `${minutes}m ${seconds}s`;
+  if (minutes < 60) {
+    return seconds === 0 ? `${minutes}m` : `${minutes}m ${seconds}s`;
+  }
+
+  const hours = Math.floor(minutes / 60);
+  const remainingMinutes = minutes % 60;
+  return `${hours}h ${remainingMinutes}m ${seconds}s`;
 }
 
 function isStaticAnalysisEnabled(options: Record<string, unknown> | null) {

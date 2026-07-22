@@ -591,6 +591,9 @@ def _coerce_bare_tool_json_action(text: str) -> AgentAction | None:
         return None
 
     prefix = text[:object_start]
+    if not prefix.strip() and _is_final_report_payload(payload):
+        return AgentAction(tool=tool_name, tool_input=payload, log=text)
+
     pattern = rf"(?<![A-Za-z0-9_]){re.escape(tool_name)}(?![A-Za-z0-9_])"
     if re.search(pattern, prefix) is None:
         return None
@@ -671,6 +674,16 @@ def _infer_tool_name_from_payload(
         return "generate_final_report"
 
     return None
+
+
+def _is_final_report_payload(payload: dict[str, object]) -> bool:
+    return {
+        "executive_summary",
+        "maintainability_score",
+        "overall_score",
+        "performance_score",
+        "security_score",
+    }.issubset(payload)
 
 
 def _coerce_freeform_final_answer(text: str) -> str | None:

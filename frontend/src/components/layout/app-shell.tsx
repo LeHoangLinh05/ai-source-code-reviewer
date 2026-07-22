@@ -1,7 +1,6 @@
 "use client";
 
 import {
-  Bell,
   CirclePlay,
   GitFork,
   LayoutDashboard,
@@ -9,7 +8,6 @@ import {
   Menu,
   PanelLeftClose,
   PanelLeftOpen,
-  Search,
   Settings,
   ShieldCheck,
   X,
@@ -86,24 +84,10 @@ export function AppShell({ children }: AppShellProps) {
             <Menu aria-hidden="true" />
           </Button>
 
-          <div className="relative hidden min-w-0 flex-1 sm:block">
-            <Search
-              aria-hidden="true"
-              className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
-            />
-            <input
-              aria-label="Search repositories, jobs, or files"
-              className="h-11 w-full max-w-2xl rounded-md border border-input bg-background pl-10 pr-3 text-[15px] text-foreground placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
-              placeholder="Search repositories, jobs, or files"
-              type="search"
-            />
-          </div>
+          <div className="min-w-0 flex-1" />
 
           <div className="ml-auto flex items-center gap-2">
             <ThemeToggle />
-            <Button aria-label="Notifications" size="icon" variant="ghost">
-              <Bell aria-hidden="true" />
-            </Button>
           </div>
         </header>
 

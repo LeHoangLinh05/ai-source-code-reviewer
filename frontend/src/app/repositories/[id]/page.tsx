@@ -18,6 +18,8 @@ import { useForm } from "react-hook-form";
 import { toast } from "sonner";
 import { z } from "zod";
 
+import { StatusBadge } from "@/components/reviews/review-badges";
+import { ScoreTrack } from "@/components/reviews/score-track";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -41,6 +43,7 @@ import {
   getRepository,
   getRepositorySummary,
 } from "@/lib/repositories";
+import { getReport } from "@/lib/reports";
 import { createReviewJob, getReviewJobs } from "@/lib/review-jobs";
 import { useAppDispatch, useAppSelector } from "@/store/hooks";
 import {
@@ -51,37 +54,18 @@ import {
   setSelectedRepository,
   upsertRepository,
 } from "@/store/slices/repositorySlice";
-import type { ReviewJob, ReviewJobStatus } from "@/types/review-job";
+import type { ReviewJob } from "@/types/review-job";
+import type { ReviewReport } from "@/types/report";
 import type { RepoSummary } from "@/types/repository";
 
 const startReviewSchema = z.object({
   branch: z.string().trim().min(1, "Branch is required.").max(100),
-  runStaticAnalysis: z.boolean(),
 });
 
 type StartReviewFormValues = z.infer<typeof startReviewSchema>;
 
 const BRANCH_PRESETS = ["main", "master"] as const;
 const ROADMAP_RULE_PROFILE_ID = "roadmap_bootcamp_v1";
-const STATUS_STYLES: Record<ReviewJobStatus, string> = {
-  AI_REVIEWING:
-    "border-violet-400/40 bg-violet-500/10 text-violet-700 dark:text-violet-200",
-  ANALYZING_STRUCTURE:
-    "border-sky-400/40 bg-sky-500/10 text-sky-700 dark:text-sky-200",
-  CHUNKING_CODE:
-    "border-cyan-400/40 bg-cyan-500/10 text-cyan-700 dark:text-cyan-200",
-  CLONING: "border-blue-400/40 bg-blue-500/10 text-blue-700 dark:text-blue-200",
-  COMPLETED:
-    "border-emerald-400/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-200",
-  FAILED: "border-rose-400/40 bg-rose-500/10 text-rose-700 dark:text-rose-200",
-  GENERATING_REPORT:
-    "border-amber-400/40 bg-amber-500/10 text-amber-800 dark:text-amber-200",
-  GENERATING_SUMMARY:
-    "border-teal-400/40 bg-teal-500/10 text-teal-700 dark:text-teal-200",
-  PENDING: "border-border bg-muted text-muted-foreground",
-  RUNNING_STATIC_ANALYSIS:
-    "border-orange-400/40 bg-orange-500/10 text-orange-700 dark:text-orange-200",
-};
 
 export default function RepositoryDetailPage() {
   const params = useParams<{ id: string }>();
@@ -97,6 +81,11 @@ export default function RepositoryDetailPage() {
   const [areReviewJobsLoading, setAreReviewJobsLoading] = useState(false);
   const [reviewJobs, setReviewJobs] = useState<ReviewJob[]>([]);
   const [reviewJobsError, setReviewJobsError] = useState<string | null>(null);
+  const [latestReport, setLatestReport] = useState<ReviewReport | null>(null);
+  const [latestReportError, setLatestReportError] = useState<string | null>(
+    null,
+  );
+  const [isLatestReportLoading, setIsLatestReportLoading] = useState(false);
   const [repoSummary, setRepoSummary] = useState<RepoSummary | null>(null);
   const [isRepoSummaryLoading, setIsRepoSummaryLoading] = useState(false);
   const [repoSummaryError, setRepoSummaryError] = useState<string | null>(null);
@@ -104,7 +93,6 @@ export default function RepositoryDetailPage() {
     resolver: zodResolver(startReviewSchema),
     defaultValues: {
       branch: "main",
-      runStaticAnalysis: true,
     },
   });
   const createdAt = useMemo(() => {
@@ -119,8 +107,12 @@ export default function RepositoryDetailPage() {
       return selectedRepository.last_reviewed_at;
     }
 
-    return reviewJobs.find((job) => job.completed_at !== null)?.completed_at ?? null;
+    return getLatestCompletedReviewJob(reviewJobs)?.completed_at ?? null;
   }, [reviewJobs, selectedRepository?.last_reviewed_at]);
+  const latestCompletedReviewJob = useMemo(
+    () => getLatestCompletedReviewJob(reviewJobs),
+    [reviewJobs],
+  );
 
   const loadRepository = useCallback(async () => {
     dispatch(setRepositoryLoading(true));
@@ -140,20 +132,46 @@ export default function RepositoryDetailPage() {
     }
   }, [dispatch, repositoryId]);
 
+  const loadLatestReport = useCallback(async (jobs: ReviewJob[]) => {
+    setLatestReport(null);
+    setLatestReportError(null);
+    setIsLatestReportLoading(false);
+
+    const completedJob = getLatestCompletedReviewJob(jobs);
+    if (!completedJob) {
+      return;
+    }
+
+    setIsLatestReportLoading(true);
+
+    try {
+      setLatestReport(await getReport(completedJob.id));
+    } catch (requestError) {
+      setLatestReportError(
+        getApiErrorMessage(requestError, "Unable to load latest report."),
+      );
+    } finally {
+      setIsLatestReportLoading(false);
+    }
+  }, []);
+
   const loadReviewJobs = useCallback(async () => {
     setAreReviewJobsLoading(true);
     setReviewJobsError(null);
 
     try {
-      setReviewJobs(await getReviewJobs({ repository_id: repositoryId }));
+      const jobs = await getReviewJobs({ repository_id: repositoryId });
+      setReviewJobs(jobs);
+      void loadLatestReport(jobs);
     } catch (requestError) {
       setReviewJobsError(
         getApiErrorMessage(requestError, "Unable to load review history."),
       );
+      setLatestReport(null);
     } finally {
       setAreReviewJobsLoading(false);
     }
-  }, [repositoryId]);
+  }, [loadLatestReport, repositoryId]);
 
   const loadRepositorySummary = useCallback(async () => {
     setIsRepoSummaryLoading(true);
@@ -215,7 +233,6 @@ export default function RepositoryDetailPage() {
   function openStartReviewModal() {
     startReviewForm.reset({
       branch: selectedRepository?.default_branch ?? "main",
-      runStaticAnalysis: true,
     });
     setIsStartReviewOpen(true);
   }
@@ -235,7 +252,6 @@ export default function RepositoryDetailPage() {
           rule_profile: {
             id: ROADMAP_RULE_PROFILE_ID,
           },
-          run_static_analysis: values.runStaticAnalysis,
         },
         repository_id: selectedRepository.id,
       });
@@ -256,24 +272,13 @@ export default function RepositoryDetailPage() {
 
   return (
     <>
-      <header className="flex flex-col gap-4 border-b border-border pb-5 md:flex-row md:items-end md:justify-between">
-        <div>
-          <Button asChild className="mb-4" size="sm" variant="ghost">
-            <Link href="/repositories">
-              <ArrowLeft aria-hidden="true" />
-              Repositories
-            </Link>
-          </Button>
-          <p className="text-xs font-medium uppercase text-muted-foreground">
-            Repository target
-          </p>
-          <h1 className="mt-2 text-3xl font-extrabold tracking-normal">
-            {selectedRepository?.name ?? "Repository Details"}
-          </h1>
-          <p className="mt-1 text-[15px] leading-6 text-muted-foreground">
-            Metadata, default branch, and review launch controls.
-          </p>
-        </div>
+      <div className="sticky top-0 z-20 flex flex-col gap-3 border-b border-border bg-background/95 pb-4 pt-1 backdrop-blur md:flex-row md:items-center md:justify-between">
+        <Button asChild size="sm" variant="ghost">
+          <Link href="/repositories">
+            <ArrowLeft aria-hidden="true" />
+            Repositories
+          </Link>
+        </Button>
         <div className="flex flex-wrap gap-2">
           <Button
             disabled={isLoading || areReviewJobsLoading}
@@ -283,8 +288,24 @@ export default function RepositoryDetailPage() {
             <RefreshCw aria-hidden="true" />
             Refresh
           </Button>
+          {selectedRepository ? (
+            <Button onClick={openStartReviewModal}>
+              <Play aria-hidden="true" />
+              Start Review
+            </Button>
+          ) : null}
+          {selectedRepository ? (
+            <Button
+              disabled={isDeleting || isMutating}
+              onClick={() => void handleDeleteRepository()}
+              variant="destructive"
+            >
+              <Trash2 aria-hidden="true" />
+              Delete
+            </Button>
+          ) : null}
         </div>
-      </header>
+      </div>
 
       {isLoading ? <RepositoryDetailSkeleton /> : null}
 
@@ -308,26 +329,12 @@ export default function RepositoryDetailPage() {
           </section>
 
           <Card>
-            <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <CardHeader>
               <div>
                 <CardTitle>Repository</CardTitle>
                 <CardDescription>
                   Owner-scoped source repository details.
                 </CardDescription>
-              </div>
-              <div className="flex flex-wrap gap-2">
-                <Button onClick={openStartReviewModal}>
-                  <Play aria-hidden="true" />
-                  Start Review
-                </Button>
-                <Button
-                  disabled={isDeleting || isMutating}
-                  onClick={() => void handleDeleteRepository()}
-                  variant="destructive"
-                >
-                  <Trash2 aria-hidden="true" />
-                  Delete
-                </Button>
               </div>
             </CardHeader>
             <CardContent className="grid gap-5">
@@ -366,22 +373,41 @@ export default function RepositoryDetailPage() {
             </CardContent>
           </Card>
 
-          <Card>
-            <CardHeader>
-              <CardTitle>Project Overview</CardTitle>
-              <CardDescription>
-                Project overview generated from repository structure and setup
-                files.
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <RepositorySummaryCard
-                error={repoSummaryError}
-                isLoading={isRepoSummaryLoading}
-                summary={repoSummary}
-              />
-            </CardContent>
-          </Card>
+          <section className="grid gap-4 xl:grid-cols-[0.85fr_1.15fr]">
+            <Card>
+              <CardHeader>
+                <CardTitle>Latest Report Summary</CardTitle>
+                <CardDescription>
+                  Latest completed review signal for this repository.
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <LatestReportSummary
+                  error={latestReportError}
+                  isLoading={isLatestReportLoading}
+                  latestJob={latestCompletedReviewJob}
+                  report={latestReport}
+                />
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle>Project Overview</CardTitle>
+                <CardDescription>
+                  Project overview generated from repository structure and setup
+                  files.
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <RepositorySummaryCard
+                  error={repoSummaryError}
+                  isLoading={isRepoSummaryLoading}
+                  summary={repoSummary}
+                />
+              </CardContent>
+            </Card>
+          </section>
 
           <Card>
             <CardHeader>
@@ -459,28 +485,6 @@ export default function RepositoryDetailPage() {
                       </FormItem>
                     )}
                   />
-                  <FormField
-                    control={startReviewForm.control}
-                    name="runStaticAnalysis"
-                    render={({ field }) => (
-                      <FormItem>
-                        <div className="flex items-center justify-between rounded-md border border-border p-3">
-                          <FormLabel>Run static analysis</FormLabel>
-                          <FormControl>
-                            <input
-                              checked={field.value}
-                              className="size-4 accent-primary"
-                              onChange={(event) =>
-                                field.onChange(event.target.checked)
-                              }
-                              type="checkbox"
-                            />
-                          </FormControl>
-                        </div>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
                   {startReviewForm.formState.errors.root?.message ? (
                     <p className="text-sm font-medium text-destructive">
                       {startReviewForm.formState.errors.root.message}
@@ -542,6 +546,90 @@ function DetailRow({ label, value }: DetailRowProps) {
   );
 }
 
+type LatestReportSummaryProps = {
+  error: string | null;
+  isLoading: boolean;
+  latestJob: ReviewJob | null;
+  report: ReviewReport | null;
+};
+
+function LatestReportSummary({
+  error,
+  isLoading,
+  latestJob,
+  report,
+}: LatestReportSummaryProps) {
+  if (isLoading) {
+    return <LatestReportSummarySkeleton />;
+  }
+
+  if (error !== null) {
+    return <p className="text-sm text-destructive">{error}</p>;
+  }
+
+  if (report === null || latestJob === null) {
+    return (
+      <div className="rounded-md border border-dashed border-border bg-background px-6 py-8 text-center">
+        <h2 className="text-lg font-semibold tracking-normal">
+          No completed report yet
+        </h2>
+        <p className="mx-auto mt-2 max-w-md text-[15px] leading-6 text-muted-foreground">
+          Start a review and this panel will show the latest score and critical
+          findings.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="grid gap-5">
+      <ScoreTrack
+        caption={`${report.total_files_analyzed} files analyzed`}
+        label="Overall score"
+        showNoFindings={report.total_issues === 0}
+        value={report.overall_score}
+      />
+      <div className="grid gap-3 sm:grid-cols-3">
+        <ReportMetric label="Total findings" value={report.total_issues} />
+        <ReportMetric label="Critical" value={report.critical_count} />
+        <ReportMetric label="High" value={report.high_count} />
+      </div>
+      <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border pt-4">
+        <p className="text-sm text-muted-foreground">
+          Completed {formatOptionalDate(latestJob.completed_at)}
+        </p>
+        <Button asChild size="sm" variant="secondary">
+          <Link href={`/reviews/${latestJob.id}/report`}>Open report</Link>
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function ReportMetric({ label, value }: { label: string; value: number }) {
+  return (
+    <div className="rounded-md border border-border bg-background p-3">
+      <p className="text-xs font-medium uppercase text-muted-foreground">
+        {label}
+      </p>
+      <p className="mt-1 text-2xl font-extrabold tracking-normal">{value}</p>
+    </div>
+  );
+}
+
+function LatestReportSummarySkeleton() {
+  return (
+    <div className="grid gap-4">
+      <div className="h-14 animate-pulse rounded bg-muted" />
+      <div className="grid gap-3 sm:grid-cols-3">
+        {Array.from({ length: 3 }).map((_, index) => (
+          <div className="h-20 animate-pulse rounded bg-muted" key={index} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
 type RepositorySummaryCardProps = {
   error: string | null;
   isLoading: boolean;
@@ -576,26 +664,13 @@ function RepositorySummaryCard({
 
   return (
     <div className="grid gap-6">
-      <div className="grid gap-4 lg:grid-cols-[1fr_280px]">
-        <div>
-          <p className="text-xs font-medium uppercase text-muted-foreground">
-            Purpose
-          </p>
-          <p className="mt-2 text-[15px] leading-6 text-foreground">
-            {summary.purpose}
-          </p>
-        </div>
-        <div className="rounded-md border border-border bg-background p-4">
-          <p className="text-xs font-medium uppercase text-muted-foreground">
-            Metadata
-          </p>
-          <div className="mt-3 grid gap-2 text-sm text-muted-foreground">
-            <span>{summary.project_type}</span>
-            <span>Generated {formatDateTime(summary.generated_at)}</span>
-            <span className="truncate">Commit {summary.commit_sha}</span>
-            <span>{summary.model_used}</span>
-          </div>
-        </div>
+      <div>
+        <p className="text-xs font-medium uppercase text-muted-foreground">
+          Purpose
+        </p>
+        <p className="mt-2 text-[15px] leading-6 text-foreground">
+          {summary.purpose}
+        </p>
       </div>
 
       <div>
@@ -706,13 +781,7 @@ function ReviewHistory({ error, isLoading, jobs }: ReviewHistoryProps) {
               >
                 Review {job.id.slice(0, 8)}
               </Link>
-              <span
-                className={`rounded-md border px-2 py-1 text-xs font-medium ${
-                  STATUS_STYLES[job.status]
-                }`}
-              >
-                {job.status.replaceAll("_", " ")}
-              </span>
+              <StatusBadge status={job.status} />
             </div>
             <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-sm text-muted-foreground">
               <span className="inline-flex items-center gap-1">
@@ -789,4 +858,24 @@ function formatDateTime(value: string) {
     dateStyle: "medium",
     timeStyle: "short",
   }).format(new Date(value));
+}
+
+function formatOptionalDate(value: string | null) {
+  return value === null ? "Not available" : formatDateTime(value);
+}
+
+function getLatestCompletedReviewJob(jobs: ReviewJob[]) {
+  return (
+    [...jobs]
+      .filter((job) => job.status === "COMPLETED" && job.completed_at !== null)
+      .sort(compareReviewJobsByLatest)[0] ?? null
+  );
+}
+
+function compareReviewJobsByLatest(leftJob: ReviewJob, rightJob: ReviewJob) {
+  return getReviewJobTimestamp(rightJob) - getReviewJobTimestamp(leftJob);
+}
+
+function getReviewJobTimestamp(job: ReviewJob) {
+  return new Date(job.completed_at ?? job.created_at).getTime();
 }

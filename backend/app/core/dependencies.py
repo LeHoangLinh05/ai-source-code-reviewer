@@ -41,6 +41,7 @@ from app.services.report_service import ReportService
 from app.services.repo_summary_query_service import RepoSummaryQueryService
 from app.services.repository_service import RepositoryService
 from app.services.token_blacklist import TokenBlacklistService
+from app.services.user_service import UserService
 
 bearer_scheme = HTTPBearer(auto_error=False)
 REVIEW_JOB_CREATE_RATE_LIMIT = 10
@@ -122,6 +123,15 @@ async def get_repository_service(
 
     repository_repository = RepositoryRepository(session)
     return RepositoryService(repository_repository)
+
+
+async def get_user_service(
+    session: Annotated[AsyncSession, Depends(get_async_session)],
+) -> UserService:
+    """Build user settings service with request-scoped DB access."""
+
+    user_repository = UserRepository(session)
+    return UserService(user_repository)
 
 
 async def get_repo_summary_query_service(

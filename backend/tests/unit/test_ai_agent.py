@@ -103,6 +103,28 @@ def test_react_parser_repairs_bare_final_report_tool_json() -> None:
     assert parsed.tool_input["tech_stack"] == ["Python", "FastAPI"]
 
 
+def test_react_parser_repairs_bare_final_report_json_without_tool_name() -> None:
+    parser = MarkdownSafeReActOutputParser()
+
+    parsed = parser.parse(
+        "{\n"
+        '  "executive_summary": "AI review found two high-severity issues.",\n'
+        '  "security_score": 7,\n'
+        '  "maintainability_score": 6,\n'
+        '  "performance_score": 4,\n'
+        '  "overall_score": 5,\n'
+        '  "top_priorities": ["docker-compose.yml"],\n'
+        '  "tech_stack": ["Docker", "Python"]\n'
+        "}"
+    )
+
+    assert parsed.tool == "generate_final_report"
+    assert parsed.tool_input["executive_summary"] == (
+        "AI review found two high-severity issues."
+    )
+    assert parsed.tool_input["overall_score"] == 5
+
+
 def test_react_parser_accepts_plain_text_report_handoff_as_final_answer() -> None:
     parser = MarkdownSafeReActOutputParser()
 

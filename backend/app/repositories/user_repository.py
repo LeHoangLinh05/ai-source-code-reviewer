@@ -57,6 +57,30 @@ class UserRepository:
         user.refresh_tokens_revoked_at = revoked_at
         await self.session.flush()
 
+    async def update_profile(
+        self,
+        user: User,
+        *,
+        full_name: str | None,
+    ) -> User:
+        """Stage editable profile field changes."""
+
+        user.full_name = full_name
+        await self.session.flush()
+        await self.session.refresh(user)
+        return user
+
+    async def update_password(
+        self,
+        user: User,
+        *,
+        hashed_password: str,
+    ) -> None:
+        """Stage a password hash replacement."""
+
+        user.hashed_password = hashed_password
+        await self.session.flush()
+
     async def commit(self) -> None:
         """Persist all staged user changes."""
 

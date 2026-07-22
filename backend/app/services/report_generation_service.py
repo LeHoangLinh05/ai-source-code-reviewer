@@ -1,6 +1,7 @@
 """Deterministic static-analysis report generation."""
 
 from collections import Counter
+from math import exp
 from uuid import UUID
 
 from app.models.review_issue import IssueCategory, IssueSeverity
@@ -17,6 +18,7 @@ SEVERITY_SCORE_WEIGHTS = {
     IssueSeverity.LOW: 0.3,
     IssueSeverity.INFO: 0.1,
 }
+SCORE_DECAY_FACTOR = 10.0
 
 SEVERITY_RANK = {
     IssueSeverity.CRITICAL: 5,
@@ -84,7 +86,7 @@ def calculate_score(issues: list[NormalizedIssue]) -> float:
     """Return the 0-10 score based on weighted issue severity."""
 
     penalty = sum(SEVERITY_SCORE_WEIGHTS[issue.severity] for issue in issues)
-    return max(0.0, round(10.0 - penalty, 1))
+    return round(10.0 * exp(-penalty / SCORE_DECAY_FACTOR), 1)
 
 
 def build_top_risky_files(

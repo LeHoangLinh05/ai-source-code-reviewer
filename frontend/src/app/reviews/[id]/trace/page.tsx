@@ -6,6 +6,7 @@ import { useParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { TraceEventList, TraceTokenSummary } from "@/components/reviews/ai-trace-log";
+import { ReviewWorkspaceTabs } from "@/components/reviews/review-workspace-tabs";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -66,29 +67,20 @@ export default function ReviewTracePage() {
 
   return (
     <>
-      <header className="flex flex-col gap-4 border-b border-border pb-5 md:flex-row md:items-end md:justify-between">
-        <div>
-          <Button asChild className="mb-4" size="sm" variant="ghost">
-            <Link href={`/reviews/${jobId}`}>
-              <ArrowLeft aria-hidden="true" />
-              Review Job
-            </Link>
-          </Button>
-          <p className="text-xs font-medium uppercase text-muted-foreground">
-            Execution trace
-          </p>
-          <h1 className="mt-2 text-3xl font-extrabold tracking-normal">
-            AI Trace Log
-          </h1>
-          <p className="mt-1 text-[15px] leading-6 text-muted-foreground">
-            Full tool, LLM, embedding, token, and duration event stream.
-          </p>
-        </div>
+      <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+        <Button asChild size="sm" variant="ghost">
+          <Link href={`/reviews/${jobId}`}>
+            <ArrowLeft aria-hidden="true" />
+            Review Job
+          </Link>
+        </Button>
         <Button disabled={isLoading} onClick={() => void loadTrace()}>
           <RefreshCw aria-hidden="true" />
           Refresh
         </Button>
-      </header>
+      </div>
+
+      <ReviewWorkspaceTabs activeTab="trace" jobId={jobId} />
 
       {error ? (
         <Card>

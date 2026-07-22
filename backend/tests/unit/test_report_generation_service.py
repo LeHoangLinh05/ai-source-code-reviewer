@@ -18,7 +18,7 @@ def test_calculate_score_uses_weighted_severity_penalties() -> None:
         _issue(IssueSeverity.LOW, IssueCategory.STYLE, "b.py"),
     ]
 
-    assert calculate_score(issues) == 6.7
+    assert calculate_score(issues) == 7.2
 
 
 def test_calculate_report_scores_uses_all_persisted_issue_categories() -> None:
@@ -30,10 +30,10 @@ def test_calculate_report_scores_uses_all_persisted_issue_categories() -> None:
     ]
 
     assert calculate_report_scores(issues) == {
-        "security_score": 7.0,
-        "maintainability_score": 8.0,
+        "security_score": 7.4,
+        "maintainability_score": 8.2,
         "performance_score": 9.7,
-        "overall_score": 4.4,
+        "overall_score": 5.7,
     }
 
 
@@ -56,8 +56,8 @@ def test_build_static_report_counts_scores_and_risky_files() -> None:
     assert report.total_files_analyzed == 4
     assert report.critical_count == 1
     assert report.high_count == 1
-    assert report.overall_score == 4.7
-    assert report.security_score == 7.0
+    assert report.overall_score == 5.9
+    assert report.security_score == 7.4
     assert report.top_risky_files is not None
     assert report.top_risky_files[0]["path"] == "a.py"
 

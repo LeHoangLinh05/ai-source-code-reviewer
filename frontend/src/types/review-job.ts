@@ -101,7 +101,6 @@ export type CreateReviewJobPayload = {
     rule_profile: {
       id: string;
     };
-    run_static_analysis: boolean;
   };
 };
 

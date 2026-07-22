@@ -5,6 +5,7 @@ from pathlib import Path
 import re
 
 from app.ai.llm_config import run_with_configured_llm
+from app.ai.tools.common import parse_json_object_text
 from app.analyzers.file_filter import filter_files
 from app.analyzers.secret_scanner import mask_secret_values
 from app.analyzers.structure_analyzer import analyze_structure
@@ -54,7 +55,7 @@ class RepoSummaryService:
                 "You are generating a repository project overview, not a code "
                 "review report. Use only the project-level context below. "
                 "Write every field in English.",
-                "Return structured data matching RepoSummary with fields: "
+                "Return valid JSON only matching RepoSummary with fields: "
                 "purpose, project_type, tech_stack, architecture_overview. "
                 "Make purpose a detailed paragraph that explains what the project "
                 "does, the main user-facing or operational workflows, and the "
@@ -115,11 +116,10 @@ class RepoSummaryService:
 
 
 async def invoke_repo_summary_llm(prompt: str) -> RepoSummary:
-    """Run one structured-output LLM call for RepoSummary."""
+    """Run one JSON-output LLM call for RepoSummary."""
 
     async def invoke(llm: object) -> RepoSummary:
-        structured_llm = llm.with_structured_output(RepoSummary)  # type: ignore[attr-defined]
-        result = await structured_llm.ainvoke(prompt)
+        result = await llm.ainvoke(prompt)  # type: ignore[attr-defined]
         return coerce_repo_summary(result)
 
     result = await run_with_configured_llm(invoke, allow_fallback=True)
@@ -135,7 +135,31 @@ def coerce_repo_summary(value: object) -> RepoSummary:
     if isinstance(value, dict):
         return RepoSummary.model_validate(value)
 
+    if isinstance(value, str):
+        parsed_value = parse_json_object_text(value)
+        if parsed_value is not None:
+            return RepoSummary.model_validate(parsed_value)
+
+    content = getattr(value, "content", None)
+    if content is not None:
+        return coerce_repo_summary(_message_content_text(content))
+
     raise TypeError(f"Expected RepoSummary from LLM, got {type(value).__name__}")
+
+
+def _message_content_text(content: object) -> object:
+    if isinstance(content, list):
+        text_parts: list[str] = []
+        for part in content:
+            if isinstance(part, str):
+                text_parts.append(part)
+                continue
+            if isinstance(part, dict) and isinstance(part.get("text"), str):
+                text_parts.append(part["text"])
+
+        return "\n".join(text_parts)
+
+    return content
 
 
 def validate_repo_summary(summary: RepoSummary, valid_paths: set[str]) -> RepoSummary:

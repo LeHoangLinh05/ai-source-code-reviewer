@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 
+import { StatusBadge } from "@/components/reviews/review-badges";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -88,27 +89,14 @@ export default function ReviewsPage() {
 
   return (
     <>
-      <header className="flex flex-col gap-4 border-b border-border pb-5 md:flex-row md:items-end md:justify-between">
-        <div>
-          <p className="text-xs font-medium uppercase text-muted-foreground">
-            Worker queue
-          </p>
-          <h1 className="mt-2 text-3xl font-extrabold tracking-normal">
-            Reviews
-          </h1>
-          <p className="mt-1 text-[15px] leading-6 text-muted-foreground">
-            Review jobs created from connected repositories.
-          </p>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <Button asChild>
-            <Link href="/repositories">
-              <CirclePlay aria-hidden="true" />
-              Start from Repository
-            </Link>
-          </Button>
-        </div>
-      </header>
+      <div className="flex flex-wrap justify-end gap-2">
+        <Button asChild>
+          <Link href="/repositories">
+            <CirclePlay aria-hidden="true" />
+            Start from Repository
+          </Link>
+        </Button>
+      </div>
 
       <Card className="overflow-hidden">
         <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -260,38 +248,6 @@ function JobsTable({
       </table>
     </div>
   );
-}
-
-function StatusBadge({ status }: { status: ReviewJobStatus }) {
-  const className = getStatusClassName(status);
-
-  return (
-    <span
-      className={`inline-flex rounded-md border px-2 py-1 text-xs font-medium ${className}`}
-    >
-      {status.replaceAll("_", " ")}
-    </span>
-  );
-}
-
-function getStatusClassName(status: ReviewJobStatus) {
-  if (status === "COMPLETED") {
-    return "border-emerald-500/50 bg-emerald-500/10 text-emerald-700 dark:text-emerald-200";
-  }
-
-  if (status === "FAILED") {
-    return "border-destructive/40 bg-destructive/10 text-destructive";
-  }
-
-  if (status === "AI_REVIEWING") {
-    return "border-sky-500/50 bg-sky-500/10 text-sky-700 dark:text-sky-200";
-  }
-
-  if (status === "PENDING") {
-    return "border-border bg-muted text-muted-foreground";
-  }
-
-  return "border-border bg-muted text-muted-foreground";
 }
 
 function formatDate(value: string) {

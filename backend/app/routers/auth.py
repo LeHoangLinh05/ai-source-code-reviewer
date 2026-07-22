@@ -63,7 +63,9 @@ async def login(
     _delete_legacy_access_cookie(response)
     return AuthSessionResponse(user=token_pair.user)
 
-
+# Alias
+AuthServiceDep = Annotated[AuthService, get_auth_service]
+CurrentUserDep =  Annotated[User, Depends(get_current_user)]
 @router.post(
     "/refresh",
     response_model=AuthSessionResponse,
@@ -71,7 +73,7 @@ async def login(
 )
 async def refresh(
     response: Response,
-    auth_service: Annotated[AuthService, Depends(get_auth_service)],
+    auth_service: AuthServiceDep,
     payload: Annotated[RefreshTokenRequest | None, Body()] = None,
     refresh_token_cookie: Annotated[str | None, Cookie(alias="refreshToken")] = None,
 ) -> AuthSessionResponse:
@@ -98,7 +100,7 @@ async def refresh(
 async def logout(
     response: Response,
     access_token: Annotated[str, Depends(get_current_access_token)],
-    current_user: Annotated[User, Depends(get_current_user)],
+    current_user: CurrentUserDep ,
     auth_service: Annotated[AuthService, Depends(get_auth_service)],
     payload: Annotated[LogoutRequest | None, Body()] = None,
     refresh_token_cookie: Annotated[str | None, Cookie(alias="refreshToken")] = None,
@@ -123,7 +125,7 @@ async def logout(
 async def logout_all(
     response: Response,
     access_token: Annotated[str, Depends(get_current_access_token)],
-    current_user: Annotated[User, Depends(get_current_user)],
+    current_user: CurrentUserDep,
     auth_service: Annotated[AuthService, Depends(get_auth_service)],
 ) -> LogoutResponse:
     """Revoke every refresh token issued for the current user."""
