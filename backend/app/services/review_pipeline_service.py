@@ -1,32 +1,22 @@
 """Celery worker pipeline for real repository analysis jobs."""
 
-import asyncio
 import logging
 import shutil
 import subprocess
 import time
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Literal, cast
-from uuid import UUID, uuid4
+from typing import cast
+from uuid import UUID
 
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai.agent import run_ai_review
-from app.ai.rag.code_embedding import (
-    CodeEmbeddingStore,
-    code_embedding_model_version,
-    prepare_code_embedding_chunks,
-)
+from app.ai.rag.code_embedding import CodeEmbeddingStore
 from app.ai.rag.vectorstore import validate_rag_dependencies
 from app.ai.review_plan import get_review_mode
 from app.ai.roadmap.selection import parse_roadmap_profile
-from app.analyzers.code_chunker import (
-    CodeChunk,
-    chunk_plain_text_file,
-    chunk_python_file,
-)
 from app.analyzers.file_filter import build_file_manifest, to_relative_posix_path
 from app.analyzers.secret_scanner import scan_secrets
 from app.analyzers.static_analysis.bandit_analyzer import run_bandit
@@ -46,27 +36,22 @@ from app.core.config import (
 )
 from app.models.review_job import ReviewJob, ReviewJobStatus
 from app.repositories.mongodb_repository import (
-    ChunkMetadataRepository,
-    CodeIndexManifestRepository,
     FileAnalysisResultRepository,
     RawStaticAnalysisOutputRepository,
     RepoSummaryResultRepository,
-    ToolCallLogRepository,
 )
 from app.repositories.report_repository import ReportRepository
 from app.repositories.repository_repository import RepositoryRepository
 from app.repositories.review_job_repository import ReviewJobRepository
 from app.schemas.mongodb import (
-    ChunkMetadataDocument,
-    CodeIndexManifestDocument,
     FileAnalysisResultDocument,
     FileTreeEntry,
     ParsedStaticIssue,
     RawStaticAnalysisOutputDocument,
     RepoSummaryResultDocument,
-    ToolCallLogDocument,
 )
 from app.schemas.normalized_issue import NormalizedIssue
+from app.services.code_indexing_service import CodeIndexingService
 from app.services.notification_service import publish_job_progress
 from app.services.repo_summary_service import RepoSummaryService
 from app.services.report_generation_service import AI_REPORT_MODEL, build_static_report
@@ -97,7 +82,7 @@ class ReviewPipelineService:
         file_analysis_repository: FileAnalysisResultRepository,
         repo_summary_repository: RepoSummaryResultRepository,
         raw_static_repository: RawStaticAnalysisOutputRepository,
-        chunk_metadata_repository: ChunkMetadataRepository,
+        code_indexing_service: CodeIndexingService,
         code_embedding_store: CodeEmbeddingStore,
         postgres_session: AsyncSession,
     ) -> None:
@@ -108,7 +93,7 @@ class ReviewPipelineService:
         self.file_analysis_repository = file_analysis_repository
         self.repo_summary_repository = repo_summary_repository
         self.raw_static_repository = raw_static_repository
-        self.chunk_metadata_repository = chunk_metadata_repository
+        self.code_indexing_service = code_indexing_service
         self.code_embedding_store = code_embedding_store
         self.postgres_session = postgres_session
 
@@ -332,146 +317,17 @@ class ReviewPipelineService:
         filtered_files: list[Path],
         issues: list[NormalizedIssue],
     ) -> None:
-        chunk_started_at = time.perf_counter()
         await self._transition(
             review_job,
             ReviewJobStatus.CHUNKING_CODE,
             80,
             "Chunking source files",
         )
-        python_files = [
-            file_path for file_path in filtered_files if file_path.suffix == ".py"
-        ]
-        python_file_set = set(python_files)
-        chunk_documents: list[ChunkMetadataDocument] = []
-        logger.info(
-            "Review job %s chunking started: %d filtered files, %d Python files",
-            review_job.id,
-            len(filtered_files),
-            len(python_files),
-        )
-        for file_path in python_files:
-            file_chunks = chunk_python_file(
-                file_path,
-                project_root=sandbox_path,
-                static_issues=issues,
-            )
-            logger.debug(
-                "Review job %s chunked Python file %s into %d chunks",
-                review_job.id,
-                to_relative_posix_path(file_path, sandbox_path),
-                len(file_chunks),
-            )
-            for chunk in file_chunks:
-                metadata = chunk.metadata
-                chunk_document = ChunkMetadataDocument(
-                    job_id=review_job.id,
-                    file_path=metadata.file_path,
-                    language=metadata.language,
-                    chunk_type=metadata.chunk_type,
-                    chunk_index=metadata.chunk_index,
-                    total_chunks=metadata.total_chunks,
-                    function_name=metadata.function_name,
-                    class_name=metadata.class_name,
-                    line_start=metadata.line_start,
-                    line_end=metadata.line_end,
-                    imports=metadata.imports,
-                    module=metadata.module,
-                    risk_area=metadata.risk_area,
-                    has_static_issues=metadata.has_static_issues,
-                    token_count=metadata.token_count,
-                    chunk_text=chunk.content,
-                )
-                chunk_documents.append(chunk_document)
-
-        for file_path in filtered_files:
-            if file_path in python_file_set:
-                continue
-
-            plain_chunks = build_plain_file_chunk_metadata_documents(
-                job_id=review_job.id,
-                sandbox_path=sandbox_path,
-                file_path=file_path,
-                issues=issues,
-            )
-            for plain_metadata in plain_chunks:
-                chunk_documents.append(plain_metadata)
-
-        branch = review_branch(review_job)
-        chunks_to_embed = prepare_code_embedding_chunks(
-            chunk_documents,
-            repository_id=review_job.repository_id,
-            branch=branch,
-            commit_sha=review_job.commit_sha,
-            provider=self.settings.code_embedding_provider,
-            model_name=self.settings.code_embedding_model,
-            model_version=code_embedding_model_version(
-                self.settings.code_embedding_provider
-            ),
-            dimension=self.settings.code_embedding_dimension,
-        )
-        await self._write_code_index_manifest(
+        await self.code_indexing_service.index(
             review_job=review_job,
-            chunks=chunks_to_embed,
-            status="BUILDING",
-        )
-        replace_for_job = getattr(
-            self.chunk_metadata_repository, "replace_for_job", None
-        )
-        if callable(replace_for_job):
-            inserted_count, roundtrips = await replace_for_job(
-                job_id=review_job.id,
-                documents=chunks_to_embed,
-                batch_size=getattr(self.settings, "mongodb_chunk_batch_size", 500),
-            )
-        else:
-            inserted_count = 0
-            roundtrips = 0
-            for chunk_document in chunks_to_embed:
-                await self.chunk_metadata_repository.insert_one(chunk_document)
-                inserted_count += 1
-                roundtrips += 1
-
-        logger.info(
-            "Review job %s persisted %d source chunks to MongoDB in %.2fs "
-            "using %d write roundtrips",
-            review_job.id,
-            inserted_count,
-            time.perf_counter() - chunk_started_at,
-            roundtrips,
-        )
-        embedding_started_at = time.perf_counter()
-        logger.info(
-            "Review job %s semantic code indexing started for %d chunks",
-            review_job.id,
-            len(chunks_to_embed),
-        )
-        try:
-            embedding_summary = await asyncio.to_thread(
-                self.code_embedding_store.index_chunks,
-                chunks_to_embed,
-                repository_id=review_job.repository_id,
-                branch=branch,
-                commit_sha=review_job.commit_sha,
-            )
-        except Exception as error:
-            await self._write_code_index_manifest(
-                review_job=review_job,
-                chunks=chunks_to_embed,
-                status="FAILED",
-                error_message=str(error),
-            )
-            raise
-        await self._write_code_index_manifest(
-            review_job=review_job,
-            chunks=chunks_to_embed,
-            status="INDEXED",
-        )
-        await self._write_embedding_trace_events(review_job.id, embedding_summary)
-        logger.info(
-            "Review job %s semantic code indexing finished in %.2fs",
-            review_job.id,
-            time.perf_counter() - embedding_started_at,
+            sandbox_path=sandbox_path,
+            filtered_files=filtered_files,
+            issues=issues,
         )
         await self._publish_status(
             review_job,
@@ -479,155 +335,6 @@ class ReviewPipelineService:
             84,
             "Source chunks ready",
         )
-
-    async def _write_code_index_manifest(
-        self,
-        *,
-        review_job: ReviewJob,
-        chunks: list[ChunkMetadataDocument],
-        status: Literal["BUILDING", "INDEXED", "FAILED"],
-        error_message: str | None = None,
-    ) -> None:
-        if not chunks:
-            return
-
-        first_chunk = chunks[0]
-        if (
-            review_job.repository_id is None
-            or not first_chunk.branch
-            or not first_chunk.commit_sha
-            or not first_chunk.repo_branch_key
-            or not first_chunk.index_generation_key
-        ):
-            return
-
-        collection = getattr(self.chunk_metadata_repository, "collection", None)
-        database = getattr(collection, "database", None)
-        if database is None:
-            return
-
-        repository = CodeIndexManifestRepository(cast(AsyncIOMotorDatabase, database))
-        await repository.upsert_for_job(
-            CodeIndexManifestDocument(
-                job_id=review_job.id,
-                repository_id=review_job.repository_id,
-                branch=first_chunk.branch,
-                commit_sha=first_chunk.commit_sha,
-                repo_branch_key=first_chunk.repo_branch_key,
-                index_generation_key=first_chunk.index_generation_key,
-                status=status,
-                chunk_count=len(chunks),
-                updated_at=datetime.now(UTC),
-                error_message=error_message,
-            )
-        )
-
-    async def _write_embedding_trace_events(
-        self,
-        job_id: UUID,
-        embedding_summary: object,
-    ) -> None:
-        batches = getattr(embedding_summary, "batches", None)
-        if not isinstance(batches, list):
-            return
-
-        database = cast(
-            AsyncIOMotorDatabase,
-            self.chunk_metadata_repository.collection.database,
-        )
-        repository = ToolCallLogRepository(database)
-        session_id = uuid4()
-        if not batches:
-            await repository.insert_one(
-                ToolCallLogDocument(
-                    job_id=job_id,
-                    session_id=session_id,
-                    agent_type="review",
-                    sequence=1,
-                    tool_name="code_embedding_cache_summary",
-                    called_at=datetime.now(UTC),
-                    duration_ms=max(
-                        0,
-                        int(getattr(embedding_summary, "duration_ms", 0)),
-                    ),
-                    input={
-                        "total_current_count": int(
-                            getattr(embedding_summary, "total_current_count", 0)
-                        ),
-                    },
-                    output={
-                        "status": "ok",
-                        "embedded_count": int(
-                            getattr(embedding_summary, "embedded_count", 0)
-                        ),
-                        "cache_hit_count": int(
-                            getattr(embedding_summary, "cache_hit_count", 0)
-                        ),
-                        "pruned_count": int(
-                            getattr(embedding_summary, "pruned_count", 0)
-                        ),
-                    },
-                    event_type="embedding",
-                    provider=self.settings.code_embedding_provider,
-                    model=self.settings.code_embedding_model,
-                    phase="code_embedding",
-                    token_usage=None,
-                    status="ok",
-                    metadata={"source": "review_pipeline"},
-                )
-            )
-            return
-
-        for sequence, batch in enumerate(batches, start=1):
-            token_usage = {
-                "estimated_input_tokens": getattr(
-                    batch,
-                    "estimated_input_tokens",
-                    0,
-                )
-            }
-            actual_usage = getattr(batch, "token_usage", None)
-            if isinstance(actual_usage, dict):
-                token_usage.update(actual_usage)
-            await repository.insert_one(
-                ToolCallLogDocument(
-                    job_id=job_id,
-                    session_id=session_id,
-                    agent_type="review",
-                    sequence=sequence,
-                    tool_name="code_embedding_batch",
-                    called_at=datetime.now(UTC),
-                    duration_ms=max(0, int(getattr(batch, "duration_ms", 0))),
-                    input={
-                        "batch_number": int(getattr(batch, "batch_number", sequence)),
-                        "total_batches": int(getattr(batch, "total_batches", 0)),
-                        "file_paths": list(getattr(batch, "file_paths", [])),
-                    },
-                    output={
-                        "status": "ok",
-                        "chunk_count": int(getattr(batch, "chunk_count", 0)),
-                        "embedded_count": int(
-                            getattr(embedding_summary, "embedded_count", 0)
-                        ),
-                        "cache_hit_count": int(
-                            getattr(embedding_summary, "cache_hit_count", 0)
-                        ),
-                        "pruned_count": int(
-                            getattr(embedding_summary, "pruned_count", 0)
-                        ),
-                        "total_current_count": int(
-                            getattr(embedding_summary, "total_current_count", 0)
-                        ),
-                    },
-                    event_type="embedding",
-                    provider=self.settings.code_embedding_provider,
-                    model=self.settings.code_embedding_model,
-                    phase="code_embedding",
-                    token_usage=token_usage,
-                    status="ok",
-                    metadata={"source": "review_pipeline"},
-                )
-            )
 
     async def _persist_pre_agent_report(
         self,
@@ -789,13 +496,6 @@ def clone_repository(review_job: ReviewJob, sandbox_path: Path) -> None:
     if completed_process.returncode != 0:
         detail = completed_process.stderr.strip() or completed_process.stdout.strip()
         raise ReviewPipelineError(f"Git clone failed: {detail}")
-
-
-def review_branch(review_job: ReviewJob) -> str:
-    """Return the exact branch name used for this review."""
-
-    branch = review_job.branch or review_job.repository.default_branch
-    return branch.strip()
 
 
 def validate_repo_size(sandbox_path: Path, *, max_size_bytes: int) -> None:
@@ -966,86 +666,6 @@ def attach_source_context(
             "lines": context_lines,
         }
         issue.raw_output = raw_output
-
-
-def build_plain_file_chunk_metadata(
-    *,
-    job_id: UUID,
-    sandbox_path: Path,
-    file_path: Path,
-    issues: list[NormalizedIssue],
-) -> ChunkMetadataDocument:
-    """Return the first generated plain-file chunk for compatibility tests."""
-
-    chunks = build_plain_file_chunk_metadata_documents(
-        job_id=job_id,
-        sandbox_path=sandbox_path,
-        file_path=file_path,
-        issues=issues,
-    )
-    if not chunks:
-        raise ValueError(f"Plain file is not reviewable: {file_path}")
-
-    return chunks[0]
-
-
-def build_plain_file_chunk_metadata_documents(
-    *,
-    job_id: UUID,
-    sandbox_path: Path,
-    file_path: Path,
-    issues: list[NormalizedIssue],
-) -> list[ChunkMetadataDocument]:
-    """Represent a non-Python text source file as reviewable AI chunks."""
-
-    if not should_chunk_plain_file(file_path):
-        return []
-
-    language = LANGUAGE_BY_EXTENSION.get(file_path.suffix.lower()) or "text"
-    chunks = chunk_plain_text_file(
-        file_path,
-        language=language,
-        project_root=sandbox_path,
-        static_issues=issues,
-    )
-    return [
-        _chunk_metadata_document(job_id=job_id, chunk=chunk)
-        for chunk in chunks
-        if chunk.content.strip()
-    ]
-
-
-def should_chunk_plain_file(file_path: Path) -> bool:
-    """Return True when a non-Python file should enter semantic code chunks."""
-
-    if file_path.suffix.lower() != ".md":
-        return True
-
-    return file_path.name.lower() in {"readme.md", "readme.markdown"}
-
-
-def _chunk_metadata_document(
-    *, job_id: UUID, chunk: CodeChunk
-) -> ChunkMetadataDocument:
-    metadata = chunk.metadata
-    return ChunkMetadataDocument(
-        job_id=job_id,
-        file_path=metadata.file_path,
-        language=metadata.language,
-        chunk_type=metadata.chunk_type,
-        chunk_index=metadata.chunk_index,
-        total_chunks=metadata.total_chunks,
-        function_name=metadata.function_name,
-        class_name=metadata.class_name,
-        line_start=metadata.line_start,
-        line_end=metadata.line_end,
-        imports=metadata.imports,
-        module=metadata.module,
-        risk_area=metadata.risk_area,
-        has_static_issues=metadata.has_static_issues,
-        token_count=metadata.token_count,
-        chunk_text=chunk.content,
-    )
 
 
 def build_flat_file_tree_entries(

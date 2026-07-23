@@ -2,7 +2,7 @@
 
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 from uuid import uuid4
 
 import pytest
@@ -12,13 +12,16 @@ from app.analyzers.file_filter import FileManifest
 from app.models.review_job import ReviewJobStatus
 from app.schemas.repo_summary import RepoSummary
 from app.services import review_pipeline_service
+from app.services.code_indexing_service import (
+    CodeIndexingService,
+    build_plain_file_chunk_metadata,
+    build_plain_file_chunk_metadata_documents,
+)
 from app.services.review_pipeline_service import (
     ReviewJobCanceled,
     ReviewPipelineError,
     ReviewPipelineService,
     StructureAnalysisResult,
-    build_plain_file_chunk_metadata,
-    build_plain_file_chunk_metadata_documents,
     get_rule_profile,
 )
 
@@ -121,7 +124,6 @@ def test_markdown_plain_chunks_keep_readme_files(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_chunk_code_persists_cache_metadata_and_indexes_repo_branch(
-    monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     source_path = tmp_path / "app" / "service.py"
@@ -137,24 +139,30 @@ async def test_chunk_code_persists_cache_metadata_and_indexes_repo_branch(
     )
     code_store = _RecordingCodeStore()
     chunk_repository = _RecordingChunkRepository()
-    service: Any = ReviewPipelineService.__new__(ReviewPipelineService)
-    service.settings = SimpleNamespace(
-        code_embedding_provider="mistral",
-        code_embedding_model="codestral-embed-2505",
-        code_embedding_dimension=1536,
+    manifest_repository = _RecordingManifestRepository()
+    trace_repository = _RecordingTraceRepository()
+    service = CodeIndexingService(
+        settings=cast(
+            Any,
+            SimpleNamespace(
+                mongodb_chunk_batch_size=500,
+                code_embedding_provider="mistral",
+                code_embedding_model="codestral-embed-2505",
+                code_embedding_dimension=1536,
+            ),
+        ),
+        chunk_repository=cast(Any, chunk_repository),
+        manifest_repository=cast(Any, manifest_repository),
+        trace_repository=cast(Any, trace_repository),
+        embedding_store=cast(Any, code_store),
     )
-    service.chunk_metadata_repository = chunk_repository
-    service.code_embedding_store = code_store
-    service.review_job_repository = _ExistingJobRepository()
 
-    async def noop(*_args: object, **_kwargs: object) -> None:
-        return None
-
-    monkeypatch.setattr(service, "_transition", noop)
-    monkeypatch.setattr(service, "_publish_status", noop)
-    monkeypatch.setattr(service, "_write_embedding_trace_events", noop)
-
-    await service._chunk_code(job, tmp_path, [source_path], [])
+    await service.index(
+        review_job=cast(Any, job),
+        sandbox_path=tmp_path,
+        filtered_files=[source_path],
+        issues=[],
+    )
 
     assert len(chunk_repository.documents) == 1
     document = chunk_repository.documents[0]
@@ -165,6 +173,11 @@ async def test_chunk_code_persists_cache_metadata_and_indexes_repo_branch(
     assert document.embedding_cache_id is not None
     assert document.repo_branch_key is not None
     assert document.index_generation_key is not None
+    assert [manifest.status for manifest in manifest_repository.documents] == [
+        "BUILDING",
+        "INDEXED",
+    ]
+    assert len(trace_repository.documents) == 1
     assert code_store.index_calls == [
         {
             "chunk_count": 1,
@@ -173,6 +186,77 @@ async def test_chunk_code_persists_cache_metadata_and_indexes_repo_branch(
             "commit_sha": "abc123",
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_pipeline_delegates_chunking_to_code_indexing_service(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "app" / "service.py"
+    source_path.parent.mkdir(parents=True)
+    source_path.write_text("def create_user():\n    return True\n", encoding="utf-8")
+    job = SimpleNamespace(id=uuid4())
+    code_indexing_service = _RecordingCodeIndexingService()
+    service: Any = ReviewPipelineService.__new__(ReviewPipelineService)
+    service.code_indexing_service = code_indexing_service
+
+    async def noop(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr(service, "_transition", noop)
+    monkeypatch.setattr(service, "_publish_status", noop)
+
+    await service._chunk_code(job, tmp_path, [source_path], [])
+
+    assert code_indexing_service.calls == [
+        {
+            "review_job": job,
+            "sandbox_path": tmp_path,
+            "filtered_files": [source_path],
+            "issues": [],
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_chunk_code_publishes_progress_after_indexing(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    job = SimpleNamespace(id=uuid4())
+    service: Any = ReviewPipelineService.__new__(ReviewPipelineService)
+    service.code_indexing_service = _RecordingCodeIndexingService()
+    transitions: list[ReviewJobStatus] = []
+    published_messages: list[str] = []
+
+    async def transition(
+        _review_job: object,
+        status: ReviewJobStatus,
+        _progress: int,
+        _message: str,
+    ) -> None:
+        transitions.append(status)
+
+    async def publish_status(
+        _review_job: object,
+        status: ReviewJobStatus,
+        _progress: int,
+        message: str,
+    ) -> None:
+        transitions.append(status)
+        published_messages.append(message)
+
+    monkeypatch.setattr(service, "_transition", transition)
+    monkeypatch.setattr(service, "_publish_status", publish_status)
+
+    await service._chunk_code(job, tmp_path, [], [])
+
+    assert transitions == [
+        ReviewJobStatus.CHUNKING_CODE,
+        ReviewJobStatus.CHUNKING_CODE,
+    ]
+    assert published_messages == ["Source chunks ready"]
 
 
 @pytest.mark.asyncio
@@ -477,6 +561,56 @@ class _RecordingChunkRepository:
     async def insert_one(self, document: Any) -> str:
         self.documents.append(document)
         return "chunk-id"
+
+    async def replace_for_job(
+        self,
+        *,
+        job_id: object,
+        documents: list[Any],
+        batch_size: int,
+    ) -> tuple[int, int]:
+        _ = job_id, batch_size
+        self.documents = list(documents)
+        return len(documents), 1 if documents else 0
+
+
+class _RecordingManifestRepository:
+    def __init__(self) -> None:
+        self.documents: list[Any] = []
+
+    async def upsert_for_job(self, document: Any) -> None:
+        self.documents.append(document)
+
+
+class _RecordingTraceRepository:
+    def __init__(self) -> None:
+        self.documents: list[Any] = []
+
+    async def insert_one(self, document: Any) -> str:
+        self.documents.append(document)
+        return "trace-id"
+
+
+class _RecordingCodeIndexingService:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    async def index(
+        self,
+        *,
+        review_job: object,
+        sandbox_path: Path,
+        filtered_files: list[Path],
+        issues: list[object],
+    ) -> None:
+        self.calls.append(
+            {
+                "review_job": review_job,
+                "sandbox_path": sandbox_path,
+                "filtered_files": filtered_files,
+                "issues": issues,
+            }
+        )
 
 
 class _RecordingRepoSummaryRepository:
