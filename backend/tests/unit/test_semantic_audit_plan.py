@@ -1,7 +1,7 @@
 """Tests for typed semantic audit planning."""
 
-from app.ai.probe_contracts import ProbeDefinition, ProbeLane
-from app.ai.semantic_audit_plan import BASELINE_PROBES, build_semantic_audit_plan
+from app.ai.probe.contracts import ProbeDefinition, ProbeLane
+from app.ai.probe.plan import BASELINE_PROBES, build_semantic_audit_plan
 
 
 def test_baseline_probes_use_short_focused_queries_and_dynamic_top_k() -> None:

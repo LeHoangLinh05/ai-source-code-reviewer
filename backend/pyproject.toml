@@ -57,10 +57,10 @@ ignore = [
 # Subprocess calls are constrained to internal analyzer commands or resolved Git.
 "app/analyzers/file_filter.py" = ["S603"]
 "app/analyzers/static_analysis/base.py" = ["S603"]
-"app/services/review_pipeline_service.py" = ["S603"]
+"app/services/review_pipeline/workspace.py" = ["S603"]
 # Probe/review plan branchy returns model domain decision tables.
-"app/ai/probe_review.py" = ["PLR0911"]
-"app/ai/review_plan.py" = ["PLR0911"]
+"app/ai/probe/review.py" = ["PLR0911"]
+"app/ai/review/plan.py" = ["PLR0911"]
 
 [tool.pytest.ini_options]
 markers = [

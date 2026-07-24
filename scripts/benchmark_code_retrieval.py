@@ -541,7 +541,7 @@ def _production_chunk_documents(
     file_paths: list[Path],
 ) -> list[Any]:
     from app.analyzers.code_chunker import chunk_python_file
-    from app.services.review_pipeline_service import (
+    from app.services.code_indexing.documents import (
         build_plain_file_chunk_metadata_documents,
     )
 

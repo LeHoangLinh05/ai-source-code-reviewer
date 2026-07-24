@@ -4,7 +4,7 @@ from uuid import uuid4
 
 from app.models.review_issue import IssueCategory, IssueSeverity, IssueSource
 from app.schemas.normalized_issue import NormalizedIssue
-from app.services.report_generation_service import (
+from app.services.reporting.generation import (
     build_static_report,
     build_top_risky_files,
     calculate_report_scores,

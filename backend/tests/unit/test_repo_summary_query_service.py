@@ -8,7 +8,7 @@ import pytest
 
 from app.core.exceptions import NotFoundError
 from app.models.user import User
-from app.services.repo_summary_query_service import RepoSummaryQueryService
+from app.services.repo_summary.query_service import RepoSummaryQueryService
 
 
 @pytest.mark.asyncio

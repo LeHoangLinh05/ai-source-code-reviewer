@@ -1,6 +1,9 @@
 """Tests for AI review orchestration helpers."""
 
-from app.ai.agent import ROADMAP_RULE_CATALOG_TOOL_NAME, _loaded_roadmap_rule_ids
+from app.ai.roadmap.catalog_service import (
+    ROADMAP_RULE_CATALOG_TOOL_NAME,
+    _loaded_roadmap_rule_ids,
+)
 
 
 def test_loaded_roadmap_rule_ids_include_catalog_trace() -> None:

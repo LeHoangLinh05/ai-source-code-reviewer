@@ -113,7 +113,6 @@ class Settings(BaseSettings):
     )
     llm_job_call_budget: int = Field(default=96, ge=1, le=200)
     llm_rate_limit_failure_budget: int = Field(default=1, ge=1, le=5)
-    probe_retrieval_chunks_per_probe: int = Field(default=3, ge=1, le=10)
     probe_retrieval_max_chunks: int = Field(default=188, ge=1, le=500)
     probe_defect_max_chunks: int = Field(default=120, ge=1, le=300)
     probe_coverage_max_chunks: int = Field(default=24, ge=1, le=200)

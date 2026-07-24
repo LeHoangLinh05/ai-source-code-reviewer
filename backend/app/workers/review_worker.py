@@ -12,15 +12,18 @@ from app.db.redis import close_redis_client
 from app.models.review_job import ReviewJobStatus
 from app.repositories.mongodb_repository import (
     ChunkMetadataRepository,
+    CodeIndexManifestRepository,
     FileAnalysisResultRepository,
     RawStaticAnalysisOutputRepository,
     RepoSummaryResultRepository,
+    ToolCallLogRepository,
 )
 from app.repositories.report_repository import ReportRepository
 from app.repositories.repository_repository import RepositoryRepository
 from app.repositories.review_job_repository import ReviewJobRepository
+from app.services.code_indexing.service import CodeIndexingService
 from app.services.notification_service import publish_job_progress
-from app.services.review_pipeline_service import (
+from app.services.review_pipeline.service import (
     ReviewPipelineService,
     build_error_message,
 )
@@ -81,6 +84,13 @@ async def process_review_job_async(job_id: UUID) -> None:
             else:
                 code_embedding_store = DisabledCodeEmbeddingStore()
 
+            code_indexing_service = CodeIndexingService(
+                settings=settings,
+                chunk_repository=ChunkMetadataRepository(database),
+                manifest_repository=CodeIndexManifestRepository(database),
+                trace_repository=ToolCallLogRepository(database),
+                embedding_store=code_embedding_store,
+            )
             pipeline_service = ReviewPipelineService(
                 settings=settings,
                 review_job_repository=review_job_repository,
@@ -89,7 +99,7 @@ async def process_review_job_async(job_id: UUID) -> None:
                 file_analysis_repository=FileAnalysisResultRepository(database),
                 repo_summary_repository=RepoSummaryResultRepository(database),
                 raw_static_repository=RawStaticAnalysisOutputRepository(database),
-                chunk_metadata_repository=ChunkMetadataRepository(database),
+                code_indexing_service=code_indexing_service,
                 code_embedding_store=code_embedding_store,
                 postgres_session=session,
             )

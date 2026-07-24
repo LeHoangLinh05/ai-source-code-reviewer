@@ -1,13 +1,13 @@
 """Tests for structured final-report synthesis helpers."""
 
-from app.ai.final_report import (
+from app.ai.reporting.final_report import (
     FinalReportDraft,
     _is_placeholder_summary,
     parse_final_report_draft_text,
 )
 from app.models.review_issue import IssueCategory, IssueSeverity, IssueSource
 from app.schemas.normalized_issue import NormalizedIssue
-from app.services.report_generation_service import calculate_report_scores
+from app.services.reporting.generation import calculate_report_scores
 
 
 def test_final_report_schema_parses_markdown_json_output() -> None:

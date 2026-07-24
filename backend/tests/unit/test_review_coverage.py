@@ -8,8 +8,8 @@ import pytest
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.ai.review_coverage import load_chunk_review_coverage
-from app.ai.tool_runtime import AIToolRuntime, ai_tool_runtime
+from app.ai.review.coverage import load_chunk_review_coverage
+from app.ai.tools.runtime import AIToolRuntime, ai_tool_runtime
 from app.db.mongodb import CHUNK_METADATA_COLLECTION, TOOL_CALL_LOGS_COLLECTION
 
 

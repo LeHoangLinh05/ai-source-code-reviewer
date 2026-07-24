@@ -2,37 +2,49 @@
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 from typing import cast
 from uuid import uuid4
 
 import pytest
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.ai.probe_contracts import ProbeDefinition, ProbeLane
-from app.ai.probe_review import (
+from app.ai.probe.bundle_selection import _trim_bundles
+from app.ai.probe.candidate_retrieval import (
+    _expand_related_candidates,
+    _fuse_probe_candidates,
+    _unique_candidates,
+)
+from app.ai.probe.candidate_validation import (
+    _candidate_rule_id,
+    _dependency_manifest_contradicts_candidate,
+    _supporting_bundle_chunk,
+)
+from app.ai.probe.contracts import ProbeDefinition, ProbeLane
+from app.ai.probe.judge_service import ProbeJudgeService
+from app.ai.probe.judging import (
+    _judge_batches,
+    _judge_prompt,
+    _probe_judge_response_from_payload,
+)
+from app.ai.probe.models import (
     ProbeCandidateChunk,
     ProbeEvidenceBundle,
     ProbeJudgeIssueCandidate,
     ProbeJudgeResponse,
-    ProbeRetrievalService,
-    _candidate_rule_id,
-    _dependency_manifest_contradicts_candidate,
-    _expand_related_candidates,
-    _fuse_probe_candidates,
-    _judge_batches,
-    _judge_prompt,
-    _path_category,
-    _probe_judge_response_from_payload,
-    _RoadmapMetadataStore,
-    _structural_candidates,
-    _supporting_bundle_chunk,
-    _trim_bundles,
-    _unique_candidates,
 )
+from app.ai.probe.plan import BASELINE_PROBES, build_semantic_audit_plan
+from app.ai.probe.retrieval_service import ProbeRetrievalService
+from app.ai.probe.review import (
+    _path_category,
+    _RoadmapMetadataStore,
+)
+from app.ai.probe.structural_matching import _structural_candidates
 from app.ai.roadmap.knowledge import load_roadmap_requirements
 from app.ai.roadmap.selection import ROADMAP_PROFILE_ID, build_roadmap_context
-from app.ai.semantic_audit_plan import BASELINE_PROBES, build_semantic_audit_plan
 from app.db.mongodb import CHUNK_METADATA_COLLECTION
+from app.models.review_issue import IssueSource, ReviewIssue
 
 
 class _FakeCursor:
@@ -86,6 +98,40 @@ class _TraceWriter:
                 "output": output,
             }
         )
+
+
+class _NoExistingIssueResult:
+    def scalars(self) -> _NoExistingIssueResult:
+        return self
+
+    def first(self) -> None:
+        return None
+
+
+class _FakePostgresSession:
+    def __init__(self) -> None:
+        self.added_issues: list[ReviewIssue] = []
+        self.commit_count = 0
+
+    async def execute(self, statement: object) -> _NoExistingIssueResult:
+        _ = statement
+        return _NoExistingIssueResult()
+
+    def add(self, issue: object) -> None:
+        assert isinstance(issue, ReviewIssue)
+        self.added_issues.append(issue)
+
+    async def commit(self) -> None:
+        self.commit_count += 1
+
+
+class _JudgeLlm:
+    def __init__(self, payload: dict[str, object]) -> None:
+        self.payload = payload
+
+    async def ainvoke(self, messages: list[tuple[str, str]]) -> SimpleNamespace:
+        assert messages
+        return SimpleNamespace(content=json.dumps(self.payload))
 
 
 class _FakeSemanticRetriever:
@@ -299,6 +345,68 @@ def test_probe_judge_response_keeps_valid_candidates_from_mixed_batch() -> None:
     assert response.schema_rejected_count == 1
 
 
+@pytest.mark.asyncio
+async def test_probe_judge_persists_only_high_confidence_candidates() -> None:
+    job_id = uuid4()
+    file_path = "backend/app/orders.py"
+    chunk = _candidate_chunk(
+        file_path=file_path,
+        line_start=10,
+        line_end=12,
+        content="order = repository.get(order_id)\nreturn order.total\n",
+    )
+    bundle = _bundle(
+        probe={"probe_id": "bug.order.total", "category": "bug"},
+        chunks=[chunk],
+    )
+    candidate = {
+        "verdict": "issue",
+        "title": "Order may be missing",
+        "description": "The order is dereferenced without a missing-value check.",
+        "severity": "high",
+        "category": "bug",
+        "file_path": file_path,
+        "line_start": 10,
+        "line_end": 11,
+        "supporting_evidence": [
+            {
+                "file_path": file_path,
+                "chunk_index": 0,
+                "line_start": 10,
+                "line_end": 11,
+            }
+        ],
+    }
+    session = _FakePostgresSession()
+    trace_writer = _TraceWriter()
+    service = ProbeJudgeService(
+        llm=_JudgeLlm(
+            {
+                "candidates": [
+                    {**candidate, "confidence": 0.91},
+                    {**candidate, "confidence": 0.4},
+                ]
+            }
+        ),
+        postgres_session=cast(AsyncSession, session),
+    )
+
+    judged_batches, created_count, rejected_count = await service.judge_and_persist(
+        job_id=job_id,
+        bundles=[bundle],
+        trace_writer=trace_writer,
+    )
+
+    assert (judged_batches, created_count, rejected_count) == (1, 1, 1)
+    assert session.commit_count == 1
+    assert len(session.added_issues) == 1
+    assert session.added_issues[0].source is IssueSource.AI_REVIEW
+    trace_output = trace_writer.logs[0]["output"]
+    assert isinstance(trace_output, dict)
+    assert trace_output["created_count"] == 1
+    assert trace_output["rejected_count"] == 1
+
+
 def test_batched_dependency_candidate_uses_matching_rule_id() -> None:
     requirements = {
         requirement.rule_id: requirement for requirement in load_roadmap_requirements()
@@ -465,6 +573,117 @@ def test_supporting_bundle_chunk_rejects_unsupported_reference() -> None:
                             file_path="backend/app/auth.py",
                             chunk_index=1,
                             content="def logout():\n    return {'ok': True}",
+                        )
+                    ],
+                )
+            ],
+        )
+        is None
+    )
+
+
+def test_supporting_bundle_chunk_accepts_verified_multi_chunk_range() -> None:
+    file_path = "backend/app/api/auth.py"
+    candidate = ProbeJudgeResponse.model_validate(
+        {
+            "candidates": [
+                {
+                    "verdict": "issue",
+                    "title": "Reset token has no expiration",
+                    "description": "The token has no TTL and remains reusable.",
+                    "severity": "high",
+                    "category": "security",
+                    "confidence": 0.95,
+                    "file_path": file_path,
+                    "line_start": 76,
+                    "line_end": 109,
+                    "supporting_evidence": [
+                        {
+                            "file_path": file_path,
+                            "chunk_index": 9,
+                            "line_start": 83,
+                            "line_end": 86,
+                        },
+                        {
+                            "file_path": file_path,
+                            "chunk_index": 11,
+                            "line_start": 92,
+                            "line_end": 96,
+                        },
+                    ],
+                }
+            ]
+        }
+    ).candidates[0]
+    first_chunk = _candidate_chunk(
+        file_path=file_path,
+        chunk_index=9,
+        line_start=76,
+        line_end=88,
+        content="async def request_password_reset():\n    await redis.set(key, token)",
+    )
+    second_chunk = _candidate_chunk(
+        file_path=file_path,
+        chunk_index=11,
+        line_start=92,
+        line_end=109,
+        content="async def confirm_password_reset():\n    verify(token)",
+    )
+
+    evidence_chunk = _supporting_bundle_chunk(
+        candidate,
+        [
+            _bundle(
+                probe={"probe_id": "security.reset_token_lifecycle"},
+                chunks=[first_chunk, second_chunk],
+            )
+        ],
+    )
+
+    assert evidence_chunk is first_chunk
+
+
+def test_supporting_bundle_chunk_rejects_multi_chunk_range_without_end_anchor() -> None:
+    file_path = "backend/app/api/auth.py"
+    candidate = ProbeJudgeResponse.model_validate(
+        {
+            "candidates": [
+                {
+                    "verdict": "issue",
+                    "title": "Reset token has no expiration",
+                    "description": "The token has no TTL and remains reusable.",
+                    "severity": "high",
+                    "category": "security",
+                    "confidence": 0.95,
+                    "file_path": file_path,
+                    "line_start": 76,
+                    "line_end": 109,
+                    "supporting_evidence": [
+                        {
+                            "file_path": file_path,
+                            "chunk_index": 9,
+                            "line_start": 83,
+                            "line_end": 86,
+                        }
+                    ],
+                }
+            ]
+        }
+    ).candidates[0]
+
+    assert (
+        _supporting_bundle_chunk(
+            candidate,
+            [
+                _bundle(
+                    probe={"probe_id": "security.reset_token_lifecycle"},
+                    chunks=[
+                        _candidate_chunk(
+                            file_path=file_path,
+                            chunk_index=9,
+                            line_start=76,
+                            line_end=88,
+                            content="async def request_password_reset(): pass",
                         )
                     ],
                 )
@@ -657,7 +876,6 @@ async def test_probe_retrieval_rrf_prefers_cross_strategy_consensus() -> None:
         database=database,  # type: ignore[arg-type]
         code_retriever=semantic_retriever,  # type: ignore[arg-type]
         enable_semantic_search=True,
-        chunks_per_probe=2,
     )
 
     bundles = await service.retrieve(
@@ -713,7 +931,6 @@ async def test_probe_retrieval_keeps_file_diversity_in_top_results() -> None:
     service = ProbeRetrievalService(
         database=database,  # type: ignore[arg-type]
         enable_semantic_search=False,
-        chunks_per_probe=2,
     )
 
     bundles = await service.retrieve(
@@ -1131,15 +1348,22 @@ def _candidate_chunk(
     *,
     file_path: str,
     chunk_index: int = 0,
+    line_start: int = 1,
+    line_end: int | None = None,
     content: str,
     strategies: tuple[str, ...] = (),
     final_score: float = 1.2,
 ) -> ProbeCandidateChunk:
+    resolved_line_end = (
+        line_end
+        if line_end is not None
+        else line_start + max(0, len(content.splitlines()) - 1)
+    )
     return ProbeCandidateChunk(
         file_path=file_path,
         chunk_index=chunk_index,
-        line_start=1,
-        line_end=max(1, len(content.splitlines())),
+        line_start=line_start,
+        line_end=resolved_line_end,
         language="python",
         risk_area="security",
         content=content,
