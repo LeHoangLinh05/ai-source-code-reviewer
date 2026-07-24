@@ -1,8 +1,6 @@
 """Celery worker pipeline for real repository analysis jobs."""
 
 import logging
-import shutil
-import subprocess
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -12,28 +10,17 @@ from uuid import UUID
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.ai.agent import run_ai_review
 from app.ai.rag.code_embedding import CodeEmbeddingStore
 from app.ai.rag.vectorstore import validate_rag_dependencies
-from app.ai.review_plan import get_review_mode
-from app.ai.roadmap.selection import parse_roadmap_profile
-from app.analyzers.file_filter import build_file_manifest, to_relative_posix_path
+from app.ai.review.agent import run_ai_review
+from app.ai.review.plan import get_review_mode
+from app.analyzers.file_filter import build_file_manifest
 from app.analyzers.secret_scanner import scan_secrets
-from app.analyzers.static_analysis.bandit_analyzer import run_bandit
-from app.analyzers.static_analysis.base import StaticAnalysisRun, filter_files_by_suffix
-from app.analyzers.static_analysis.eslint_analyzer import run_eslint
-from app.analyzers.static_analysis.ruff_analyzer import run_ruff
 from app.analyzers.structure_analyzer import (
-    LANGUAGE_BY_EXTENSION,
     StructureAnalysisResult,
     analyze_structure,
 )
-from app.core.config import (
-    BACKEND_DIR,
-    Settings,
-    build_git_subprocess_env,
-    get_git_executable,
-)
+from app.core.config import Settings
 from app.models.review_job import ReviewJob, ReviewJobStatus
 from app.repositories.mongodb_repository import (
     FileAnalysisResultRepository,
@@ -45,28 +32,41 @@ from app.repositories.repository_repository import RepositoryRepository
 from app.repositories.review_job_repository import ReviewJobRepository
 from app.schemas.mongodb import (
     FileAnalysisResultDocument,
-    FileTreeEntry,
-    ParsedStaticIssue,
-    RawStaticAnalysisOutputDocument,
     RepoSummaryResultDocument,
 )
 from app.schemas.normalized_issue import NormalizedIssue
-from app.services.code_indexing_service import CodeIndexingService
+from app.services.code_indexing.service import CodeIndexingService
 from app.services.notification_service import publish_job_progress
-from app.services.repo_summary_service import RepoSummaryService
-from app.services.report_generation_service import AI_REPORT_MODEL, build_static_report
+from app.services.repo_summary.service import RepoSummaryService
+from app.services.reporting.generation import AI_REPORT_MODEL, build_static_report
+from app.services.review_pipeline.artifacts import (
+    attach_source_context,
+    build_flat_file_tree_entries,
+    build_raw_static_document,
+    build_static_analysis_runs,
+    get_rule_profile,
+)
+from app.services.review_pipeline.errors import (
+    ReviewJobCanceled,
+    ReviewPipelineError,
+    build_error_message,
+)
+from app.services.review_pipeline.workspace import (
+    clone_repository,
+    get_commit_sha,
+    validate_repo_size,
+)
 
 logger = logging.getLogger(__name__)
 
-CLONE_TIMEOUT_SECONDS = 120
-
-
-class ReviewPipelineError(Exception):
-    """Expected pipeline failure with a user-facing error message."""
-
-
-class ReviewJobCanceled(Exception):
-    """Raised when a review job was removed while the worker was running."""
+__all__ = [
+    "ReviewJobCanceled",
+    "ReviewPipelineError",
+    "ReviewPipelineService",
+    "StructureAnalysisResult",
+    "build_error_message",
+    "get_rule_profile",
+]
 
 
 class ReviewPipelineService:
@@ -127,6 +127,63 @@ class ReviewPipelineService:
     ) -> None:
         await self._ensure_job_active(review_job.id)
         get_review_mode(review_job.options)
+
+        review_job = await self._clone_and_prepare_repository(
+            review_job,
+            sandbox_path,
+        )
+        filtered_files = self._build_filtered_file_manifest(review_job, sandbox_path)
+        await self._prepare_pre_agent_review(
+            review_job,
+            sandbox_path,
+            filtered_files,
+        )
+        await self._run_ai_review_and_complete(review_job, sandbox_path)
+
+    async def _prepare_pre_agent_review(
+        self,
+        review_job: ReviewJob,
+        sandbox_path: Path,
+        filtered_files: list[Path],
+    ) -> None:
+        await self._ensure_job_active(review_job.id)
+        structure = await self._analyze_structure(
+            review_job,
+            sandbox_path,
+            filtered_files,
+        )
+
+        await self._ensure_job_active(review_job.id)
+        await self._generate_repo_summary(review_job, sandbox_path)
+
+        await self._ensure_job_active(review_job.id)
+        issues = await self._collect_static_issues(
+            review_job,
+            sandbox_path,
+            filtered_files,
+        )
+
+        await self._ensure_job_active(review_job.id)
+        await self._chunk_code(
+            review_job,
+            sandbox_path,
+            filtered_files,
+            issues,
+        )
+
+        await self._ensure_job_active(review_job.id)
+        await self._persist_pre_agent_report(
+            review_job,
+            structure,
+            filtered_files,
+            issues,
+        )
+
+    async def _clone_and_prepare_repository(
+        self,
+        review_job: ReviewJob,
+        sandbox_path: Path,
+    ) -> ReviewJob:
         await self._transition(
             review_job,
             ReviewJobStatus.CLONING,
@@ -140,14 +197,23 @@ class ReviewPipelineService:
             max_size_bytes=self.settings.max_repo_size_mb * 1024 * 1024,
         )
         commit_sha = get_commit_sha(sandbox_path)
-        review_job = await self.review_job_repository.update_clone_metadata(
+        updated_job = await self.review_job_repository.update_clone_metadata(
             review_job,
             commit_sha=commit_sha,
         )
         await self._publish_status(
-            review_job, ReviewJobStatus.CLONING, 20, "Repository cloned"
+            updated_job,
+            ReviewJobStatus.CLONING,
+            20,
+            "Repository cloned",
         )
+        return updated_job
 
+    def _build_filtered_file_manifest(
+        self,
+        review_job: ReviewJob,
+        sandbox_path: Path,
+    ) -> list[Path]:
         file_manifest = build_file_manifest(
             sandbox_path,
             max_source_file_size_bytes=self.settings.max_source_file_size_bytes,
@@ -160,33 +226,26 @@ class ReviewPipelineService:
             len(filtered_files),
             file_manifest.scanned_count,
         )
-        await self._ensure_job_active(review_job.id)
-        structure = await self._analyze_structure(
-            review_job, sandbox_path, filtered_files
-        )
-        await self._ensure_job_active(review_job.id)
-        await self._generate_repo_summary(review_job, sandbox_path)
-        await self._ensure_job_active(review_job.id)
+        return filtered_files
+
+    async def _collect_static_issues(
+        self,
+        review_job: ReviewJob,
+        sandbox_path: Path,
+        filtered_files: list[Path],
+    ) -> list[NormalizedIssue]:
         issues = await self._run_static_analysis(
             review_job, sandbox_path, filtered_files
         )
         issues.extend(scan_secrets(sandbox_path, filtered_files))
         attach_source_context(issues, sandbox_path)
-        await self._ensure_job_active(review_job.id)
-        await self._chunk_code(
-            review_job,
-            sandbox_path,
-            filtered_files,
-            issues,
-        )
-        await self._ensure_job_active(review_job.id)
-        await self._persist_pre_agent_report(
-            review_job,
-            structure,
-            filtered_files,
-            issues,
-        )
-        await self._ensure_job_active(review_job.id)
+        return issues
+
+    async def _run_ai_review_and_complete(
+        self,
+        review_job: ReviewJob,
+        sandbox_path: Path,
+    ) -> None:
         await self._run_ai_agent(review_job, sandbox_path)
         await self._ensure_job_active(review_job.id)
         await self._require_ai_generated_report(review_job.id)
@@ -464,256 +523,3 @@ class ReviewPipelineService:
                 "message": message,
             },
         )
-
-
-def clone_repository(review_job: ReviewJob, sandbox_path: Path) -> None:
-    """Clone a repository into its sandbox path."""
-
-    cleanup_sandbox(sandbox_path, sandbox_path.parent)
-    sandbox_path.parent.mkdir(parents=True, exist_ok=True)
-    git_executable = _get_required_git_executable()
-    repository_url = review_job.repository.url
-    branch = review_job.branch or review_job.repository.default_branch
-    command = [
-        git_executable,
-        "clone",
-        "--depth",
-        "1",
-        "--branch",
-        branch,
-        "--single-branch",
-        repository_url,
-        str(sandbox_path),
-    ]
-    completed_process = subprocess.run(
-        command,
-        capture_output=True,
-        check=False,
-        env=build_git_subprocess_env(),
-        text=True,
-        timeout=CLONE_TIMEOUT_SECONDS,
-    )
-    if completed_process.returncode != 0:
-        detail = completed_process.stderr.strip() or completed_process.stdout.strip()
-        raise ReviewPipelineError(f"Git clone failed: {detail}")
-
-
-def validate_repo_size(sandbox_path: Path, *, max_size_bytes: int) -> None:
-    """Reject cloned repositories that exceed the configured sandbox size."""
-
-    total_size = sum(
-        file_path.stat().st_size
-        for file_path in sandbox_path.rglob("*")
-        if file_path.is_file()
-    )
-    if total_size <= max_size_bytes:
-        return
-
-    size_mb = total_size / 1024 / 1024
-    max_size_mb = max_size_bytes / 1024 / 1024
-    raise ReviewPipelineError(
-        f"Repository is too large: {size_mb:.1f}MB exceeds {max_size_mb:.0f}MB"
-    )
-
-
-def get_commit_sha(sandbox_path: Path) -> str:
-    """Return the current cloned commit SHA."""
-
-    git_executable = _get_required_git_executable()
-    completed_process = subprocess.run(
-        [git_executable, "rev-parse", "HEAD"],
-        cwd=sandbox_path,
-        capture_output=True,
-        check=False,
-        text=True,
-        timeout=10,
-    )
-    if completed_process.returncode != 0:
-        raise ReviewPipelineError("Unable to read cloned repository commit SHA")
-
-    return completed_process.stdout.strip()
-
-
-def _get_required_git_executable() -> str:
-    try:
-        return get_git_executable()
-    except RuntimeError as error:
-        raise ReviewPipelineError(str(error)) from error
-
-
-def build_static_analysis_runs(
-    sandbox_path: Path,
-    filtered_files: list[Path],
-    *,
-    timeout_seconds: int,
-) -> list[StaticAnalysisRun]:
-    """Run supported static analyzers for matching filtered files."""
-
-    python_files = filter_files_by_suffix(filtered_files, {".py"})
-    javascript_files = filter_files_by_suffix(
-        filtered_files,
-        {".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx"},
-    )
-    return [
-        run_ruff(sandbox_path, python_files, timeout_seconds=timeout_seconds),
-        run_bandit(sandbox_path, python_files, timeout_seconds=timeout_seconds),
-        run_eslint(
-            sandbox_path,
-            javascript_files,
-            config_path=BACKEND_DIR / "eslint.config.mjs",
-            timeout_seconds=timeout_seconds,
-        ),
-    ]
-
-
-def get_rule_profile(options: dict[str, object] | None) -> dict[str, object] | None:
-    """Return the explicit roadmap profile; null means roadmap is disabled."""
-
-    try:
-        profile = parse_roadmap_profile(options)
-    except ValueError as error:
-        raise ReviewPipelineError(str(error)) from error
-    if profile is None:
-        return None
-
-    output: dict[str, object] = {"id": profile.profile_id}
-    if profile.weeks_included is not None:
-        output["weeks_included"] = list(profile.weeks_included)
-    return output
-
-
-def build_raw_static_document(
-    job_id: UUID,
-    analysis_run: StaticAnalysisRun,
-) -> RawStaticAnalysisOutputDocument:
-    """Build the MongoDB raw output document for one analyzer run."""
-
-    return RawStaticAnalysisOutputDocument(
-        job_id=job_id,
-        tool=analysis_run.tool,
-        language=analysis_run.language,
-        ran_at=datetime.now(UTC),
-        exit_code=analysis_run.exit_code,
-        stdout=analysis_run.stdout,
-        stderr=analysis_run.stderr,
-        duration_ms=analysis_run.duration_ms,
-        parsed_issues=[
-            ParsedStaticIssue(
-                file_path=issue.file_path or "",
-                line_start=issue.line_start,
-                rule_id=get_rule_id(issue.raw_output),
-                message=issue.description,
-                severity=issue.severity.value,
-                category=issue.category.value,
-            )
-            for issue in analysis_run.issues
-        ],
-    )
-
-
-def get_rule_id(raw_output: dict[str, object] | None) -> str | None:
-    """Extract a static analyzer rule id from raw output when available."""
-
-    if raw_output is None:
-        return None
-
-    for key in ("code", "test_id", "ruleId"):
-        value = raw_output.get(key)
-        if value is not None:
-            return str(value)
-
-    return None
-
-
-def attach_source_context(
-    issues: list[NormalizedIssue],
-    sandbox_path: Path,
-    *,
-    context_radius: int = 2,
-) -> None:
-    """Attach nearby source lines to issue raw output before sandbox cleanup."""
-
-    sandbox_root = sandbox_path.resolve()
-    for issue in issues:
-        if issue.file_path is None or issue.line_start is None:
-            continue
-
-        source_path = (sandbox_root / issue.file_path).resolve()
-        try:
-            source_path.relative_to(sandbox_root)
-        except ValueError:
-            continue
-
-        if not source_path.is_file():
-            continue
-
-        lines = source_path.read_text(
-            encoding="utf-8",
-            errors="ignore",
-        ).splitlines()
-        if not lines:
-            continue
-
-        first_line = max(1, issue.line_start - context_radius)
-        last_line = min(
-            len(lines),
-            (issue.line_end or issue.line_start) + context_radius,
-        )
-        context_lines = lines[first_line - 1 : last_line]
-        raw_output = dict(issue.raw_output or {})
-        raw_output["source_context"] = {
-            "start_line": first_line,
-            "lines": context_lines,
-        }
-        issue.raw_output = raw_output
-
-
-def build_flat_file_tree_entries(
-    sandbox_path: Path,
-    filtered_files: list[Path],
-) -> list[FileTreeEntry]:
-    """Build flat MongoDB file entries from filtered files."""
-
-    return [
-        FileTreeEntry(
-            path=to_relative_posix_path(file_path, sandbox_path),
-            language=LANGUAGE_BY_EXTENSION.get(file_path.suffix.lower()),
-            size_bytes=file_path.stat().st_size,
-            line_count=count_lines(file_path),
-            should_review=True,
-        )
-        for file_path in filtered_files
-    ]
-
-
-def count_lines(file_path: Path) -> int:
-    """Count text lines without failing the whole analysis for one file."""
-
-    try:
-        return len(file_path.read_text(encoding="utf-8", errors="ignore").splitlines())
-    except OSError:
-        return 0
-
-
-def cleanup_sandbox(sandbox_path: Path, sandbox_root: Path) -> None:
-    """Remove one sandbox path after confirming it is under the sandbox root."""
-
-    resolved_root = sandbox_root.resolve()
-    resolved_path = sandbox_path.resolve()
-    if resolved_path == resolved_root or resolved_root not in resolved_path.parents:
-        raise ReviewPipelineError(f"Refusing to cleanup unsafe path: {resolved_path}")
-
-    if resolved_path.exists():
-        shutil.rmtree(resolved_path)
-
-
-def build_error_message(error: Exception) -> str:
-    """Return a stable user-facing pipeline error message."""
-
-    if isinstance(error, ReviewPipelineError):
-        return str(error)
-
-    if isinstance(error, subprocess.TimeoutExpired):
-        return f"Command timed out after {error.timeout}s"
-
-    return f"Review pipeline failed: {error}"

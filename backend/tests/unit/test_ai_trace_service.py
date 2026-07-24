@@ -4,15 +4,13 @@ from datetime import UTC, datetime
 
 from app.models.review_job import ReviewJobStatus
 from app.schemas.ai_trace import AIToolCallTrace, AITraceCoverage
-from app.services.ai_trace_service import (
-    _ai_stage_status,
+from app.services.ai_trace.coverage import (
     _probe_slot_counts,
     _read_chunk_coverage,
-    _report_stage_status,
-    _token_totals,
-    _token_usage_dict,
 )
-from app.services.report_generation_service import AI_REPORT_MODEL
+from app.services.ai_trace.events import _token_totals, _token_usage_dict
+from app.services.ai_trace.stages import _ai_stage_status, _report_stage_status
+from app.services.reporting.generation import AI_REPORT_MODEL
 
 
 def test_read_chunk_coverage_counts_only_successful_unique_chunks() -> None:

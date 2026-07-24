@@ -13,13 +13,13 @@ from app.models.review_issue import (
     IssueSource,
     ReviewIssue,
 )
-from app.services.report_service import (
-    ReportService,
+from app.services.reporting.issue_presenter import (
     _group_issues,
     _issue_group_key,
     _issue_group_response,
     _source_context_from_chunk,
 )
+from app.services.reporting.service import ReportService
 
 
 @pytest.mark.asyncio

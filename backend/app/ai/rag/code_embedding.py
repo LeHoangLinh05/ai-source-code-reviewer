@@ -2,30 +2,65 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
-import re
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
-from http import HTTPStatus
 from pathlib import Path
 from typing import Any, Protocol
 from uuid import UUID
 
+from app.ai.rag.code_embedding_chunks import (
+    CODE_CHUNKER_VERSION,
+    CODE_EMBEDDING_MODEL_VERSION,
+    UNKNOWN_CODE_EMBEDDING_DIMENSION,
+    _can_send_chunk_to_remote,
+    _chunk_id,
+    _chunk_metadata,
+    _common_index_generation_key,
+    _common_repo_branch_key,
+    _count_sensitive_chunks,
+    _token_limited_batches,
+    _truncate_embedding_text,
+    build_content_hash,
+    build_embedding_cache_id,
+    build_index_generation_key,
+    build_repo_branch_key,
+    code_embedding_model_version,
+    prepare_code_embedding_chunks,
+)
+from app.ai.rag.code_embedding_client import (
+    _code_embedding_api_key,
+    _code_embedding_base_url,
+    _OpenAICompatibleCodeEmbedder,
+)
 from app.core.config import get_settings
 from app.schemas.mongodb import ChunkMetadataDocument
 
 logger = logging.getLogger(__name__)
 
 CODE_CHUNKS_COLLECTION = "code_chunks"
-CODE_EMBEDDING_MODEL_VERSION = "remote-api-v1"
 CODE_EMBEDDING_DIMENSION = 1536
-UNKNOWN_CODE_EMBEDDING_DIMENSION = 0
-CODE_CHUNKER_VERSION = "v1"
-MAX_RETRYABLE_HTTP_STATUS_CODE = 599
-MAX_EMBEDDING_RETRY_DELAY_SECONDS = 60.0
+
+__all__ = [
+    "CODE_CHUNKER_VERSION",
+    "CODE_CHUNKS_COLLECTION",
+    "CODE_EMBEDDING_DIMENSION",
+    "CODE_EMBEDDING_MODEL_VERSION",
+    "CodeEmbeddingBatchTrace",
+    "CodeEmbeddingIndexSummary",
+    "CodeEmbeddingStore",
+    "CodeVectorQuery",
+    "CodeVectorSearchResult",
+    "DisabledCodeEmbeddingStore",
+    "build_content_hash",
+    "build_embedding_cache_id",
+    "build_index_generation_key",
+    "build_repo_branch_key",
+    "code_embedding_model_version",
+    "prepare_code_embedding_chunks",
+]
 
 
 @dataclass(slots=True, frozen=True)
@@ -573,124 +608,6 @@ class DisabledCodeEmbeddingStore(CodeEmbeddingStore):
         """No-op cleanup for disabled code vector storage."""
 
 
-class _OpenAICompatibleCodeEmbedder:
-    """Remote embedding adapter for OpenAI-compatible embedding APIs."""
-
-    def __init__(
-        self,
-        *,
-        provider: str,
-        model_name: str,
-        api_key: str,
-        base_url: str,
-        output_dimension: int | None,
-        max_retries: int,
-        retry_base_delay_seconds: float,
-    ) -> None:
-        self.provider = provider
-        self.model_name = model_name
-        self.base_url = base_url.rstrip("/")
-        self.output_dimension = output_dimension
-        self.max_retries = max_retries
-        self.retry_base_delay_seconds = retry_base_delay_seconds
-        self.headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        }
-        self.last_token_usage: dict[str, int] | None = None
-        self._client: Any | None = None
-
-    def embed_documents(self, texts: list[str]) -> list[list[float]]:
-        return self._embed(texts, input_type="passage")
-
-    def embed_query(self, text: str) -> list[float]:
-        return self.embed_queries([text])[0]
-
-    def embed_queries(self, texts: list[str]) -> list[list[float]]:
-        return self._embed(texts, input_type="query")
-
-    def close(self) -> None:
-        """Close the reusable HTTP client if it has been opened."""
-
-        if self._client is None:
-            return
-
-        close = getattr(self._client, "close", None)
-        if callable(close):
-            close()
-        self._client = None
-
-    def _embed(self, texts: list[str], *, input_type: str) -> list[list[float]]:
-        if not texts:
-            return []
-
-        try:
-            import httpx
-        except ImportError as error:
-            raise RuntimeError(
-                "httpx is required for remote code semantic search embeddings"
-            ) from error
-
-        payload: dict[str, object] = {
-            "model": self.model_name,
-            "input": texts,
-            "encoding_format": "float",
-        }
-        _ = input_type
-        if self.provider == "mistral":
-            if self.output_dimension is not None:
-                payload["output_dimension"] = self.output_dimension
-            payload["output_dtype"] = "float"
-
-        if self._client is None:
-            self._client = httpx.Client(timeout=60.0)
-
-        response = self._post_with_retries(self._client, payload)
-
-        response_payload = response.json()
-        self.last_token_usage = _token_usage_from_response(response_payload)
-        return _embeddings_from_response(response_payload)
-
-    def _post_with_retries(self, client: Any, payload: dict[str, object]) -> Any:
-        last_error: Exception | None = None
-        for attempt in range(self.max_retries + 1):
-            response = client.post(
-                f"{self.base_url}/embeddings",
-                headers=self.headers,
-                json=payload,
-            )
-            try:
-                response.raise_for_status()
-                return response
-            except Exception as error:
-                last_error = error
-                if not _should_retry_embedding_response(
-                    response, attempt, self.max_retries
-                ):
-                    detail = _embedding_error_detail(response)
-                    raise RuntimeError(
-                        f"{self.provider} code embedding request failed: "
-                        f"HTTP {response.status_code}{detail}"
-                    ) from error
-
-                delay_seconds = _embedding_retry_delay_seconds(
-                    response=response,
-                    attempt=attempt,
-                    base_delay_seconds=self.retry_base_delay_seconds,
-                )
-                logger.warning(
-                    "%s code embedding request failed with HTTP %s; retrying in %.1fs",
-                    self.provider,
-                    response.status_code,
-                    delay_seconds,
-                )
-                time.sleep(delay_seconds)
-
-        raise RuntimeError(
-            f"{self.provider} code embedding request failed after retries"
-        ) from last_error
-
-
 def _build_chroma_client(persist_path: Path) -> Any:
     try:
         import chromadb
@@ -698,123 +615,6 @@ def _build_chroma_client(persist_path: Path) -> Any:
         raise RuntimeError("chromadb is required for code semantic search") from error
 
     return chromadb.PersistentClient(path=str(persist_path))
-
-
-def _code_embedding_api_key(*, provider: str, settings: Any) -> str:
-    if provider == "mistral":
-        secret = settings.mistral_api_key
-    elif provider == "openrouter":
-        secret = settings.openrouter_api_key
-    else:
-        secret = settings.openai_api_key
-    api_key = secret.get_secret_value() if secret is not None else ""
-    if not api_key:
-        raise RuntimeError(f"{provider} API key is required for code embeddings")
-
-    return api_key
-
-
-def _code_embedding_base_url(*, provider: str, settings: Any) -> str:
-    if settings.code_embedding_base_url:
-        return str(settings.code_embedding_base_url)
-
-    if provider == "mistral":
-        return str(settings.mistral_base_url)
-
-    if provider == "openrouter":
-        return str(settings.openrouter_base_url)
-
-    return "https://api.openai.com/v1"
-
-
-def _should_retry_embedding_response(
-    response: Any,
-    attempt: int,
-    max_retries: int,
-) -> bool:
-    if attempt >= max_retries:
-        return False
-
-    status_code = int(getattr(response, "status_code", 0) or 0)
-    return (
-        status_code == HTTPStatus.TOO_MANY_REQUESTS
-        or HTTPStatus.INTERNAL_SERVER_ERROR
-        <= status_code
-        <= MAX_RETRYABLE_HTTP_STATUS_CODE
-    )
-
-
-def _embedding_retry_delay_seconds(
-    *,
-    response: Any,
-    attempt: int,
-    base_delay_seconds: float,
-) -> float:
-    retry_after = _retry_after_seconds(response)
-    if retry_after is not None:
-        return retry_after
-
-    return min(
-        base_delay_seconds * (2**attempt),
-        MAX_EMBEDDING_RETRY_DELAY_SECONDS,
-    )
-
-
-def _retry_after_seconds(response: Any) -> float | None:
-    headers = getattr(response, "headers", None)
-    if headers is None:
-        return None
-
-    value = headers.get("retry-after")
-    if value is None:
-        value = headers.get("Retry-After")
-    if value is None:
-        return None
-
-    try:
-        delay = float(value)
-    except ValueError:
-        return None
-
-    return max(0.0, delay)
-
-
-def _embedding_error_detail(response: Any) -> str:
-    text = getattr(response, "text", "")
-    if not isinstance(text, str) or not text.strip():
-        return ""
-
-    compact_text = " ".join(text.split())
-    return f": {compact_text[:500]}"
-
-
-def _embeddings_from_response(response_payload: object) -> list[list[float]]:
-    if not isinstance(response_payload, dict):
-        raise RuntimeError("Code embedding API returned an invalid response")
-
-    data = response_payload.get("data")
-    if not isinstance(data, list):
-        raise RuntimeError("Code embedding API response has no data array")
-
-    indexed_embeddings: list[tuple[int, object]] = []
-    for default_index, item in enumerate(data):
-        if not isinstance(item, dict):
-            raise RuntimeError("Code embedding API returned an invalid item")
-
-        index = item.get("index", default_index)
-        if not isinstance(index, int):
-            raise RuntimeError("Code embedding API returned an invalid index")
-
-        indexed_embeddings.append((index, item.get("embedding")))
-
-    return [
-        embedding
-        for _index, embedding in sorted(
-            indexed_embeddings,
-            key=lambda indexed_embedding: indexed_embedding[0],
-        )
-        if isinstance(embedding, list)
-    ]
 
 
 def _vector_results_from_query_payload(
@@ -840,278 +640,6 @@ def _vector_results_from_query_payload(
     return results
 
 
-def prepare_code_embedding_chunks(
-    chunks: list[ChunkMetadataDocument],
-    *,
-    repository_id: str | UUID | None,
-    branch: str | None,
-    commit_sha: str | None,
-    provider: str,
-    model_name: str,
-    model_version: str,
-    dimension: int | None,
-) -> list[ChunkMetadataDocument]:
-    """Attach deterministic repo-branch cache metadata to source chunks."""
-
-    if repository_id is None:
-        return chunks
-
-    normalized_branch = _normalize_branch(branch)
-    if normalized_branch is None:
-        return chunks
-
-    repo_branch_key = build_repo_branch_key(
-        repository_id=repository_id,
-        branch=normalized_branch,
-    )
-    index_generation_key = build_index_generation_key(
-        repo_branch_key=repo_branch_key,
-        commit_sha=commit_sha,
-    )
-    occurrences: dict[tuple[str, str], int] = {}
-    prepared_chunks: list[ChunkMetadataDocument] = []
-    for chunk in chunks:
-        content = chunk.chunk_text if isinstance(chunk.chunk_text, str) else ""
-        content_hash = build_content_hash(content)
-        occurrence_key = (chunk.file_path, content_hash)
-        occurrence_index = occurrences.get(occurrence_key, 0)
-        occurrences[occurrence_key] = occurrence_index + 1
-        embedding_cache_id = build_embedding_cache_id(
-            index_generation_key=index_generation_key,
-            file_path=chunk.file_path,
-            content_hash=content_hash,
-            occurrence_index=occurrence_index,
-            provider=provider,
-            model_name=model_name,
-            model_version=model_version,
-            dimension=dimension,
-            chunker_version=CODE_CHUNKER_VERSION,
-        )
-        prepared_chunks.append(
-            chunk.model_copy(
-                update={
-                    "repository_id": repository_id,
-                    "branch": normalized_branch,
-                    "commit_sha": commit_sha,
-                    "repo_branch_key": repo_branch_key,
-                    "index_generation_key": index_generation_key,
-                    "content_hash": content_hash,
-                    "embedding_cache_id": embedding_cache_id,
-                    "occurrence_index": occurrence_index,
-                    "chunker_version": CODE_CHUNKER_VERSION,
-                }
-            )
-        )
-
-    return prepared_chunks
-
-
-def build_repo_branch_key(*, repository_id: str | UUID, branch: str) -> str:
-    """Return a stable cache scope for one repository branch."""
-
-    return _sha256_text(f"{repository_id}\0{branch}")
-
-
-def build_index_generation_key(*, repo_branch_key: str, commit_sha: str | None) -> str:
-    """Return the immutable vector scope for one branch snapshot."""
-
-    normalized_commit = (commit_sha or "").strip()
-    if not normalized_commit:
-        return repo_branch_key
-
-    return _sha256_text(f"{repo_branch_key}\0{normalized_commit}")
-
-
-def build_content_hash(content: str) -> str:
-    """Return the content hash used to detect changed chunks."""
-
-    return _sha256_text(content)
-
-
-def build_embedding_cache_id(
-    *,
-    index_generation_key: str,
-    file_path: str,
-    content_hash: str,
-    occurrence_index: int,
-    provider: str,
-    model_name: str,
-    model_version: str,
-    dimension: int | None,
-    chunker_version: str,
-) -> str:
-    """Return the vector id for one cacheable source chunk."""
-
-    fingerprint = "\0".join(
-        [
-            index_generation_key,
-            file_path,
-            content_hash,
-            str(occurrence_index),
-            provider,
-            model_name,
-            model_version,
-            str(dimension or UNKNOWN_CODE_EMBEDDING_DIMENSION),
-            chunker_version,
-        ]
-    )
-    return _sha256_text(fingerprint)
-
-
-def code_embedding_model_version(provider: str) -> str:
-    """Return the cache-significant model version label for a provider."""
-
-    _ = provider
-    return CODE_EMBEDDING_MODEL_VERSION
-
-
-def _chunk_id(chunk: ChunkMetadataDocument) -> str:
-    if chunk.embedding_cache_id:
-        return chunk.embedding_cache_id
-
-    return f"{chunk.job_id}:{chunk.file_path}:{chunk.chunk_index}"
-
-
-def _chunk_metadata(
-    chunk: ChunkMetadataDocument,
-) -> dict[str, str | int | float | bool]:
-    metadata: dict[str, str | int | float | bool] = {
-        "job_id": str(chunk.job_id),
-        "file_path": chunk.file_path,
-        "chunk_index": chunk.chunk_index,
-        "line_start": chunk.line_start,
-        "line_end": chunk.line_end,
-        "function_name": chunk.function_name or "",
-        "class_name": chunk.class_name or "",
-        "language": chunk.language,
-        "risk_area": chunk.risk_area or "general",
-        "module": chunk.module or "",
-        "imports": json.dumps(chunk.imports, ensure_ascii=False),
-    }
-    optional_values: dict[str, str | int | None] = {
-        "repository_id": str(chunk.repository_id) if chunk.repository_id else None,
-        "branch": chunk.branch,
-        "commit_sha": chunk.commit_sha,
-        "repo_branch_key": chunk.repo_branch_key,
-        "index_generation_key": chunk.index_generation_key,
-        "content_hash": chunk.content_hash,
-        "embedding_cache_id": chunk.embedding_cache_id,
-        "occurrence_index": chunk.occurrence_index,
-        "chunker_version": chunk.chunker_version,
-    }
-    for key, value in optional_values.items():
-        if value is not None:
-            metadata[key] = value
-
-    return metadata
-
-
-def _common_repo_branch_key(chunks: list[ChunkMetadataDocument]) -> str | None:
-    repo_branch_keys = {
-        chunk.repo_branch_key for chunk in chunks if chunk.repo_branch_key
-    }
-    if len(repo_branch_keys) == 1:
-        return next(iter(repo_branch_keys))
-
-    return None
-
-
-def _common_index_generation_key(chunks: list[ChunkMetadataDocument]) -> str | None:
-    index_generation_keys = {
-        chunk.index_generation_key for chunk in chunks if chunk.index_generation_key
-    }
-    if len(index_generation_keys) == 1:
-        return next(iter(index_generation_keys))
-
-    return None
-
-
-def _count_sensitive_chunks(chunks: list[ChunkMetadataDocument]) -> int:
-    return sum(1 for chunk in chunks if not _can_send_chunk_to_remote(chunk))
-
-
-def _can_send_chunk_to_remote(chunk: ChunkMetadataDocument) -> bool:
-    content = chunk.chunk_text if isinstance(chunk.chunk_text, str) else ""
-    return not _contains_high_confidence_secret(content)
-
-
-def _contains_high_confidence_secret(content: str) -> bool:
-    if "PRIVATE KEY-----" in content:
-        return True
-
-    secret_patterns = (
-        r"\bAKIA[0-9A-Z]{16}\b",
-        r"\bghp_[A-Za-z0-9_]{30,}\b",
-        r"\bxox[baprs]-[A-Za-z0-9-]{20,}\b",
-        r"\bsk-[A-Za-z0-9]{32,}\b",
-        r"(?i)\b(api[_-]?key|secret|password|token)\b\s*[:=]\s*['\"][^'\"]{24,}",
-    )
-    return any(re.search(pattern, content) for pattern in secret_patterns)
-
-
-def _normalize_branch(branch: str | None) -> str | None:
-    if branch is None:
-        return None
-
-    normalized = branch.strip()
-    return normalized or None
-
-
-def _sha256_text(value: str) -> str:
-    return hashlib.sha256(value.encode("utf-8")).hexdigest()
-
-
-def _batched(
-    chunks: list[ChunkMetadataDocument],
-    batch_size: int,
-) -> list[list[ChunkMetadataDocument]]:
-    return [
-        chunks[start : start + batch_size]
-        for start in range(0, len(chunks), batch_size)
-    ]
-
-
-def _token_limited_batches(
-    chunks: list[ChunkMetadataDocument],
-    *,
-    max_items: int,
-    max_tokens: int,
-    max_item_tokens: int,
-) -> list[list[ChunkMetadataDocument]]:
-    batches: list[list[ChunkMetadataDocument]] = []
-    current_batch: list[ChunkMetadataDocument] = []
-    current_tokens = 0
-    for chunk in chunks:
-        chunk_tokens = min(max(chunk.token_count, 1), max_item_tokens)
-        if current_batch and (
-            len(current_batch) >= max_items
-            or current_tokens + chunk_tokens > max_tokens
-        ):
-            batches.append(current_batch)
-            current_batch = []
-            current_tokens = 0
-
-        current_batch.append(chunk)
-        current_tokens += chunk_tokens
-
-    if current_batch:
-        batches.append(current_batch)
-
-    return batches
-
-
-def _truncate_embedding_text(text: str, *, max_tokens: int) -> str:
-    max_chars = max(1, max_tokens * 6)
-    if len(text) > max_chars:
-        text = text[:max_chars]
-
-    tokens = re.findall(r"\S+", text)
-    if len(tokens) <= max_tokens:
-        return text
-
-    return " ".join(tokens[:max_tokens])
-
-
 def _query_groups(queries: list[CodeVectorQuery]) -> list[list[int]]:
     groups_by_where: dict[str, list[int]] = {}
     for index, query in enumerate(queries):
@@ -1123,31 +651,6 @@ def _query_groups(queries: list[CodeVectorQuery]) -> list[list[int]]:
 
 def _duration_ms(started_at: float) -> int:
     return max(0, int((time.perf_counter() - started_at) * 1000))
-
-
-def _token_usage_from_response(response_payload: object) -> dict[str, int] | None:
-    if not isinstance(response_payload, dict):
-        return None
-    usage = response_payload.get("usage")
-    if not isinstance(usage, dict):
-        return None
-    input_tokens = _usage_int(usage, ("input_tokens", "prompt_tokens"))
-    total_tokens = _usage_int(usage, ("total_tokens",))
-    if total_tokens == 0:
-        total_tokens = input_tokens
-    result = {
-        "input_tokens": input_tokens,
-        "total_tokens": total_tokens,
-    }
-    return result if any(result.values()) else None
-
-
-def _usage_int(value: dict[str, object], keys: tuple[str, ...]) -> int:
-    for key in keys:
-        item = value.get(key)
-        if isinstance(item, int) and item >= 0:
-            return item
-    return 0
 
 
 def _validated_embeddings(

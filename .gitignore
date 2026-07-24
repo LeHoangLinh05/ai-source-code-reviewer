@@ -7,7 +7,8 @@ backend/.env.*
 
 *.md
 !/AGENTS.md
-!/style.md
+!/docs/auth/overview.md
+!/docs/design/style-guide.md
 
 __pycache__/
 *.py[cod]

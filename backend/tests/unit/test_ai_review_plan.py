@@ -1,6 +1,6 @@
 """Tests for AI chunk review plan selection."""
 
-from app.ai.review_plan import (
+from app.ai.review.plan import (
     REVIEW_MODE_FULL_AUDIT,
     REVIEW_MODE_SMART,
     build_chunk_review_plan,

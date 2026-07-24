@@ -2,57 +2,41 @@
 
 from __future__ import annotations
 
-import json
-import logging
 from collections import Counter
 from typing import Any, Protocol
 from uuid import UUID
 
-from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import delete, select
 
-from app.ai.json_utils import parse_json_object_text
-from app.ai.prompts import FINAL_REPORT_STRUCTURED_SYSTEM_PROMPT
-from app.ai.tool_runtime import ensure_ai_job_active, get_ai_tool_runtime
+from app.ai.reporting.draft import (
+    FinalReportDraft,
+    TechStackInput,
+    build_final_report_draft,
+    parse_final_report_draft_text,
+)
+from app.ai.tools.runtime import ensure_ai_job_active, get_ai_tool_runtime
 from app.db.mongodb import FILE_ANALYSIS_RESULTS_COLLECTION
 from app.models.review_issue import IssueCategory, IssueSeverity, ReviewIssue
 from app.models.review_report import ReviewReport
 from app.schemas.normalized_issue import NormalizedIssue
-from app.services.report_generation_service import (
+from app.services.reporting.generation import (
     AI_REPORT_MODEL,
     build_top_risky_files,
     calculate_report_scores,
 )
 
-logger = logging.getLogger(__name__)
-
-FALLBACK_TOP_PRIORITY_LIMIT = 10
 FINAL_REPORT_SYNTHESIS_TRACE_NAME = "final_report_synthesis"
 TOP_RISKY_FILE_LIMIT = 5
 
-TechStackInput = dict[str, object] | list[str]
-
-
-class FinalReportDraft(BaseModel):
-    """Structured LLM contract for the final report synthesis step."""
-
-    executive_summary: str = Field(min_length=1)
-    security_score: float = Field(ge=0.0, le=10.0)
-    maintainability_score: float = Field(ge=0.0, le=10.0)
-    performance_score: float = Field(ge=0.0, le=10.0)
-    overall_score: float = Field(ge=0.0, le=10.0)
-    top_priorities: list[str] = Field(default_factory=list)
-    tech_stack: TechStackInput | None = None
-
-    @model_validator(mode="before")
-    @classmethod
-    def normalize_top_priorities(cls, data: object) -> object:
-        if isinstance(data, dict) and "top_priorities" in data:
-            top_priorities = _optional_str_list(data.get("top_priorities"))
-            if top_priorities is not None:
-                return {**data, "top_priorities": top_priorities}
-
-        return data
+__all__ = [
+    "FinalReportDraft",
+    "ReportTraceWriter",
+    "build_final_report_draft",
+    "build_final_report_input",
+    "parse_final_report_draft_text",
+    "persist_final_report",
+    "synthesize_final_report",
+]
 
 
 class ReportTraceWriter(Protocol):
@@ -130,31 +114,6 @@ def build_final_report_input(
     )
 
 
-async def build_final_report_draft(
-    *,
-    report_input: str,
-    report_context: str,
-) -> tuple[FinalReportDraft, str]:
-    """Return a valid final-report draft, falling back deterministically if needed."""
-
-    try:
-        return (
-            await _invoke_structured_final_report(report_input),
-            "langchain_structured_output",
-        )
-    except Exception as error:
-        logger.warning("Structured final report generation failed: %s", error)
-
-    try:
-        return await _invoke_raw_json_final_report(report_input), "raw_json_output"
-    except Exception as error:
-        logger.warning("Raw JSON final report generation failed: %s", error)
-
-    return build_deterministic_final_report_draft(report_context), (
-        "deterministic_fallback"
-    )
-
-
 async def persist_final_report(
     *,
     job_id: UUID,
@@ -204,16 +163,6 @@ async def persist_final_report(
     await runtime.postgres_session.commit()
     await runtime.postgres_session.refresh(report)
     return {"status": "created", "report_id": str(report.id)}
-
-
-def parse_final_report_draft_text(text: str) -> FinalReportDraft:
-    """Parse a final-report draft from raw model text."""
-
-    payload = parse_json_object_text(text)
-    if payload is None:
-        raise ValueError("Final report JSON object was not found")
-
-    return FinalReportDraft.model_validate(payload)
 
 
 async def _load_issues(job_id: UUID) -> list[ReviewIssue]:
@@ -340,46 +289,6 @@ def _fallback_executive_summary(
     )
 
 
-def _optional_str(value: object) -> str | None:
-    if isinstance(value, str) and value:
-        return value
-
-    return None
-
-
-def _optional_str_list(value: object) -> list[str] | None:
-    if not isinstance(value, list):
-        return None
-
-    normalized_items: list[str] = []
-    for item in value:
-        normalized_item = _stringify_top_priority(item)
-        if normalized_item is not None:
-            normalized_items.append(normalized_item)
-
-    return normalized_items
-
-
-def _stringify_top_priority(value: object) -> str | None:
-    if isinstance(value, str):
-        return value.strip() or None
-
-    if isinstance(value, dict):
-        path = _optional_str(value.get("file_path")) or _optional_str(value.get("path"))
-        if path is not None:
-            return path
-
-        parts = [
-            _optional_str(value.get("severity")),
-            _optional_str(value.get("category")),
-            _optional_str(value.get("title")),
-            _optional_str(value.get("source")),
-        ]
-        return " | ".join(part for part in parts if part) or None
-
-    return str(value).strip() or None
-
-
 def _normalize_tech_stack(value: TechStackInput | None) -> dict[str, object]:
     if value is None:
         return {}
@@ -387,145 +296,3 @@ def _normalize_tech_stack(value: TechStackInput | None) -> dict[str, object]:
         return value
 
     return {"technologies": value}
-
-
-async def _invoke_structured_final_report(report_input: str) -> FinalReportDraft:
-    from app.ai.llm_config import run_with_configured_llm
-
-    async def call(llm: Any) -> FinalReportDraft:
-        structured_llm = llm.with_structured_output(FinalReportDraft)
-        result = await structured_llm.ainvoke(
-            [
-                ("system", FINAL_REPORT_STRUCTURED_SYSTEM_PROMPT),
-                ("human", report_input),
-            ]
-        )
-        if isinstance(result, FinalReportDraft):
-            return result
-
-        return FinalReportDraft.model_validate(result)
-
-    return await run_with_configured_llm(call)
-
-
-async def _invoke_raw_json_final_report(report_input: str) -> FinalReportDraft:
-    from app.ai.llm_config import run_with_configured_llm
-
-    async def call(llm: Any) -> FinalReportDraft:
-        result = await llm.ainvoke(
-            [
-                ("system", FINAL_REPORT_STRUCTURED_SYSTEM_PROMPT),
-                (
-                    "human",
-                    report_input + "\n\nReturn only a JSON object with these keys: "
-                    "executive_summary, security_score, maintainability_score, "
-                    "performance_score, overall_score, top_priorities, tech_stack.",
-                ),
-            ]
-        )
-        return parse_final_report_draft_text(_message_content(result))
-
-    return await run_with_configured_llm(call)
-
-
-def _message_content(result: object) -> str:
-    if isinstance(result, str):
-        return result
-
-    content = getattr(result, "content", None)
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        return "\n".join(_message_content_item_text(item) for item in content)
-
-    return str(result)
-
-
-def _message_content_item_text(item: object) -> str:
-    if isinstance(item, str):
-        return item
-    if isinstance(item, dict):
-        text = item.get("text")
-        if isinstance(text, str):
-            return text
-        content = item.get("content")
-        if isinstance(content, str):
-            return content
-
-    return str(item)
-
-
-def build_deterministic_final_report_draft(report_context: str) -> FinalReportDraft:
-    """Build a valid final-report draft from persisted issue context."""
-
-    context = _parse_report_context(report_context)
-    total_issues = _context_int(context.get("total_issues"))
-    severity_counts = _context_mapping(context.get("severity_counts"))
-    category_counts = _context_mapping(context.get("category_counts"))
-    top_priorities = _context_top_priorities(context.get("top_issues"))
-    executive_summary = (
-        "AI semantic review completed and persisted "
-        f"{total_issues} confirmed issues. Severity mix: "
-        f"{severity_counts.get('critical', 0)} critical, "
-        f"{severity_counts.get('high', 0)} high, "
-        f"{severity_counts.get('medium', 0)} medium, "
-        f"{severity_counts.get('low', 0)} low, and "
-        f"{severity_counts.get('info', 0)} informational. Main categories: "
-        f"security={category_counts.get('security', 0)}, "
-        f"bug={category_counts.get('bug', 0)}, "
-        f"performance={category_counts.get('performance', 0)}, "
-        f"maintainability={category_counts.get('maintainability', 0)}, "
-        f"style={category_counts.get('style', 0)}."
-    )
-    return FinalReportDraft(
-        executive_summary=executive_summary,
-        security_score=0.0,
-        maintainability_score=0.0,
-        performance_score=0.0,
-        overall_score=0.0,
-        top_priorities=top_priorities,
-        tech_stack={},
-    )
-
-
-def _parse_report_context(report_context: str) -> dict[str, object]:
-    try:
-        parsed = json.loads(report_context)
-    except json.JSONDecodeError:
-        return {}
-
-    return parsed if isinstance(parsed, dict) else {}
-
-
-def _context_int(value: object) -> int:
-    return value if isinstance(value, int) else 0
-
-
-def _context_mapping(value: object) -> dict[str, int]:
-    if not isinstance(value, dict):
-        return {}
-
-    return {str(key): item for key, item in value.items() if isinstance(item, int)}
-
-
-def _context_top_priorities(value: object) -> list[str]:
-    if not isinstance(value, list):
-        return []
-
-    priorities: list[str] = []
-    for item in value[:FALLBACK_TOP_PRIORITY_LIMIT]:
-        if not isinstance(item, dict):
-            continue
-
-        title = item.get("title")
-        file_path = item.get("file_path")
-        line_start = item.get("line_start")
-        if not isinstance(title, str) or not isinstance(file_path, str):
-            continue
-
-        if isinstance(line_start, int):
-            priorities.append(f"{title} ({file_path}:{line_start})")
-        else:
-            priorities.append(f"{title} ({file_path})")
-
-    return priorities

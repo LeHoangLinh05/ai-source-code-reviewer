@@ -1,6 +1,6 @@
 """Tests for backend-directed probe source evidence."""
 
-from app.ai.source_evidence import (
+from app.ai.review.source_evidence import (
     has_source_line_evidence,
     source_chunk_keys,
 )

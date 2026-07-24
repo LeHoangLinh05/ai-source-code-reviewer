@@ -21,9 +21,9 @@ from app.repositories.mongodb_repository import (
 from app.repositories.report_repository import ReportRepository
 from app.repositories.repository_repository import RepositoryRepository
 from app.repositories.review_job_repository import ReviewJobRepository
-from app.services.code_indexing_service import CodeIndexingService
+from app.services.code_indexing.service import CodeIndexingService
 from app.services.notification_service import publish_job_progress
-from app.services.review_pipeline_service import (
+from app.services.review_pipeline.service import (
     ReviewPipelineService,
     build_error_message,
 )

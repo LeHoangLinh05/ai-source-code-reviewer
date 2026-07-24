@@ -6,14 +6,14 @@ from uuid import UUID
 
 from sqlalchemy import select
 
-from app.ai.review_plan import (
+from app.ai.review.plan import (
     build_chunk_review_plan,
     expected_chunk_keys_from_plan,
     get_review_mode,
     get_smart_review_max_chunks,
 )
-from app.ai.source_evidence import SOURCE_TOOL_NAMES, source_chunk_keys
-from app.ai.tool_runtime import get_ai_tool_runtime
+from app.ai.review.source_evidence import SOURCE_TOOL_NAMES, source_chunk_keys
+from app.ai.tools.runtime import get_ai_tool_runtime
 from app.db.mongodb import CHUNK_METADATA_COLLECTION, TOOL_CALL_LOGS_COLLECTION
 from app.models.review_job import ReviewJob
 

@@ -33,13 +33,13 @@ from app.repositories.report_repository import ReportRepository
 from app.repositories.repository_repository import RepositoryRepository
 from app.repositories.review_job_repository import ReviewJobRepository
 from app.repositories.user_repository import UserRepository
-from app.services.ai_trace_service import AITraceService
+from app.services.ai_trace.service import AITraceService
 from app.services.auth_service import AuthService
 from app.services.health_service import HealthService
 from app.services.job_queue_service import JobQueueService
 from app.services.job_service import ReviewJobService
-from app.services.repo_summary_query_service import RepoSummaryQueryService
-from app.services.report_service import ReportService
+from app.services.repo_summary.query_service import RepoSummaryQueryService
+from app.services.reporting.service import ReportService
 from app.services.repository_service import RepositoryService
 from app.services.token_blacklist import TokenBlacklistService
 from app.services.user_service import UserService

@@ -11,13 +11,13 @@ from app.ai.roadmap.knowledge import ROADMAP_PROFILE_ID
 from app.analyzers.file_filter import FileManifest
 from app.models.review_job import ReviewJobStatus
 from app.schemas.repo_summary import RepoSummary
-from app.services import review_pipeline_service
-from app.services.code_indexing_service import (
-    CodeIndexingService,
+from app.services.code_indexing.documents import (
     build_plain_file_chunk_metadata,
     build_plain_file_chunk_metadata_documents,
 )
-from app.services.review_pipeline_service import (
+from app.services.code_indexing.service import CodeIndexingService
+from app.services.review_pipeline import service as review_pipeline_service
+from app.services.review_pipeline.service import (
     ReviewJobCanceled,
     ReviewPipelineError,
     ReviewPipelineService,

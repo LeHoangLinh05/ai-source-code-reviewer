@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable, Sequence
 
-from app.ai.probe_contracts import ProbeDefinition, ProbeLane
+from app.ai.probe.contracts import ProbeDefinition, ProbeLane
 
 MAX_ROADMAP_RULES_PER_PROBE = 3
 MAX_FILE_AUDIT_ITEMS = 4
