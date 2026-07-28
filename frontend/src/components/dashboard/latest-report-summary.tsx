@@ -1,7 +1,7 @@
 import { ArrowRight } from "lucide-react";
 import Link from "next/link";
 
-import { SEVERITY_META } from "@/components/dashboard/severity-meta";
+import { SeverityBreakdownChart } from "@/components/dashboard/severity-breakdown-chart";
 import { ScoreTrack } from "@/components/reviews/score-track";
 import { Button } from "@/components/ui/button";
 import {
@@ -13,15 +13,12 @@ import {
 } from "@/components/ui/card";
 import type { LatestReportSummary } from "@/lib/dashboard";
 import { formatDateTime } from "@/lib/dashboard";
-import { cn } from "@/lib/utils";
 
 export function LatestReportSummaryCard({
   summary,
 }: {
   summary: LatestReportSummary;
 }) {
-  const maxSeverity = Math.max(...summary.severity.map((item) => item.value), 1);
-
   return (
     <Card>
       <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
@@ -60,30 +57,7 @@ export function LatestReportSummaryCard({
               No findings in this report.
             </p>
           ) : (
-            <ul className="mt-3 grid gap-2.5">
-              {summary.severity.map((item) => {
-                const meta = SEVERITY_META[item.key];
-                return (
-                  <li className="grid gap-1.5" key={item.key}>
-                    <div className="flex items-center justify-between text-[13px]">
-                      <span className="inline-flex items-center gap-2 text-muted-foreground">
-                        <span className={cn("size-2.5 rounded-full", meta.dot)} />
-                        {meta.label}
-                      </span>
-                      <span className="font-semibold tabular-nums text-foreground">
-                        {item.value}
-                      </span>
-                    </div>
-                    <div className="h-2 overflow-hidden rounded bg-muted">
-                      <div
-                        className={cn("h-full rounded", meta.bar)}
-                        style={{ width: `${(item.value / maxSeverity) * 100}%` }}
-                      />
-                    </div>
-                  </li>
-                );
-              })}
-            </ul>
+            <SeverityBreakdownChart items={summary.severity} />
           )}
         </div>
 

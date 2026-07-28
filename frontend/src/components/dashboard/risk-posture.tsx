@@ -1,6 +1,7 @@
 import {
   AlertOctagon,
   AlertTriangle,
+  CircleAlert,
   LoaderCircle,
   ShieldAlert,
   ShieldCheck,
@@ -46,6 +47,13 @@ const TONE_STYLES: Record<PostureTone, ToneStyle> = {
     accentBar: "bg-emerald-500",
     scoreText: "text-emerald-600 dark:text-emerald-400",
   },
+  unavailable: {
+    icon: CircleAlert,
+    iconWrap:
+      "border-amber-500/30 bg-amber-500/10 text-amber-600 dark:text-amber-400",
+    accentBar: "bg-amber-500",
+    scoreText: "text-foreground",
+  },
   running: {
     icon: LoaderCircle,
     iconWrap: "border-border bg-background text-muted-foreground",
@@ -85,11 +93,8 @@ export function RiskPostureCard({ posture }: { posture: RiskPosture }) {
             />
           </span>
           <div className="min-w-0">
-            <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-              Risk posture
-            </p>
             <h2
-              className="mt-1 text-2xl font-extrabold tracking-normal text-balance sm:text-3xl"
+              className="text-2xl font-extrabold tracking-normal text-balance sm:text-3xl"
               id="risk-posture-heading"
             >
               {posture.title}

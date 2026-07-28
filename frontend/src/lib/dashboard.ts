@@ -13,12 +13,16 @@ export const ACTIVE_STATUSES = new Set<ReviewJobStatus>([
   "GENERATING_REPORT",
 ]);
 
+const RECENT_REPORT_LIMIT = 12;
+
 export type SeverityKey = "critical" | "high" | "medium" | "low" | "info";
 
 export type DashboardData = {
   repositories: Repository[];
   jobs: ReviewJob[];
   reports: ReviewReport[];
+  reportLoadFailureJobIds: string[];
+  reportRequestCount: number;
 };
 
 export type PostureTone =
@@ -26,6 +30,7 @@ export type PostureTone =
   | "high"
   | "attention"
   | "clear"
+  | "unavailable"
   | "running"
   | "pending";
 
@@ -46,7 +51,12 @@ export type PrimaryAction = {
   href: string;
 };
 
-export type AttentionTone = "critical" | "high" | "failed" | "file";
+export type AttentionTone =
+  | "critical"
+  | "high"
+  | "failed"
+  | "report"
+  | "file";
 
 export type AttentionItem = {
   id: string;
@@ -63,6 +73,7 @@ export type ActiveReview = {
   branch: string;
   status: ReviewJobStatus;
   startedAt: string;
+  isQueued: boolean;
   href: string;
 };
 
@@ -149,6 +160,23 @@ export function compareReviewJobsByLatest(left: ReviewJob, right: ReviewJob) {
   return getReviewJobTimestamp(right) - getReviewJobTimestamp(left);
 }
 
+export function selectRecentCompletedJobs(
+  jobs: ReviewJob[],
+  limit = RECENT_REPORT_LIMIT,
+) {
+  return [...jobs]
+    .filter((job) => job.status === "COMPLETED")
+    .sort(compareReviewJobsByLatest)
+    .slice(0, limit);
+}
+
+export function hasIncompleteReportData(data: DashboardData) {
+  return (
+    data.reportLoadFailureJobIds.length > 0 ||
+    data.reports.length < data.reportRequestCount
+  );
+}
+
 function buildRepositoryNameByJob(jobs: ReviewJob[]) {
   const map = new Map<string, string>();
   for (const job of jobs) {
@@ -159,7 +187,10 @@ function buildRepositoryNameByJob(jobs: ReviewJob[]) {
 
 export function buildRiskPosture(data: DashboardData): RiskPosture {
   const { repositories, jobs, reports } = data;
-  const activeCount = jobs.filter((job) => ACTIVE_STATUSES.has(job.status)).length;
+  const runningCount = jobs.filter(
+    (job) => job.status !== "PENDING" && ACTIVE_STATUSES.has(job.status),
+  ).length;
+  const queuedCount = jobs.filter((job) => job.status === "PENDING").length;
   const completedCount = jobs.filter((job) => job.status === "COMPLETED").length;
   const criticalCount = sumReports(reports, "critical_count");
   const highCount = sumReports(reports, "high_count");
@@ -169,6 +200,14 @@ export function buildRiskPosture(data: DashboardData): RiskPosture {
   ).length;
   const score = getAverageScore(reports, "overall_score");
   const reportCount = reports.length;
+  const isReportDataIncomplete = hasIncompleteReportData(data);
+  const expectedReportCount =
+    data.reportRequestCount > 0
+      ? data.reportRequestCount
+      : Math.min(completedCount, RECENT_REPORT_LIMIT);
+  const coverageWarning = isReportDataIncomplete
+    ? ` Report coverage is incomplete (${reportCount}/${expectedReportCount} loaded), so totals may be understated.`
+    : "";
 
   const base = {
     score,
@@ -180,13 +219,23 @@ export function buildRiskPosture(data: DashboardData): RiskPosture {
   };
 
   if (completedCount === 0) {
-    if (activeCount > 0) {
+    if (runningCount > 0) {
       return {
         ...base,
         tone: "running",
         title: "Your first review is in progress",
         message:
           "A review is running now. Your security posture will appear as soon as it completes.",
+      };
+    }
+
+    if (queuedCount > 0) {
+      return {
+        ...base,
+        tone: "pending",
+        title: "Your first review is queued",
+        message:
+          "The review is waiting to start. Your security posture will appear after it completes.",
       };
     }
 
@@ -199,6 +248,16 @@ export function buildRiskPosture(data: DashboardData): RiskPosture {
     };
   }
 
+  if (reportCount === 0) {
+    return {
+      ...base,
+      tone: "unavailable",
+      title: "Security posture is unavailable",
+      message:
+        "Completed reviews exist, but their reports could not be loaded. Retry before relying on this dashboard.",
+    };
+  }
+
   if (criticalCount > 0) {
     return {
       ...base,
@@ -207,7 +266,7 @@ export function buildRiskPosture(data: DashboardData): RiskPosture {
       message: `${formatCount(criticalCount, "critical finding")} across your ${formatCount(
         reportCount,
         "recent report",
-      )} need immediate triage.`,
+      )} need immediate triage.${coverageWarning}`,
     };
   }
 
@@ -219,7 +278,19 @@ export function buildRiskPosture(data: DashboardData): RiskPosture {
       message: `${formatCount(highCount, "high-severity finding")} across your ${formatCount(
         reportCount,
         "recent report",
-      )} should be reviewed soon.`,
+      )} should be reviewed soon.${coverageWarning}`,
+    };
+  }
+
+  if (isReportDataIncomplete) {
+    return {
+      ...base,
+      tone: "unavailable",
+      title: "Security posture is incomplete",
+      message:
+        totalIssues > 0
+          ? `${formatCount(totalIssues, "finding")} are visible in the reports that loaded.${coverageWarning}`
+          : `Some recent reports could not be loaded.${coverageWarning}`,
     };
   }
 
@@ -247,7 +318,7 @@ export function buildRiskPosture(data: DashboardData): RiskPosture {
 }
 
 export function buildPrimaryAction(data: DashboardData): PrimaryAction {
-  const { repositories, jobs, reports } = data;
+  const { repositories, jobs } = data;
 
   if (repositories.length === 0) {
     return { label: "Connect a repository", href: "/repositories" };
@@ -263,14 +334,22 @@ export function buildPrimaryAction(data: DashboardData): PrimaryAction {
     return { label: "Start your first review", href: "/repositories" };
   }
 
-  const latestReport = getLatestReportContext(data);
-  const totalIssues = sumReports(reports, "total_issues");
-  if (totalIssues > 0) {
+  const latestReportWithFindings = getLatestReportContext(
+    data,
+    (report) => report.total_issues > 0,
+  );
+  if (latestReportWithFindings) {
     return {
       label: "Review findings",
-      href: latestReport ? `/reviews/${latestReport.jobId}/issues` : "/reviews",
+      href: `/reviews/${latestReportWithFindings.jobId}/issues`,
     };
   }
+
+  if (hasIncompleteReportData(data)) {
+    return { label: "Open completed reviews", href: "/reviews" };
+  }
+
+  const latestReport = getLatestReportContext(data);
 
   return {
     label: "Open latest report",
@@ -282,9 +361,49 @@ export function buildNeedsAttention(
   data: DashboardData,
   limit = 6,
 ): AttentionItem[] {
-  const { jobs, reports } = data;
+  const { jobs, reports, reportLoadFailureJobIds } = data;
   const repositoryNameByJob = buildRepositoryNameByJob(jobs);
   const items: AttentionItem[] = [];
+
+  const criticalReports = reports
+    .filter((report) => report.critical_count > 0)
+    .sort(
+      (left, right) =>
+        right.critical_count - left.critical_count ||
+        new Date(right.created_at).getTime() -
+          new Date(left.created_at).getTime(),
+    );
+  for (const report of criticalReports) {
+    const name = repositoryNameByJob.get(report.job_id) ?? "Repository";
+    items.push({
+      id: `critical:${report.job_id}`,
+      tone: "critical",
+      title: `${formatCount(report.critical_count, "critical finding")} in ${name}`,
+      meta: "Highest severity. Triage before shipping.",
+      href: `/reviews/${report.job_id}/issues`,
+      count: report.critical_count,
+    });
+  }
+
+  const highReports = reports
+    .filter((report) => report.high_count > 0)
+    .sort(
+      (left, right) =>
+        right.high_count - left.high_count ||
+        new Date(right.created_at).getTime() -
+          new Date(left.created_at).getTime(),
+    );
+  for (const report of highReports) {
+    const name = repositoryNameByJob.get(report.job_id) ?? "Repository";
+    items.push({
+      id: `high:${report.job_id}`,
+      tone: "high",
+      title: `${formatCount(report.high_count, "high-severity finding")} in ${name}`,
+      meta: "High severity. Review soon.",
+      href: `/reviews/${report.job_id}/issues`,
+      count: report.high_count,
+    });
+  }
 
   const failedJobs = [...jobs]
     .filter((job) => job.status === "FAILED")
@@ -302,32 +421,15 @@ export function buildNeedsAttention(
     });
   }
 
-  for (const report of reports) {
-    if (report.critical_count > 0) {
-      const name = repositoryNameByJob.get(report.job_id) ?? "Repository";
-      items.push({
-        id: `critical:${report.job_id}`,
-        tone: "critical",
-        title: `${formatCount(report.critical_count, "critical finding")} in ${name}`,
-        meta: "Highest severity. Triage before shipping.",
-        href: `/reviews/${report.job_id}/issues`,
-        count: report.critical_count,
-      });
-    }
-  }
-
-  for (const report of reports) {
-    if (report.high_count > 0) {
-      const name = repositoryNameByJob.get(report.job_id) ?? "Repository";
-      items.push({
-        id: `high:${report.job_id}`,
-        tone: "high",
-        title: `${formatCount(report.high_count, "high-severity finding")} in ${name}`,
-        meta: "High severity. Review soon.",
-        href: `/reviews/${report.job_id}/issues`,
-        count: report.high_count,
-      });
-    }
+  if (reportLoadFailureJobIds.length > 0) {
+    items.push({
+      id: "report-load-failures",
+      tone: "report",
+      title: `${formatCount(reportLoadFailureJobIds.length, "completed report")} unavailable`,
+      meta: "Retry the dashboard before relying on posture totals.",
+      href: "/reviews",
+      count: reportLoadFailureJobIds.length,
+    });
   }
 
   const riskyFiles = reports
@@ -368,6 +470,7 @@ export function buildActiveReviews(data: DashboardData): ActiveReview[] {
       branch: job.branch ?? "main",
       status: job.status,
       startedAt: job.started_at ?? job.created_at,
+      isQueued: job.status === "PENDING",
       href: `/reviews/${job.id}`,
     }));
 }
@@ -426,13 +529,23 @@ export function buildRepositoryOverview(
     }));
 }
 
-function getLatestReportContext(data: DashboardData) {
+function getLatestReportContext(
+  data: DashboardData,
+  predicate: (report: ReviewReport) => boolean = () => true,
+) {
   const reportByJob = new Map(
     data.reports.map((report) => [report.job_id, report]),
   );
 
   const latestJob = [...data.jobs]
-    .filter((job) => job.status === "COMPLETED" && reportByJob.has(job.id))
+    .filter((job) => {
+      const report = reportByJob.get(job.id);
+      return (
+        job.status === "COMPLETED" &&
+        report !== undefined &&
+        predicate(report)
+      );
+    })
     .sort(compareReviewJobsByLatest)[0];
 
   if (!latestJob) {

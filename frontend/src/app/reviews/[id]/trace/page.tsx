@@ -15,6 +15,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { TechnicalDetails } from "@/components/ui/technical-details";
 import { getApiErrorMessage } from "@/lib/api-error";
 import { getReviewJobAiTrace } from "@/lib/review-jobs";
 import type { AITrace } from "@/types/review-job";
@@ -92,7 +93,12 @@ export default function ReviewTracePage() {
 
       {trace ? (
         <>
-          <TraceTokenSummary trace={trace} />
+          <TechnicalDetails
+            description="Input, output, total, and estimated embedding token counts."
+            title="Token usage"
+          >
+            <TraceTokenSummary trace={trace} />
+          </TechnicalDetails>
 
           <Card>
             <CardHeader>

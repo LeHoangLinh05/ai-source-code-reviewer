@@ -18,7 +18,9 @@ export function ActiveReviews({ reviews }: { reviews: ActiveReview[] }) {
     <Card>
       <CardHeader>
         <CardTitle>Active reviews</CardTitle>
-        <CardDescription>Reviews currently running in your workspace.</CardDescription>
+        <CardDescription>
+          Reviews queued or currently running in your workspace.
+        </CardDescription>
       </CardHeader>
       <CardContent>
         {reviews.length === 0 ? (
@@ -42,7 +44,10 @@ export function ActiveReviews({ reviews }: { reviews: ActiveReview[] }) {
                       <GitBranch aria-hidden="true" className="size-3.5" />
                       {review.branch}
                     </span>
-                    <span>Started {formatRelativeTime(review.startedAt)}</span>
+                    <span>
+                      {review.isQueued ? "Queued" : "Started"}{" "}
+                      {formatRelativeTime(review.startedAt)}
+                    </span>
                   </div>
                 </div>
                 <div className="flex items-center gap-2">

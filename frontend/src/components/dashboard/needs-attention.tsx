@@ -1,6 +1,8 @@
 import {
+  AlertOctagon,
   ChevronRight,
   FileWarning,
+  ShieldAlert,
   ShieldCheck,
   XCircle,
   type LucideIcon,
@@ -22,16 +24,20 @@ const TONE_STYLES: Record<
   { icon: LucideIcon; wrap: string }
 > = {
   critical: {
-    icon: ShieldCheck,
+    icon: AlertOctagon,
     wrap: "border-rose-500/30 bg-rose-500/10 text-rose-600 dark:text-rose-400",
   },
   high: {
-    icon: ShieldCheck,
+    icon: ShieldAlert,
     wrap: "border-orange-500/30 bg-orange-500/10 text-orange-600 dark:text-orange-400",
   },
   failed: {
     icon: XCircle,
     wrap: "border-rose-500/30 bg-rose-500/10 text-rose-600 dark:text-rose-400",
+  },
+  report: {
+    icon: FileWarning,
+    wrap: "border-amber-500/30 bg-amber-500/10 text-amber-600 dark:text-amber-400",
   },
   file: {
     icon: FileWarning,

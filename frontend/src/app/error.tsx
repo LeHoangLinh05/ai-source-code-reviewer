@@ -12,6 +12,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { TechnicalDetails } from "@/components/ui/technical-details";
 
 type GlobalErrorProps = {
   error: Error & { digest?: string };
@@ -33,14 +34,47 @@ export default function GlobalError({ error, reset }: GlobalErrorProps) {
             to the dashboard.
           </CardDescription>
         </CardHeader>
-        <CardContent className="flex flex-col gap-3 sm:flex-row">
-          <Button onClick={reset} type="button">
-            <RefreshCw aria-hidden="true" />
-            Retry
-          </Button>
-          <Button asChild type="button" variant="secondary">
-            <Link href="/dashboard">Open Dashboard</Link>
-          </Button>
+        <CardContent className="grid gap-4">
+          <div className="flex flex-col gap-3 sm:flex-row">
+            <Button onClick={reset} type="button">
+              <RefreshCw aria-hidden="true" />
+              Retry
+            </Button>
+            <Button asChild type="button" variant="secondary">
+              <Link href="/dashboard">Open Dashboard</Link>
+            </Button>
+          </div>
+          <TechnicalDetails
+            description="Diagnostic information for support and development."
+            title="Technical error details"
+          >
+            <dl className="grid gap-3 text-sm">
+              <div>
+                <dt className="font-semibold text-foreground">Message</dt>
+                <dd className="mt-1 break-words text-muted-foreground">
+                  {error.message}
+                </dd>
+              </div>
+              {error.digest ? (
+                <div>
+                  <dt className="font-semibold text-foreground">Digest</dt>
+                  <dd className="mt-1 break-all font-mono text-xs text-muted-foreground">
+                    {error.digest}
+                  </dd>
+                </div>
+              ) : null}
+              {error.stack ? (
+                <div>
+                  <dt className="font-semibold text-foreground">Stack trace</dt>
+                  <dd className="mt-1">
+                    <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words font-mono text-xs leading-5 text-muted-foreground">
+                      {error.stack}
+                    </pre>
+                  </dd>
+                </div>
+              ) : null}
+            </dl>
+          </TechnicalDetails>
         </CardContent>
       </Card>
     </main>

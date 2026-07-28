@@ -3,15 +3,13 @@
 import {
   AlertTriangle,
   ArrowLeft,
-  ChevronLeft,
-  ChevronRight,
   Copy,
   RefreshCw,
   X,
 } from "lucide-react";
 import Link from "next/link";
 import { useParams, useSearchParams } from "next/navigation";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 
 import { SeverityBadge } from "@/components/reviews/review-badges";
@@ -25,6 +23,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { PaginationControls } from "@/components/ui/pagination-controls";
 import { getApiErrorMessage } from "@/lib/api-error";
 import { getReportIssue, getReportIssues } from "@/lib/reports";
 import { useAppDispatch, useAppSelector } from "@/store/hooks";
@@ -84,14 +83,6 @@ export default function ReviewIssuesPage() {
   const [isLoading, setIsLoading] = useState(false);
   const [issueList, setIssueList] = useState<IssueListResponse | null>(null);
   const [selectedIssue, setSelectedIssue] = useState<ReviewIssue | null>(null);
-
-  const totalPages = useMemo(() => {
-    if (!issueList) {
-      return 1;
-    }
-
-    return Math.max(1, Math.ceil(issueList.total / issueList.per_page));
-  }, [issueList]);
 
   useEffect(() => {
     const filePath = searchParams.get("file_path") ?? "";
@@ -260,10 +251,11 @@ export default function ReviewIssuesPage() {
                 issues={issueList.issues}
                 onSelectIssue={openIssueDrawer}
               />
-              <Pagination
+              <PaginationControls
                 currentPage={filters.page}
                 onPageChange={(page) => dispatch(setIssuePage(page))}
-                totalPages={totalPages}
+                pageSize={issueList.per_page}
+                totalItems={issueList.total}
               />
             </>
           ) : null}
@@ -362,44 +354,6 @@ function IssueTable({
           ))}
         </tbody>
       </table>
-    </div>
-  );
-}
-
-function Pagination({
-  currentPage,
-  onPageChange,
-  totalPages,
-}: {
-  currentPage: number;
-  onPageChange: (page: number) => void;
-  totalPages: number;
-}) {
-  return (
-    <div className="flex items-center justify-between border-t border-border px-6 py-4">
-      <p className="text-sm text-muted-foreground">
-        Page {currentPage} of {totalPages}
-      </p>
-      <div className="flex gap-2">
-        <Button
-          disabled={currentPage <= 1}
-          onClick={() => onPageChange(currentPage - 1)}
-          size="sm"
-          variant="secondary"
-        >
-          <ChevronLeft aria-hidden="true" />
-          Previous
-        </Button>
-        <Button
-          disabled={currentPage >= totalPages}
-          onClick={() => onPageChange(currentPage + 1)}
-          size="sm"
-          variant="secondary"
-        >
-          Next
-          <ChevronRight aria-hidden="true" />
-        </Button>
-      </div>
     </div>
   );
 }

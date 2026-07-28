@@ -11,7 +11,6 @@ import { LatestReportSummaryCard } from "@/components/dashboard/latest-report-su
 import { NeedsAttention } from "@/components/dashboard/needs-attention";
 import { RecentActivity } from "@/components/dashboard/recent-activity";
 import { RepositoryOverview } from "@/components/dashboard/repository-overview";
-import { RiskPostureCard } from "@/components/dashboard/risk-posture";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { getApiErrorMessage } from "@/lib/api-error";
@@ -22,17 +21,20 @@ import {
   buildPrimaryAction,
   buildRecentReviews,
   buildRepositoryOverview,
-  buildRiskPosture,
+  selectRecentCompletedJobs,
   type DashboardData,
 } from "@/lib/dashboard";
 import { getRepositories } from "@/lib/repositories";
 import { getReport } from "@/lib/reports";
 import { getReviewJobs } from "@/lib/review-jobs";
+import type { ReviewReport } from "@/types/report";
 
 const EMPTY_DATA: DashboardData = {
   repositories: [],
   jobs: [],
   reports: [],
+  reportLoadFailureJobIds: [],
+  reportRequestCount: 0,
 };
 
 export default function DashboardPage() {
@@ -50,17 +52,32 @@ export default function DashboardPage() {
         getReviewJobs(),
       ]);
 
-      const completedJobs = jobs
-        .filter((job) => job.status === "COMPLETED")
-        .slice(0, 12);
+      const completedJobs = selectRecentCompletedJobs(jobs);
       const reportResults = await Promise.allSettled(
         completedJobs.map((job) => getReport(job.id)),
       );
-      const reports = reportResults.flatMap((result) =>
-        result.status === "fulfilled" ? [result.value] : [],
-      );
+      const reports: ReviewReport[] = [];
+      const reportLoadFailureJobIds: string[] = [];
 
-      setData({ repositories, jobs, reports });
+      for (const [index, result] of reportResults.entries()) {
+        if (result.status === "fulfilled") {
+          reports.push(result.value);
+          continue;
+        }
+
+        const completedJob = completedJobs[index];
+        if (completedJob) {
+          reportLoadFailureJobIds.push(completedJob.id);
+        }
+      }
+
+      setData({
+        repositories,
+        jobs,
+        reports,
+        reportLoadFailureJobIds,
+        reportRequestCount: completedJobs.length,
+      });
     } catch (requestError) {
       setError(
         getApiErrorMessage(requestError, "Unable to load dashboard data."),
@@ -76,7 +93,6 @@ export default function DashboardPage() {
 
   const derived = useMemo(
     () => ({
-      posture: buildRiskPosture(data),
       primaryAction: buildPrimaryAction(data),
       needsAttention: buildNeedsAttention(data),
       activeReviews: buildActiveReviews(data),
@@ -92,13 +108,23 @@ export default function DashboardPage() {
 
   return (
     <>
-      <PageHeader
-        actionHref={derived.primaryAction.href}
-        actionLabel={derived.primaryAction.label}
-        isLoading={isLoading}
-        onRefresh={() => void loadDashboard()}
-        showPrimaryAction={!showOnboarding}
-      />
+      <div className="flex flex-wrap justify-end gap-2">
+        <Button
+          disabled={isLoading}
+          onClick={() => void loadDashboard()}
+          variant="secondary"
+        >
+          <RefreshCw aria-hidden="true" />
+          Refresh
+        </Button>
+        {!showOnboarding ? (
+          <Button asChild>
+            <Link href={derived.primaryAction.href}>
+              {derived.primaryAction.label}
+            </Link>
+          </Button>
+        ) : null}
+      </div>
 
       {error ? (
         <Card className="border-destructive/40">
@@ -133,68 +159,21 @@ export default function DashboardPage() {
       {showOnboarding ? <DashboardOnboarding /> : null}
 
       {!isLoading && !error && hasRepositories ? (
-        <>
-          <RiskPostureCard posture={derived.posture} />
-
-          <div className="grid gap-4 xl:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)] xl:items-start">
-            <div className="grid gap-4">
-              <NeedsAttention items={derived.needsAttention} />
-              <ActiveReviews reviews={derived.activeReviews} />
-              <RecentActivity reviews={derived.recentReviews} />
-            </div>
-
-            <div className="grid gap-4">
-              {derived.latestReport ? (
-                <LatestReportSummaryCard summary={derived.latestReport} />
-              ) : null}
-              <RepositoryOverview repositories={derived.repositoryOverview} />
-            </div>
+        <div className="grid gap-4 xl:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)] xl:items-start">
+          <div className="grid gap-4">
+            <NeedsAttention items={derived.needsAttention} />
+            <ActiveReviews reviews={derived.activeReviews} />
+            <RecentActivity reviews={derived.recentReviews} />
           </div>
-        </>
+
+          <div className="grid gap-4">
+            {derived.latestReport ? (
+              <LatestReportSummaryCard summary={derived.latestReport} />
+            ) : null}
+            <RepositoryOverview repositories={derived.repositoryOverview} />
+          </div>
+        </div>
       ) : null}
     </>
-  );
-}
-
-function PageHeader({
-  actionHref,
-  actionLabel,
-  isLoading,
-  onRefresh,
-  showPrimaryAction,
-}: {
-  actionHref: string;
-  actionLabel: string;
-  isLoading: boolean;
-  onRefresh: () => void;
-  showPrimaryAction: boolean;
-}) {
-  return (
-    <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
-      <div>
-        <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-          Security workspace
-        </p>
-        <h1 className="mt-1 text-3xl font-extrabold tracking-normal">Dashboard</h1>
-        <p className="mt-1 text-[15px] leading-6 text-muted-foreground">
-          Repository health and review activity across your workspace.
-        </p>
-      </div>
-      <div className="flex flex-wrap items-center gap-2">
-        <Button
-          disabled={isLoading}
-          onClick={onRefresh}
-          variant="secondary"
-        >
-          <RefreshCw aria-hidden="true" />
-          Refresh
-        </Button>
-        {showPrimaryAction ? (
-          <Button asChild>
-            <Link href={actionHref}>{actionLabel}</Link>
-          </Button>
-        ) : null}
-      </div>
-    </div>
   );
 }

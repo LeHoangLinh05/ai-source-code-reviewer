@@ -26,6 +26,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { TechnicalDetails } from "@/components/ui/technical-details";
 import { getApiErrorMessage } from "@/lib/api-error";
 import {
   cancelReviewJob,
@@ -296,14 +297,20 @@ function AITracePanel({
   const latestStatusTone = getToolStatusTone(latestStatus);
 
   return (
-    <Card>
-      <CardHeader>
+    <>
+      {error ? <p className="text-sm text-destructive">{error}</p> : null}
+      <TechnicalDetails
+        contentClassName="grid gap-5"
+        description="Pipeline coverage, tool calls, token usage, and event diagnostics."
+        title="AI trace and diagnostics"
+      >
         <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
           <div>
-            <CardTitle>AI Live Trace</CardTitle>
-            <CardDescription>
-              Pipeline coverage, agent tool calls, generated issues, and report handoff.
-            </CardDescription>
+            <h2 className="text-lg font-semibold">AI Live Trace</h2>
+            <p className="mt-1 text-sm leading-6 text-muted-foreground">
+              Pipeline coverage, agent tool calls, generated issues, and report
+              handoff.
+            </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
             {trace ? (
@@ -330,9 +337,7 @@ function AITracePanel({
             </span>
           </div>
         </div>
-      </CardHeader>
-      <CardContent className="grid gap-5">
-        {error ? <p className="text-sm text-destructive">{error}</p> : null}
+
         {isIncompleteAiReport ? (
           <div className="rounded-md border border-amber-400/40 bg-amber-400/10 p-4 text-[15px] leading-6 text-amber-800 dark:text-amber-100">
             The AI report exists, but the review trace is incomplete. This run should
@@ -366,8 +371,8 @@ function AITracePanel({
             </div>
           </section>
         ) : null}
-      </CardContent>
-    </Card>
+      </TechnicalDetails>
+    </>
   );
 }
 
