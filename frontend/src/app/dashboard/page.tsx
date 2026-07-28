@@ -159,14 +159,14 @@ export default function DashboardPage() {
       {showOnboarding ? <DashboardOnboarding /> : null}
 
       {!isLoading && !error && hasRepositories ? (
-        <div className="grid gap-4 xl:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)] xl:items-start">
-          <div className="grid gap-4">
+        <div className="grid min-w-0 gap-4 xl:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)] xl:items-start">
+          <div className="grid min-w-0 gap-4">
             <NeedsAttention items={derived.needsAttention} />
             <ActiveReviews reviews={derived.activeReviews} />
             <RecentActivity reviews={derived.recentReviews} />
           </div>
 
-          <div className="grid gap-4">
+          <div className="grid min-w-0 gap-4">
             {derived.latestReport ? (
               <LatestReportSummaryCard summary={derived.latestReport} />
             ) : null}

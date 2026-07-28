@@ -44,6 +44,7 @@ async def test_register_creates_user_without_issuing_tokens() -> None:
     )
 
     assert user.email == VALID_EMAIL
+    assert user.role is UserRole.USER
     assert service.user_repository.created_user is not None
     assert service.refresh_token_repository.tokens_by_hash == {}
 
@@ -73,6 +74,7 @@ async def test_login_returns_token_pair_and_stores_refresh_hash() -> None:
     assert token_pair.user.email == VALID_EMAIL
     assert decoded_access_token["subject"] == user.id
     assert decoded_refresh_token["subject"] == user.id
+    assert token_pair.user.role is UserRole.USER
     assert hash_token_for_storage(token_pair.refresh_token) in (
         service.refresh_token_repository.tokens_by_hash
     )
@@ -120,6 +122,7 @@ async def test_refresh_rotates_token_and_rejects_reuse() -> None:
     ]
 
     assert rotated_pair.refresh_token != original_pair.refresh_token
+    assert rotated_pair.user.role is UserRole.USER
     assert original_record.revoked_at is not None
     assert original_record.replaced_by_token_id is not None
 
@@ -191,7 +194,6 @@ def build_user(
     email: str = VALID_EMAIL,
     password: str = VALID_PASSWORD,
     is_active: bool = True,
-    role: UserRole = UserRole.USER,
 ) -> User:
     now = datetime.now(UTC)
     return User(
@@ -199,7 +201,7 @@ def build_user(
         email=email,
         hashed_password=hash_password(password),
         full_name=None,
-        role=role,
+        role=UserRole.USER,
         is_active=is_active,
         created_at=now,
         updated_at=now,

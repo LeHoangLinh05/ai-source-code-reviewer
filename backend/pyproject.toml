@@ -65,4 +65,5 @@ ignore = [
 [tool.pytest.ini_options]
 markers = [
     "performance: opt-in smoke tests for local integration performance checks",
+    "integration: tests that require live infrastructure such as Redis",
 ]

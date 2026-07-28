@@ -379,6 +379,11 @@ async def test_probe_judge_persists_only_high_confidence_candidates() -> None:
     }
     session = _FakePostgresSession()
     trace_writer = _TraceWriter()
+    progress_updates: list[tuple[int, int]] = []
+
+    async def record_progress(completed: int, total: int) -> None:
+        progress_updates.append((completed, total))
+
     service = ProbeJudgeService(
         llm=_JudgeLlm(
             {
@@ -395,11 +400,13 @@ async def test_probe_judge_persists_only_high_confidence_candidates() -> None:
         job_id=job_id,
         bundles=[bundle],
         trace_writer=trace_writer,
+        on_batch_completed=record_progress,
     )
 
     assert (judged_batches, created_count, rejected_count) == (1, 1, 1)
     assert session.commit_count == 1
     assert len(session.added_issues) == 1
+    assert progress_updates == [(1, 1)]
     assert session.added_issues[0].source is IssueSource.AI_REVIEW
     trace_output = trace_writer.logs[0]["output"]
     assert isinstance(trace_output, dict)

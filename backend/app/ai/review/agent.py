@@ -12,7 +12,7 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.ai.probe.models import ProbeReviewConfig
+from app.ai.probe.models import ProbeBatchProgressCallback, ProbeReviewConfig
 from app.ai.probe.review import run_backend_directed_probe_review
 from app.ai.reporting.final_report import synthesize_final_report
 from app.ai.roadmap.catalog_service import _ensure_roadmap_catalog_loaded
@@ -36,6 +36,7 @@ async def run_ai_review(
     postgres_session: AsyncSession,
     mongodb_database: AsyncIOMotorDatabase,
     code_embedding_store: Any | None = None,
+    on_batch_completed: ProbeBatchProgressCallback | None = None,
 ) -> dict[str, Any]:
     """Run the AI review agent for one job using OpenAI."""
 
@@ -85,6 +86,7 @@ async def run_ai_review(
                     max_probes_per_batch=(settings.probe_judge_max_probes_per_batch),
                     max_chunks_per_batch=settings.probe_judge_max_chunks_per_batch,
                 ),
+                on_batch_completed=on_batch_completed,
             )
             review_result = {"output": probe_result.handoff}
             (

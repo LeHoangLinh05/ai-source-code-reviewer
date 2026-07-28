@@ -28,6 +28,7 @@ from app.ai.probe.judging import (
     _probe_judge_response_from_payload,
 )
 from app.ai.probe.models import (
+    ProbeBatchProgressCallback,
     ProbeCandidateChunk,
     ProbeEvidenceBundle,
     ProbeJudgeIssueCandidate,
@@ -86,17 +87,20 @@ class ProbeJudgeService:
         job_id: UUID,
         bundles: list[ProbeEvidenceBundle],
         trace_writer: SyntheticTraceWriter,
+        on_batch_completed: ProbeBatchProgressCallback | None = None,
     ) -> tuple[int, int, int]:
         """Judge evidence batches and persist accepted issue candidates."""
 
         created_count = 0
         rejected_count = 0
         judged_batches = 0
-        for batch in _judge_batches(
+        batches = _judge_batches(
             bundles,
             max_probes=self.max_probes_per_batch,
             max_chunks=self.max_chunks_per_batch,
-        ):
+        )
+        total_batches = len(batches)
+        for batch in batches:
             started_at = time.perf_counter()
             response = await self._judge_batch(batch)
             batch_created, batch_rejected = await self._persist_batch(
@@ -115,6 +119,8 @@ class ProbeJudgeService:
                 rejected_count=batch_rejected,
                 duration_ms=int((time.perf_counter() - started_at) * 1000),
             )
+            if on_batch_completed is not None:
+                await on_batch_completed(judged_batches, total_batches)
 
         return judged_batches, created_count, rejected_count
 

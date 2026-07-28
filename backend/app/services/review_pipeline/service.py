@@ -59,6 +59,9 @@ from app.services.review_pipeline.workspace import (
 
 logger = logging.getLogger(__name__)
 
+AI_REVIEW_PROGRESS_START = 88
+AI_REVIEW_PROGRESS_END = 94
+
 __all__ = [
     "ReviewJobCanceled",
     "ReviewPipelineError",
@@ -422,7 +425,7 @@ class ReviewPipelineService:
         await self._transition(
             review_job,
             ReviewJobStatus.AI_REVIEWING,
-            88,
+            AI_REVIEW_PROGRESS_START,
             "Running AI review agent",
         )
         database = cast(
@@ -435,6 +438,32 @@ class ReviewPipelineService:
             postgres_session=self.postgres_session,
             mongodb_database=database,
             code_embedding_store=self.code_embedding_store,
+            on_batch_completed=lambda completed, total: self._publish_ai_batch_progress(
+                review_job.id, completed, total
+            ),
+        )
+
+    async def _publish_ai_batch_progress(
+        self,
+        job_id: UUID,
+        completed_batches: int,
+        total_batches: int,
+    ) -> None:
+        progress = calculate_ai_review_progress(completed_batches, total_batches)
+        await publish_job_progress(
+            job_id,
+            "progress_update",
+            {
+                "status": ReviewJobStatus.AI_REVIEWING.value,
+                "progress": progress,
+                "message": (
+                    f"AI review batch {completed_batches} of {total_batches} completed"
+                ),
+                "data": {
+                    "completed_batches": completed_batches,
+                    "total_batches": total_batches,
+                },
+            },
         )
 
     async def _require_ai_generated_report(self, job_id: UUID) -> None:
@@ -523,3 +552,18 @@ class ReviewPipelineService:
                 "message": message,
             },
         )
+
+
+def calculate_ai_review_progress(
+    completed_batches: int,
+    total_batches: int,
+) -> int:
+    """Map completed AI judge batches into the reserved 88-94% range."""
+
+    if total_batches <= 0 or completed_batches <= 0:
+        return AI_REVIEW_PROGRESS_START
+
+    bounded_completed = min(completed_batches, total_batches)
+    progress_span = AI_REVIEW_PROGRESS_END - AI_REVIEW_PROGRESS_START
+    completed_span = max(1, bounded_completed * progress_span // total_batches)
+    return min(AI_REVIEW_PROGRESS_END, AI_REVIEW_PROGRESS_START + completed_span)

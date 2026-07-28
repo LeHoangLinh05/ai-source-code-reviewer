@@ -55,7 +55,7 @@ async def list_review_jobs(
     job_status: ReviewJobStatusFilter = None,
     repository_id: RepositoryIdFilter = None,
 ) -> list[ReviewJobResponse]:
-    """List jobs created by the user, or all jobs for admins."""
+    """List jobs created by the current user."""
 
     return await review_job_service.list_jobs(
         current_user,
@@ -74,7 +74,7 @@ async def get_review_job(
     current_user: CurrentUserDep,
     review_job_service: ReviewJobServiceDep,
 ) -> ReviewJobResponse:
-    """Return one review job after owner/admin authorization."""
+    """Return one review job after ownership authorization."""
 
     return await review_job_service.get_job(job_id, current_user)
 

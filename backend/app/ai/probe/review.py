@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.ai.probe.contracts import ProbeDefinition
 from app.ai.probe.judge_service import ProbeJudgeService
 from app.ai.probe.models import (
+    ProbeBatchProgressCallback,
     ProbeEvidenceBundle,
     ProbeReviewConfig,
     ProbeReviewResult,
@@ -42,6 +43,7 @@ async def run_backend_directed_probe_review(
     trace_writer: SyntheticTraceWriter,
     config: ProbeReviewConfig,
     code_retriever: CodeSemanticRetriever | None = None,
+    on_batch_completed: ProbeBatchProgressCallback | None = None,
 ) -> ProbeReviewResult:
     """Run the default backend-directed review path."""
 
@@ -78,6 +80,7 @@ async def run_backend_directed_probe_review(
         job_id=job_id,
         bundles=bundles,
         trace_writer=trace_writer,
+        on_batch_completed=on_batch_completed,
     )
     return _build_probe_review_result(probes, bundles, judge_counts)
 

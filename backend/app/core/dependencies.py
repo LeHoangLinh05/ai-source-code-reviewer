@@ -12,7 +12,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import Settings, get_settings
 from app.core.exceptions import (
     AuthenticationError,
-    AuthorizationError,
     RateLimitError,
     ServiceUnavailableError,
 )
@@ -20,7 +19,7 @@ from app.core.security import TokenType, decode_token
 from app.db.mongodb import get_mongodb_database
 from app.db.postgres import get_async_session
 from app.db.redis import get_redis_client
-from app.models.user import User, UserRole
+from app.models.user import User
 from app.repositories.mongodb_repository import (
     ChunkMetadataRepository,
     FileAnalysisResultRepository,
@@ -293,20 +292,6 @@ async def get_current_user(
 
 
 CurrentUserDep = Annotated[User, Depends(get_current_user)]
-
-
-async def get_current_admin(
-    current_user: CurrentUserDep,
-) -> User:
-    """Require an authenticated admin user for protected admin endpoints."""
-
-    if current_user.role != UserRole.ADMIN:
-        raise AuthorizationError("Admin role is required")
-
-    return current_user
-
-
-CurrentAdminDep = Annotated[User, Depends(get_current_admin)]
 
 
 def build_review_job_create_rate_limit_key(user: User) -> str:

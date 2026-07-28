@@ -20,7 +20,7 @@ export function LatestReportSummaryCard({
   summary: LatestReportSummary;
 }) {
   return (
-    <Card>
+    <Card className="overflow-hidden">
       <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0">
           <CardTitle>Latest report</CardTitle>

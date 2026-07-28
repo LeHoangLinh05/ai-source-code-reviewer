@@ -6,9 +6,10 @@ from uuid import UUID
 
 from app.core.exceptions import AuthorizationError, ConflictError, NotFoundError
 from app.models.review_job import ReviewJob, ReviewJobStatus
-from app.models.user import User, UserRole
+from app.models.user import User
 from app.repositories.repository_repository import RepositoryRepository
 from app.repositories.review_job_repository import ReviewJobRepository
+from app.schemas.notification import JobProgressEvent, JobProgressEventType
 from app.schemas.review_job import (
     ReviewJobCreate,
     ReviewJobCreateResponse,
@@ -47,10 +48,7 @@ class ReviewJobService:
         if source_repository is None:
             raise NotFoundError("Repository not found")
 
-        if (
-            current_user.role != UserRole.ADMIN
-            and source_repository.user_id != current_user.id
-        ):
+        if source_repository.user_id != current_user.id:
             raise AuthorizationError("Repository access is restricted to its owner")
 
         branch = payload.branch or source_repository.default_branch
@@ -80,19 +78,13 @@ class ReviewJobService:
         status: ReviewJobStatus | None,
         repository_id: UUID | None,
     ) -> list[ReviewJobResponse]:
-        """List review jobs visible to the current user."""
+        """List review jobs owned by the current user."""
 
-        if current_user.role == UserRole.ADMIN:
-            review_jobs = await self.review_job_repository.list_all(
-                status=status,
-                repository_id=repository_id,
-            )
-        else:
-            review_jobs = await self.review_job_repository.list_for_user(
-                current_user.id,
-                status=status,
-                repository_id=repository_id,
-            )
+        review_jobs = await self.review_job_repository.list_for_user(
+            current_user.id,
+            status=status,
+            repository_id=repository_id,
+        )
 
         return [self._to_response(review_job) for review_job in review_jobs]
 
@@ -101,7 +93,7 @@ class ReviewJobService:
         job_id: UUID,
         current_user: User,
     ) -> ReviewJobResponse:
-        """Return a review job after ownership or admin authorization."""
+        """Return a review job after ownership authorization."""
 
         review_job = await self._get_authorized_job(job_id, current_user)
         return self._to_response(review_job)
@@ -121,6 +113,16 @@ class ReviewJobService:
             raise
 
         logger.info("Review job %s canceled by user %s", job_id, current_user.id)
+        await publish_job_progress(
+            job_id,
+            "failed",
+            {
+                "status": ReviewJobStatus.FAILED.value,
+                "progress": 100,
+                "message": "Review job canceled",
+                "data": {"reason": "canceled"},
+            },
+        )
 
     async def update_job_status(
         self,
@@ -173,6 +175,33 @@ class ReviewJobService:
         )
         return self._to_response(updated_job)
 
+    async def get_progress_snapshot(
+        self,
+        job_id: UUID,
+        current_user: User,
+    ) -> JobProgressEvent:
+        """Return an owner-authorized fallback event for a new SSE connection."""
+
+        review_job = await self._get_authorized_job(job_id, current_user)
+        history = await self.review_job_repository.get_latest_status_history(job_id)
+        progress = history.progress if history is not None else 0
+        message = (
+            history.message
+            if history is not None and history.message
+            else review_job.error_message
+            or review_job.status.value.replace("_", " ").title()
+        )
+        timestamp = history.changed_at if history is not None else review_job.created_at
+        return JobProgressEvent(
+            job_id=review_job.id,
+            event=self._get_progress_event_type(review_job.status),
+            status=review_job.status.value,
+            progress=progress,
+            message=message,
+            timestamp=timestamp,
+            data={"snapshot": True},
+        )
+
     async def _get_authorized_job(
         self,
         job_id: UUID,
@@ -181,9 +210,6 @@ class ReviewJobService:
         review_job = await self.review_job_repository.get_by_id(job_id)
         if review_job is None:
             raise NotFoundError("Review job not found")
-
-        if current_user.role == UserRole.ADMIN:
-            return review_job
 
         if review_job.user_id != current_user.id:
             raise AuthorizationError("Review job access is restricted to its owner")
@@ -212,7 +238,10 @@ class ReviewJobService:
     def _build_stream_url(self, job_id: UUID) -> str:
         return f"/api/review-jobs/{job_id}/stream"
 
-    def _get_progress_event_type(self, status: ReviewJobStatus) -> str:
+    def _get_progress_event_type(
+        self,
+        status: ReviewJobStatus,
+    ) -> JobProgressEventType:
         if status == ReviewJobStatus.COMPLETED:
             return "completed"
 

@@ -9,9 +9,12 @@ import {
   Circle,
   FileCode2,
   GitBranch,
+  Loader2,
   RefreshCw,
   SearchCheck,
   Trash2,
+  Wifi,
+  WifiOff,
 } from "lucide-react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
@@ -29,6 +32,11 @@ import {
 import { TechnicalDetails } from "@/components/ui/technical-details";
 import { getApiErrorMessage } from "@/lib/api-error";
 import {
+  shouldReconcileJobProgress,
+  type JobProgressConnectionState,
+} from "@/lib/job-progress";
+import { useJobProgress } from "@/hooks/use-job-progress";
+import {
   cancelReviewJob,
   getReviewJob,
   getReviewJobAiTrace,
@@ -37,6 +45,7 @@ import { TraceEventList, TraceTokenSummary } from "@/components/reviews/ai-trace
 import { ReviewWorkspaceTabs } from "@/components/reviews/review-workspace-tabs";
 import { useAppDispatch, useAppSelector } from "@/store/hooks";
 import {
+  applyJobProgress,
   setCurrentJob,
   setJobError,
   setJobLoading,
@@ -47,11 +56,13 @@ import {
 import type {
   AITraceStage,
   AITrace,
+  JobProgressEvent,
   ReviewJob,
   ReviewJobStatus,
 } from "@/types/review-job";
 
-const POLLING_INTERVAL_MS = 4_000;
+const AI_TRACE_POLLING_INTERVAL_MS = 4_000;
+const JOB_RECONCILIATION_INTERVAL_MS = 10_000;
 const TERMINAL_STATUSES = new Set<ReviewJobStatus>(["COMPLETED", "FAILED"]);
 
 export default function ReviewJobDetailPage() {
@@ -68,19 +79,27 @@ export default function ReviewJobDetailPage() {
   const [isCanceling, setIsCanceling] = useState(false);
   const [nowMs, setNowMs] = useState(() => Date.now());
 
-  const loadJob = useCallback(async () => {
-    dispatch(setJobLoading(true));
+  const loadJob = useCallback(async (isBackground = false) => {
+    if (!isBackground) {
+      dispatch(setJobLoading(true));
+    }
 
     try {
       const job = await getReviewJob(jobId);
       dispatch(setCurrentJob(job));
       dispatch(upsertJob(job));
     } catch (requestError) {
-      dispatch(
-        setJobError(getApiErrorMessage(requestError, "Unable to load review job.")),
-      );
+      if (!isBackground) {
+        dispatch(
+          setJobError(
+            getApiErrorMessage(requestError, "Unable to load review job."),
+          ),
+        );
+      }
     } finally {
-      dispatch(setJobLoading(false));
+      if (!isBackground) {
+        dispatch(setJobLoading(false));
+      }
     }
   }, [dispatch, jobId]);
 
@@ -95,6 +114,23 @@ export default function ReviewJobDetailPage() {
     }
   }, [jobId]);
 
+  const handleProgressEvent = useCallback(
+    (event: JobProgressEvent) => {
+      dispatch(applyJobProgress(event));
+      void loadAiTrace();
+      if (event.event === "completed" || event.event === "failed") {
+        void loadJob(true);
+      }
+    },
+    [dispatch, loadAiTrace, loadJob],
+  );
+
+  const { connectionState, progressEvent } = useJobProgress({
+    enabled: Boolean(currentJob && !TERMINAL_STATUSES.has(currentJob.status)),
+    onEvent: handleProgressEvent,
+    streamUrl: currentJob?.stream_url ?? null,
+  });
+
   useEffect(() => {
     void loadJob();
     void loadAiTrace();
@@ -105,19 +141,35 @@ export default function ReviewJobDetailPage() {
   }, [dispatch, loadAiTrace, loadJob]);
 
   useEffect(() => {
-    if (currentJobStatus && TERMINAL_STATUSES.has(currentJobStatus)) {
+    if (!currentJob || TERMINAL_STATUSES.has(currentJobStatus ?? "PENDING")) {
       return;
     }
 
     const intervalId = window.setInterval(() => {
-      void loadJob();
       void loadAiTrace();
-    }, POLLING_INTERVAL_MS);
+    }, AI_TRACE_POLLING_INTERVAL_MS);
 
     return () => {
       window.clearInterval(intervalId);
     };
-  }, [currentJobStatus, loadAiTrace, loadJob]);
+  }, [currentJob, currentJobStatus, loadAiTrace]);
+
+  useEffect(() => {
+    if (
+      !currentJobStatus ||
+      !shouldReconcileJobProgress(connectionState, currentJobStatus)
+    ) {
+      return;
+    }
+
+    const intervalId = window.setInterval(() => {
+      void loadJob(true);
+    }, JOB_RECONCILIATION_INTERVAL_MS);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [connectionState, currentJobStatus, loadJob]);
 
   useEffect(() => {
     const shouldTickDuration =
@@ -205,8 +257,10 @@ export default function ReviewJobDetailPage() {
         <ReviewJobDetail
           aiTrace={aiTrace}
           aiTraceError={aiTraceError}
+          connectionState={connectionState}
           job={currentJob}
           nowMs={nowMs}
+          progressEvent={progressEvent}
         />
       ) : null}
     </>
@@ -216,13 +270,17 @@ export default function ReviewJobDetailPage() {
 function ReviewJobDetail({
   aiTrace,
   aiTraceError,
+  connectionState,
   job,
   nowMs,
+  progressEvent,
 }: {
   aiTrace: AITrace | null;
   aiTraceError: string | null;
+  connectionState: JobProgressConnectionState;
   job: ReviewJob;
   nowMs: number;
+  progressEvent: JobProgressEvent | null;
 }) {
   return (
     <>
@@ -237,6 +295,12 @@ function ReviewJobDetail({
           value={formatDuration(job.started_at, job.completed_at, nowMs)}
         />
       </section>
+
+      <JobProgressCard
+        connectionState={connectionState}
+        event={progressEvent}
+        job={job}
+      />
 
       <Card>
         <CardHeader>
@@ -435,11 +499,125 @@ function ProgressBar({ tone, value }: { tone: string; value: number }) {
   return (
     <div className="mt-3 h-2 overflow-hidden rounded-md bg-background">
       <div
-        className={`h-full rounded-md ${tone}`}
+        className={`h-full rounded-md transition-[width] duration-500 ease-out ${tone}`}
         style={{ width: `${Math.max(0, Math.min(100, value))}%` }}
       />
     </div>
   );
+}
+
+function JobProgressCard({
+  connectionState,
+  event,
+  job,
+}: {
+  connectionState: JobProgressConnectionState;
+  event: JobProgressEvent | null;
+  job: ReviewJob;
+}) {
+  const progress = event?.progress ?? getStatusProgress(job.status);
+  const message = event?.message ?? getDefaultProgressMessage(job.status);
+  const isTerminal = TERMINAL_STATUSES.has(job.status);
+  const isWorking = !isTerminal && connectionState !== "closed";
+  const connection = getConnectionState(connectionState);
+  const ConnectionIcon = connection.icon;
+
+  return (
+    <Card aria-live="polite">
+      <CardHeader className="pb-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <CardTitle>Review progress</CardTitle>
+            <CardDescription>Realtime updates for this review job.</CardDescription>
+          </div>
+          <span
+            className={`inline-flex items-center gap-2 rounded-md border px-2.5 py-1 text-xs font-semibold ${connection.className}`}
+          >
+            <ConnectionIcon
+              aria-hidden="true"
+              className={`size-3.5 ${isWorking && (connectionState === "connecting" || connectionState === "reconnecting") ? "animate-spin" : ""}`}
+            />
+            {connection.label}
+          </span>
+        </div>
+      </CardHeader>
+      <CardContent className="grid gap-3">
+        <div className="flex items-end justify-between gap-3">
+          <p className="text-sm text-muted-foreground">{message}</p>
+          <p className="text-2xl font-semibold tabular-nums">{progress}%</p>
+        </div>
+        <ProgressBar
+          tone={isTerminal && job.status === "FAILED" ? "bg-destructive" : "bg-sky-400"}
+          value={progress}
+        />
+        <div className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
+          <span>{event?.status ?? job.status.replaceAll("_", " ")}</span>
+          <span className={isWorking ? "animate-pulse" : undefined}>
+            {isWorking ? "Processing" : isTerminal ? "Finished" : "Waiting"}
+          </span>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function getStatusProgress(status: ReviewJobStatus): number {
+  const progressByStatus: Record<ReviewJobStatus, number> = {
+    PENDING: 0,
+    CLONING: 10,
+    ANALYZING_STRUCTURE: 35,
+    GENERATING_SUMMARY: 50,
+    RUNNING_STATIC_ANALYSIS: 60,
+    CHUNKING_CODE: 80,
+    AI_REVIEWING: 88,
+    GENERATING_REPORT: 95,
+    COMPLETED: 100,
+    FAILED: 100,
+  };
+  return progressByStatus[status];
+}
+
+function getDefaultProgressMessage(status: ReviewJobStatus): string {
+  if (status === "COMPLETED") {
+    return "Review completed.";
+  }
+  if (status === "FAILED") {
+    return "Review failed.";
+  }
+  return `Review status: ${status.replaceAll("_", " ").toLowerCase()}`;
+}
+
+function getConnectionState(state: JobProgressConnectionState): {
+  className: string;
+  icon: typeof Wifi;
+  label: string;
+} {
+  if (state === "open") {
+    return {
+      className: "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-200",
+      icon: Wifi,
+      label: "Live",
+    };
+  }
+  if (state === "reconnecting") {
+    return {
+      className: "border-amber-400/40 bg-amber-400/10 text-amber-800 dark:text-amber-100",
+      icon: Loader2,
+      label: "Reconnecting",
+    };
+  }
+  if (state === "connecting") {
+    return {
+      className: "border-sky-400/40 bg-sky-400/10 text-sky-700 dark:text-sky-200",
+      icon: Loader2,
+      label: "Connecting",
+    };
+  }
+  return {
+    className: "border-border bg-muted text-muted-foreground",
+    icon: WifiOff,
+    label: "Closed",
+  };
 }
 
 function TraceMetric({ label, value }: { label: string; value: number }) {

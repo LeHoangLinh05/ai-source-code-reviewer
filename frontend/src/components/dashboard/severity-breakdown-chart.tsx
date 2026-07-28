@@ -65,7 +65,7 @@ export function SeverityBreakdownChart({
   const totalFindings = visibleItems.reduce((sum, item) => sum + item.value, 0);
 
   return (
-    <div className="relative h-64 w-full">
+    <div className="relative h-64 min-w-0 w-full max-w-full overflow-hidden">
       <Doughnut
         data={{
           labels: visibleItems.map((item) => SEVERITY_LABELS[item.key]),

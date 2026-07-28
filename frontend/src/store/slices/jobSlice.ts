@@ -1,6 +1,6 @@
 import { createSlice, type PayloadAction } from "@reduxjs/toolkit";
 
-import type { ReviewJob } from "@/types/review-job";
+import type { JobProgressEvent, ReviewJob } from "@/types/review-job";
 
 type JobState = {
   currentJob: ReviewJob | null;
@@ -18,10 +18,42 @@ const initialState: JobState = {
   items: [],
 };
 
+function jobWithProgressEvent(
+  job: ReviewJob,
+  event: JobProgressEvent,
+): ReviewJob {
+  const isTerminal = event.status === "COMPLETED" || event.status === "FAILED";
+  return {
+    ...job,
+    status: event.status,
+    started_at:
+      event.status === "CLONING" && job.started_at === null
+        ? event.timestamp
+        : job.started_at,
+    completed_at: isTerminal ? event.timestamp : job.completed_at,
+    error_message:
+      event.status === "FAILED" ? event.message : job.error_message,
+  };
+}
+
 export const jobSlice = createSlice({
   name: "jobs",
   initialState,
   reducers: {
+    applyJobProgress: (state, action: PayloadAction<JobProgressEvent>) => {
+      const event = action.payload;
+      const jobIndex = state.items.findIndex((job) => job.id === event.job_id);
+      if (jobIndex !== -1) {
+        state.items[jobIndex] = jobWithProgressEvent(
+          state.items[jobIndex],
+          event,
+        );
+      }
+
+      if (state.currentJob?.id === event.job_id) {
+        state.currentJob = jobWithProgressEvent(state.currentJob, event);
+      }
+    },
     removeJob: (state, action: PayloadAction<string>) => {
       state.items = state.items.filter((job) => job.id !== action.payload);
 
@@ -63,6 +95,7 @@ export const jobSlice = createSlice({
 });
 
 export const {
+  applyJobProgress,
   removeJob,
   setCurrentJob,
   setJobError,

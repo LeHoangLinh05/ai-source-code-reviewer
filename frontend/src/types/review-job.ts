@@ -10,6 +10,23 @@ export type ReviewJobStatus =
   | "COMPLETED"
   | "FAILED";
 
+export type JobProgressEventType =
+  | "status_change"
+  | "progress_update"
+  | "log"
+  | "completed"
+  | "failed";
+
+export type JobProgressEvent = {
+  job_id: string;
+  event: JobProgressEventType;
+  status: ReviewJobStatus;
+  progress: number;
+  message: string;
+  timestamp: string;
+  data: Record<string, unknown>;
+};
+
 export type ReviewJob = {
   id: string;
   repository_id: string;

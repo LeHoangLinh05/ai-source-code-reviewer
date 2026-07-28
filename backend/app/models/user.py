@@ -20,14 +20,13 @@ if TYPE_CHECKING:
 
 
 class UserRole(StrEnum):
-    """Supported RBAC roles for authenticated users."""
+    """Role value retained for backward-compatible API responses."""
 
     USER = "user"
-    ADMIN = "admin"
 
 
 class User(Base):
-    """Relational user account used by auth, ownership, and RBAC checks."""
+    """Relational user account used by auth and ownership checks."""
 
     __tablename__ = "users"
 

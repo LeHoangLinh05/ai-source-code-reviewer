@@ -1,11 +1,14 @@
 """Shared data contracts for backend-directed probe review."""
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Protocol
 
 from pydantic import BaseModel, Field, field_validator
 
 from app.ai.probe.contracts import ProbeDefinition
+
+ProbeBatchProgressCallback = Callable[[int, int], Awaitable[None]]
 
 
 class SyntheticTraceWriter(Protocol):

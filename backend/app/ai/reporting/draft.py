@@ -1,4 +1,4 @@
-"""Validate and generate structured final-report drafts."""
+"""Validate and generate JSON final-report drafts."""
 
 from __future__ import annotations
 
@@ -44,20 +44,12 @@ async def build_final_report_draft(
     report_input: str,
     report_context: str,
 ) -> tuple[FinalReportDraft, str]:
-    """Return a valid final-report draft, falling back deterministically if needed."""
-
-    try:
-        return (
-            await _invoke_structured_final_report(report_input),
-            "langchain_structured_output",
-        )
-    except Exception as error:
-        logger.warning("Structured final report generation failed: %s", error)
+    """Return a valid draft without unsupported structured tool calls."""
 
     try:
         return await _invoke_raw_json_final_report(report_input), "raw_json_output"
     except Exception as error:
-        logger.warning("Raw JSON final report generation failed: %s", error)
+        logger.warning("Final report JSON generation failed: %s", error)
 
     return build_deterministic_final_report_draft(report_context), (
         "deterministic_fallback"
@@ -112,25 +104,6 @@ def _stringify_top_priority(value: object) -> str | None:
         return " | ".join(part for part in parts if part) or None
 
     return str(value).strip() or None
-
-
-async def _invoke_structured_final_report(report_input: str) -> FinalReportDraft:
-    from app.ai.llm.config import run_with_configured_llm
-
-    async def call(llm: Any) -> FinalReportDraft:
-        structured_llm = llm.with_structured_output(FinalReportDraft)
-        result = await structured_llm.ainvoke(
-            [
-                ("system", FINAL_REPORT_STRUCTURED_SYSTEM_PROMPT),
-                ("human", report_input),
-            ]
-        )
-        if isinstance(result, FinalReportDraft):
-            return result
-
-        return FinalReportDraft.model_validate(result)
-
-    return await run_with_configured_llm(call)
 
 
 async def _invoke_raw_json_final_report(report_input: str) -> FinalReportDraft:

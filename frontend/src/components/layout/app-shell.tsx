@@ -91,8 +91,8 @@ export function AppShell({ children }: AppShellProps) {
           </div>
         </header>
 
-        <main className="min-h-0 flex-1 overflow-y-auto">
-          <div className="mx-auto flex w-full max-w-[1600px] flex-col gap-6 px-4 py-7 text-[15px] sm:px-6 lg:px-8 xl:px-10">
+        <main className="min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto">
+          <div className="mx-auto flex w-full min-w-0 max-w-[1600px] flex-col gap-6 px-4 py-7 text-[15px] sm:px-6 lg:px-8 xl:px-10">
             {children}
           </div>
         </main>

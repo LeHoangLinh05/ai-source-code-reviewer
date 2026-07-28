@@ -11,7 +11,7 @@ from app.models.review_issue import (
 )
 from app.models.review_job import ReviewJob, ReviewJobStatus
 from app.models.review_report import ReviewReport
-from app.models.user import User, UserRole
+from app.models.user import User
 from app.repositories.mongodb_repository import ChunkMetadataRepository
 from app.repositories.report_repository import ReportRepository
 from app.schemas.report import (
@@ -195,9 +195,6 @@ class ReportService:
         review_job = await self.report_repository.get_job_by_id(job_id)
         if review_job is None:
             raise NotFoundError("Review job not found")
-
-        if current_user.role == UserRole.ADMIN:
-            return review_job
 
         if review_job.user_id != current_user.id:
             raise AuthorizationError("Review job access is restricted to its owner")

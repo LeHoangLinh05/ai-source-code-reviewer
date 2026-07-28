@@ -59,6 +59,21 @@ class ReviewJobRepository:
         result = await self.session.execute(statement)
         return result.scalar_one_or_none()
 
+    async def get_latest_status_history(
+        self,
+        job_id: UUID,
+    ) -> JobStatusHistory | None:
+        """Return the newest persisted progress snapshot for a review job."""
+
+        statement = (
+            select(JobStatusHistory)
+            .where(JobStatusHistory.job_id == job_id)
+            .order_by(JobStatusHistory.changed_at.desc())
+            .limit(1)
+        )
+        result = await self.session.execute(statement)
+        return result.scalar_one_or_none()
+
     async def list_for_user(
         self,
         user_id: UUID,
@@ -72,27 +87,6 @@ class ReviewJobRepository:
             select(ReviewJob)
             .options(selectinload(ReviewJob.repository))
             .where(ReviewJob.user_id == user_id)
-            .order_by(ReviewJob.created_at.desc())
-        )
-        statement = self._apply_filters(
-            statement,
-            status=status,
-            repository_id=repository_id,
-        )
-        result = await self.session.execute(statement)
-        return list(result.scalars().all())
-
-    async def list_all(
-        self,
-        *,
-        status: ReviewJobStatus | None,
-        repository_id: UUID | None,
-    ) -> list[ReviewJob]:
-        """Return all review jobs, newest first."""
-
-        statement = (
-            select(ReviewJob)
-            .options(selectinload(ReviewJob.repository))
             .order_by(ReviewJob.created_at.desc())
         )
         statement = self._apply_filters(

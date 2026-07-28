@@ -1,5 +1,8 @@
-"""Tests for structured final-report synthesis helpers."""
+"""Tests for final-report synthesis helpers."""
 
+import pytest
+
+from app.ai.reporting import draft as report_draft
 from app.ai.reporting.final_report import (
     FinalReportDraft,
     _is_placeholder_summary,
@@ -83,6 +86,38 @@ def test_final_report_schema_accepts_structured_top_priorities() -> None:
         "high | security | Missing authorization",
         "src/app.py",
     ]
+
+
+@pytest.mark.asyncio
+async def test_final_report_uses_one_raw_json_call_for_cline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    async def invoke_raw_json(report_input: str) -> FinalReportDraft:
+        calls.append(report_input)
+        return FinalReportDraft(
+            executive_summary="Done",
+            security_score=7,
+            maintainability_score=8,
+            performance_score=9,
+            overall_score=8,
+        )
+
+    monkeypatch.setattr(
+        report_draft,
+        "_invoke_raw_json_final_report",
+        invoke_raw_json,
+    )
+
+    result, source = await report_draft.build_final_report_draft(
+        report_input="report input",
+        report_context="{}",
+    )
+
+    assert result.executive_summary == "Done"
+    assert source == "raw_json_output"
+    assert calls == ["report input"]
 
 
 def test_final_report_detects_placeholder_summary() -> None:
