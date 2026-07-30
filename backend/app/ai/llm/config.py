@@ -9,7 +9,7 @@ import time
 from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from contextvars import ContextVar, Token
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from http import HTTPStatus
 from typing import Any, TypeVar
@@ -60,6 +60,10 @@ class LLMSessionState:
     rate_limit_failures: int = 0
     openai_circuit_open: bool = False
     last_openai_request_at: float | None = None
+    request_pacing_lock: asyncio.Lock = field(
+        default_factory=asyncio.Lock,
+        repr=False,
+    )
 
 
 _session_state: ContextVar[LLMSessionState | None] = ContextVar(
@@ -383,11 +387,12 @@ def _remaining_openai_delay(state: LLMSessionState, now: float) -> float:
 async def _pace_async_request(provider: str, state: LLMSessionState) -> None:
     if provider != "openai":
         return
-    delay = _remaining_openai_delay(state, _monotonic())
-    if delay > 0:
-        logger.info("Pacing OpenAI request for %.3fs", delay)
-        await asyncio.sleep(delay)
-    state.last_openai_request_at = _monotonic()
+    async with state.request_pacing_lock:
+        delay = _remaining_openai_delay(state, _monotonic())
+        if delay > 0:
+            logger.info("Pacing OpenAI request for %.3fs", delay)
+            await asyncio.sleep(delay)
+        state.last_openai_request_at = _monotonic()
 
 
 def _pace_sync_request(provider: str, state: LLMSessionState) -> None:

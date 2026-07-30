@@ -83,6 +83,7 @@ class ProbeReviewConfig:
     roadmap_max_chunks: int
     max_probes_per_batch: int
     max_chunks_per_batch: int
+    max_concurrency: int = 1
 
 
 class ProbeJudgeEvidenceReference(BaseModel):

@@ -32,7 +32,12 @@ const SEVERITY_COLORS: Record<SeverityKey, string> = {
 const CHART_OPTIONS: ChartOptions<"doughnut"> = {
   responsive: true,
   maintainAspectRatio: false,
-  cutout: "70%",
+  cutout: "72%",
+  elements: {
+    arc: {
+      borderRadius: 0,
+    },
+  },
   plugins: {
     legend: {
       position: "bottom",
@@ -75,9 +80,10 @@ export function SeverityBreakdownChart({
               backgroundColor: visibleItems.map(
                 (item) => SEVERITY_COLORS[item.key],
               ),
-              borderColor: "hsl(222 47% 8%)",
-              borderWidth: 3,
-              hoverOffset: 6,
+              borderColor: "transparent",
+              borderWidth: 0,
+              hoverOffset: 0,
+              spacing: 0,
             },
           ],
         }}

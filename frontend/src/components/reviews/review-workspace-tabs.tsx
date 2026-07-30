@@ -1,4 +1,4 @@
-import { Activity, Bot, FileText, ListChecks, type LucideIcon } from "lucide-react";
+import { Activity, FileText, ListChecks, type LucideIcon } from "lucide-react";
 import Link from "next/link";
 
 import { cn } from "@/lib/utils";
@@ -14,7 +14,6 @@ const TABS: Array<{
   { icon: Activity, id: "overview", label: "Overview" },
   { icon: ListChecks, id: "issues", label: "Issues" },
   { icon: FileText, id: "report", label: "Report" },
-  { icon: Bot, id: "trace", label: "Trace", suffix: "Advanced" },
 ];
 
 type ReviewWorkspaceTabsProps = {

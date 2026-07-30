@@ -3,6 +3,7 @@
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from app.analyzers.secret_scanner import SECRET_MASK
 from app.schemas.repo_summary import RepoSummary
@@ -53,6 +54,7 @@ def test_repo_summary_prompt_uses_project_context_and_masks_secrets(
     assert "Project context file: package.json" in prompt
     assert "Project context file: requirements.txt" in prompt
     assert "Project context file: docker-compose.yml" in prompt
+    assert "tech_stack field must be a JSON array of strings" in prompt
     assert "sk-fake-secret-value" not in prompt
     assert f"API_KEY={SECRET_MASK}" in prompt
 
@@ -116,6 +118,37 @@ async def test_generate_summary_retries_once_then_raises(
     assert fake_llm.prompts == [prompt, prompt]
 
 
+@pytest.mark.asyncio
+async def test_generate_summary_accepts_provider_tech_stack_string_without_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    prompt = "File tree (depth <= 3, max 200 lines):\n- README.md\n"
+    fake_llm = FakeSummaryLLM(
+        [
+            "{"
+            '"purpose":"A source review platform.",'
+            '"project_type":"Web application",'
+            '"tech_stack":"Python (FastAPI, Celery), PostgreSQL, Redis",'
+            '"architecture_overview":"A web UI calls an API and workers."'
+            "}"
+        ]
+    )
+    monkeypatch.setattr(
+        repo_summary_service,
+        "run_with_configured_llm",
+        _run_with_fake_llm(fake_llm),
+    )
+
+    summary = await RepoSummaryService().generate_summary(prompt)
+
+    assert fake_llm.prompts == [prompt]
+    assert summary.tech_stack == [
+        "Python (FastAPI, Celery)",
+        "PostgreSQL",
+        "Redis",
+    ]
+
+
 def test_coerce_repo_summary_accepts_fenced_json_message_content() -> None:
     summary = coerce_repo_summary(
         _FakeMessage(
@@ -132,6 +165,68 @@ def test_coerce_repo_summary_accepts_fenced_json_message_content() -> None:
 
     assert summary.project_type == "REST API backend"
     assert summary.tech_stack == ["Python", "FastAPI"]
+
+
+def test_coerce_repo_summary_normalizes_provider_tech_stack_string() -> None:
+    summary = coerce_repo_summary(
+        _FakeMessage(
+            "```json\n"
+            "{\n"
+            '  "purpose": "A source review platform.",\n'
+            '  "project_type": "Web application",\n'
+            '  "tech_stack": "Python (FastAPI, Celery); PostgreSQL, Redis\\n'
+            'React/Next.js, Docker, Tailwind CSS",\n'
+            '  "architecture_overview": "A web UI calls an API and workers."\n'
+            "}\n"
+            "```"
+        )
+    )
+
+    assert summary.tech_stack == [
+        "Python (FastAPI, Celery)",
+        "PostgreSQL",
+        "Redis",
+        "React/Next.js",
+        "Docker",
+        "Tailwind CSS",
+    ]
+
+
+def test_coerce_repo_summary_rejects_non_string_non_list_tech_stack() -> None:
+    with pytest.raises(ValidationError):
+        coerce_repo_summary(
+            {
+                "purpose": "A source review platform.",
+                "project_type": "Web application",
+                "tech_stack": {"backend": "Python"},
+                "architecture_overview": "A web UI calls an API and workers.",
+            }
+        )
+
+
+def test_coerce_repo_summary_preserves_quoted_commas_and_drops_empty_items() -> None:
+    summary = coerce_repo_summary(
+        {
+            "purpose": "A source review platform.",
+            "project_type": "Web application",
+            "tech_stack": '"Python, FastAPI", , Redis;  ; Docker',
+            "architecture_overview": "A web UI calls an API and workers.",
+        }
+    )
+
+    assert summary.tech_stack == ["Python, FastAPI", "Redis", "Docker"]
+
+
+def test_repo_summary_domain_schema_remains_strict() -> None:
+    with pytest.raises(ValidationError):
+        RepoSummary.model_validate(
+            {
+                "purpose": "A source review platform.",
+                "project_type": "Web application",
+                "tech_stack": "Python, FastAPI",
+                "architecture_overview": "A web UI calls an API and workers.",
+            }
+        )
 
 
 def test_extract_file_tree_paths_from_prompt_reconstructs_nested_paths() -> None:

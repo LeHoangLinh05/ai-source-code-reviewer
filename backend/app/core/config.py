@@ -119,6 +119,7 @@ class Settings(BaseSettings):
     probe_roadmap_max_chunks: int = Field(default=44, ge=1, le=200)
     probe_semantic_query_batch_size: int = Field(default=16, ge=1, le=64)
     probe_semantic_max_query_tokens: int = Field(default=64, ge=1, le=2048)
+    probe_judge_max_concurrency: int = Field(default=1, ge=1, le=8)
     probe_judge_max_probes_per_batch: int = Field(default=8, ge=1, le=24)
     probe_judge_max_chunks_per_batch: int = Field(default=24, ge=1, le=80)
     mistral_api_key: SecretStr | None = None

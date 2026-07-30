@@ -431,7 +431,7 @@ function AITracePanel({
               </h2>
             </div>
             <div className="max-h-[calc(100vh-14rem)] overflow-y-auto pr-2">
-              <TraceEventList events={trace.events} isCompact />
+              <TraceEventList events={trace.events} />
             </div>
           </section>
         ) : null}

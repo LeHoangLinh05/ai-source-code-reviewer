@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -69,12 +70,14 @@ class ProbeJudgeService:
         postgres_session: AsyncSession,
         max_probes_per_batch: int = 8,
         max_chunks_per_batch: int = 24,
+        max_concurrency: int = 1,
         min_confidence: float = MIN_PROBE_ISSUE_CONFIDENCE,
     ) -> None:
         self.llm = llm
         self.postgres_session = postgres_session
         self.max_probes_per_batch = max(1, max_probes_per_batch)
         self.max_chunks_per_batch = max(1, max_chunks_per_batch)
+        self.max_concurrency = max(1, max_concurrency)
         self.min_confidence = min_confidence
         self.roadmap_by_id = {
             requirement.rule_id: requirement
@@ -100,29 +103,65 @@ class ProbeJudgeService:
             max_chunks=self.max_chunks_per_batch,
         )
         total_batches = len(batches)
-        for batch in batches:
-            started_at = time.perf_counter()
-            response = await self._judge_batch(batch)
-            batch_created, batch_rejected = await self._persist_batch(
-                job_id=job_id,
-                candidates=response.candidates,
-                bundles=batch,
+        semaphore = asyncio.Semaphore(self.max_concurrency)
+        tasks = [
+            asyncio.create_task(
+                self._judge_batch_with_limit(
+                    batch_index=batch_index,
+                    batch=batch,
+                    semaphore=semaphore,
+                )
             )
-            judged_batches += 1
-            created_count += batch_created
-            rejected_count += batch_rejected
-            await _write_probe_judge_trace(
-                trace_writer=trace_writer,
-                batch=batch,
-                response=response,
-                created_count=batch_created,
-                rejected_count=batch_rejected,
-                duration_ms=int((time.perf_counter() - started_at) * 1000),
-            )
-            if on_batch_completed is not None:
-                await on_batch_completed(judged_batches, total_batches)
+            for batch_index, batch in enumerate(batches)
+        ]
+        try:
+            completed_tasks = asyncio.as_completed(tasks)
+            for completed_task in completed_tasks:
+                _, batch, response, duration_ms = await completed_task
+                batch_created, batch_rejected = await self._persist_batch(
+                    job_id=job_id,
+                    candidates=response.candidates,
+                    bundles=batch,
+                )
+                judged_batches += 1
+                created_count += batch_created
+                rejected_count += batch_rejected
+                await _write_probe_judge_trace(
+                    trace_writer=trace_writer,
+                    batch=batch,
+                    response=response,
+                    created_count=batch_created,
+                    rejected_count=batch_rejected,
+                    duration_ms=duration_ms,
+                )
+                if on_batch_completed is not None:
+                    await on_batch_completed(judged_batches, total_batches)
+        finally:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
 
         return judged_batches, created_count, rejected_count
+
+    async def _judge_batch_with_limit(
+        self,
+        *,
+        batch_index: int,
+        batch: list[ProbeEvidenceBundle],
+        semaphore: asyncio.Semaphore,
+    ) -> tuple[int, list[ProbeEvidenceBundle], ProbeJudgeResponse, int]:
+        """Run one LLM batch under the configured concurrency limit."""
+
+        async with semaphore:
+            started_at = time.perf_counter()
+            response = await self._judge_batch(batch)
+        return (
+            batch_index,
+            batch,
+            response,
+            int((time.perf_counter() - started_at) * 1000),
+        )
 
     async def _persist_batch(
         self,

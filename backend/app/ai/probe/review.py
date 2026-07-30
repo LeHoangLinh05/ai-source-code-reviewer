@@ -75,6 +75,7 @@ async def run_backend_directed_probe_review(
         postgres_session=postgres_session,
         max_probes_per_batch=config.max_probes_per_batch,
         max_chunks_per_batch=config.max_chunks_per_batch,
+        max_concurrency=config.max_concurrency,
     )
     judge_counts = await judge_service.judge_and_persist(
         job_id=job_id,

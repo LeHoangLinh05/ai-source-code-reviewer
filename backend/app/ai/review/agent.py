@@ -85,6 +85,7 @@ async def run_ai_review(
                     roadmap_max_chunks=settings.probe_roadmap_max_chunks,
                     max_probes_per_batch=(settings.probe_judge_max_probes_per_batch),
                     max_chunks_per_batch=settings.probe_judge_max_chunks_per_batch,
+                    max_concurrency=settings.probe_judge_max_concurrency,
                 ),
                 on_batch_completed=on_batch_completed,
             )

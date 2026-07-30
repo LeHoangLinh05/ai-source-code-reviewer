@@ -26,6 +26,9 @@ CONFIG_FILE_NAMES = (
 MAX_REPO_SUMMARY_LLM_ATTEMPTS = 2
 FILE_TREE_HEADER = "File tree (depth <= 3, max 200 lines):"
 FILE_TREE_LINE_REGEX = re.compile(r"^(?P<indent> *)- (?P<name>.+)$")
+TECH_STACK_SEPARATORS = frozenset({",", ";", "\n"})
+TECH_STACK_GROUP_OPENERS = frozenset({"(", "[", "{"})
+TECH_STACK_GROUP_PAIRS = {")": "(", "]": "[", "}": "{"}
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +60,9 @@ class RepoSummaryService:
                 "Write every field in English.",
                 "Return valid JSON only matching RepoSummary with fields: "
                 "purpose, project_type, tech_stack, architecture_overview. "
+                "The tech_stack field must be a JSON array of strings, never "
+                "a comma-separated string. Example: "
+                '{"tech_stack": ["Python", "FastAPI", "PostgreSQL"]}. '
                 "Make purpose a detailed paragraph that explains what the project "
                 "does, the main user-facing or operational workflows, and the "
                 "important capabilities visible from the repository context. "
@@ -127,24 +133,90 @@ async def invoke_repo_summary_llm(prompt: str) -> RepoSummary:
 
 
 def coerce_repo_summary(value: object) -> RepoSummary:
-    """Normalize LangChain structured-output results to RepoSummary."""
+    """Normalize OpenAI-compatible provider output to RepoSummary."""
 
     if isinstance(value, RepoSummary):
         return value
 
     if isinstance(value, dict):
-        return RepoSummary.model_validate(value)
+        return _validate_repo_summary_payload(value)
 
     if isinstance(value, str):
         parsed_value = parse_json_object_text(value)
         if parsed_value is not None:
-            return RepoSummary.model_validate(parsed_value)
+            return _validate_repo_summary_payload(parsed_value)
 
     content = getattr(value, "content", None)
     if content is not None:
         return coerce_repo_summary(_message_content_text(content))
 
     raise TypeError(f"Expected RepoSummary from LLM, got {type(value).__name__}")
+
+
+def _validate_repo_summary_payload(payload: dict[str, object]) -> RepoSummary:
+    """Validate one provider payload after bounded compatibility normalization."""
+
+    tech_stack = payload.get("tech_stack")
+    if not isinstance(tech_stack, str):
+        return RepoSummary.model_validate(payload)
+
+    normalized_payload = {
+        **payload,
+        "tech_stack": _split_tech_stack_text(tech_stack),
+    }
+    return RepoSummary.model_validate(normalized_payload)
+
+
+def _split_tech_stack_text(value: str) -> list[str]:
+    """Split provider prose on top-level separators while preserving groups."""
+
+    items: list[str] = []
+    current: list[str] = []
+    group_stack: list[str] = []
+    inside_double_quotes = False
+    escaped = False
+    malformed_grouping = False
+
+    for character in value:
+        if escaped:
+            escaped = False
+        elif character == "\\" and inside_double_quotes:
+            escaped = True
+        elif character == '"':
+            inside_double_quotes = not inside_double_quotes
+        elif not inside_double_quotes and character in TECH_STACK_GROUP_OPENERS:
+            group_stack.append(character)
+        elif not inside_double_quotes and character in TECH_STACK_GROUP_PAIRS:
+            expected_opener = TECH_STACK_GROUP_PAIRS[character]
+            if group_stack and group_stack[-1] == expected_opener:
+                group_stack.pop()
+            else:
+                malformed_grouping = True
+
+        if (
+            character in TECH_STACK_SEPARATORS
+            and not group_stack
+            and not inside_double_quotes
+        ):
+            _append_tech_stack_item(items, current)
+            current = []
+            continue
+
+        current.append(character)
+
+    _append_tech_stack_item(items, current)
+    if malformed_grouping or group_stack or inside_double_quotes:
+        normalized_value = value.strip()
+        return [normalized_value] if normalized_value else []
+    return items
+
+
+def _append_tech_stack_item(items: list[str], characters: list[str]) -> None:
+    normalized_item = "".join(characters).strip()
+    if normalized_item.startswith('"') and normalized_item.endswith('"'):
+        normalized_item = normalized_item[1:-1].strip()
+    if normalized_item:
+        items.append(normalized_item)
 
 
 def _message_content_text(content: object) -> object:

@@ -108,7 +108,7 @@ export function StatusBadge({ className, status }: StatusBadgeProps) {
 
 export function formatReviewJobStatus(status: ReviewJobStatus) {
   const labels: Record<ReviewJobStatus, string> = {
-    AI_REVIEWING: "AI reviewing",
+    AI_REVIEWING: "Reviewing",
     ANALYZING_STRUCTURE: "Analyzing structure",
     CHUNKING_CODE: "Preparing code",
     CLONING: "Cloning",
