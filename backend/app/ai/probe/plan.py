@@ -125,6 +125,50 @@ BASELINE_PROBES: tuple[ProbeDefinition, ...] = (
         ),
     ),
     _baseline(
+        probe_id="security.jwt_algorithm_allowlist",
+        category="security",
+        priority="high",
+        queries=(
+            "jwt decode algorithms allowlist none signature verification",
+            "token decode configured algorithm settings exception handling",
+        ),
+        lexical_terms=("jwt.decode", "algorithms", "none", "algorithm", "token"),
+        question=(
+            "Does JWT verification allow the none algorithm, omit an explicit "
+            "algorithm allowlist, or accept algorithms other than the configured "
+            "production algorithm? Treat an allowlist containing none as Critical."
+        ),
+    ),
+    _baseline(
+        probe_id="security.insecure_randomness",
+        category="security",
+        priority="high",
+        queries=(
+            "security token random seeded time predictable generation",
+            "password reset token secrets systemrandom entropy",
+        ),
+        lexical_terms=("random.seed", "time", "choice", "token", "secrets"),
+        question=(
+            "Is a security-sensitive token or credential generated with predictable "
+            "randomness such as random seeded from time instead of secrets?"
+        ),
+    ),
+    _baseline(
+        probe_id="security.open_redirect",
+        category="security",
+        priority="high",
+        queries=(
+            "redirect response next request parameter external URL validation",
+            "protocol relative backslash redirect urlparse allowlist",
+        ),
+        lexical_terms=("redirectresponse", "next", "urlparse", "netloc", "scheme"),
+        question=(
+            "Can request-controlled redirect input select an external destination, "
+            "including protocol-relative or backslash URL forms? A scheme/netloc-only "
+            "urlparse check is insufficient."
+        ),
+    ),
+    _baseline(
         probe_id="security.object_authorization",
         category="security",
         priority="high",
@@ -149,6 +193,29 @@ BASELINE_PROBES: tuple[ProbeDefinition, ...] = (
         lexical_terms=("admin", "role", "permission", "get_current_user"),
         question=(
             "Can a non-privileged authenticated user invoke a privileged operation?"
+        ),
+    ),
+    _baseline(
+        probe_id="security.sensitive_response_exposure",
+        category="security",
+        priority="high",
+        queries=(
+            "response model exposes cost price profit margin authenticated user",
+            "sensitive internal field API response without admin authorization",
+        ),
+        lexical_terms=(
+            "response_model",
+            "cost_price",
+            "profit",
+            "margin",
+            "get_current_user",
+        ),
+        question=(
+            "Can a non-admin caller receive sensitive internal data such as cost "
+            "price, margins, credentials, secrets, or private authorization fields? "
+            "Prioritize sensitive fields declared in ordinary API response_model "
+            "schemas and their non-admin routes; do not substitute a separate "
+            "privileged report endpoint when that response-model evidence exists."
         ),
     ),
     _baseline(
@@ -260,6 +327,27 @@ BASELINE_PROBES: tuple[ProbeDefinition, ...] = (
         question=(
             "Can concurrent execution cause a lost update, race, or unsupervised "
             "failure?"
+        ),
+    ),
+    _baseline(
+        probe_id="bug.inventory_invariant",
+        category="bug",
+        priority="high",
+        queries=(
+            "inventory quantity delta negative stock lower bound validation",
+            "adjust stock read modify write check constraint atomic update",
+        ),
+        lexical_terms=(
+            "quantity",
+            "delta",
+            "adjust_stock",
+            "stock",
+            "constraint",
+        ),
+        question=(
+            "Can an inventory mutation make quantity negative because neither the "
+            "request path nor persistence layer enforces a non-negative invariant? "
+            "Also identify non-atomic read-modify-write evidence when present."
         ),
     ),
     _baseline(

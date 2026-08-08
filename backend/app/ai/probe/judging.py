@@ -17,6 +17,15 @@ from app.ai.probe.models import (
 from app.models.review_issue import IssueCategory, IssueSeverity
 
 logger = logging.getLogger(__name__)
+PROBE_SEVERITY_POLICY = {
+    "bug.inventory_invariant": IssueSeverity.HIGH,
+    "security.insecure_randomness": IssueSeverity.MEDIUM,
+    "security.jwt_algorithm_allowlist": IssueSeverity.CRITICAL,
+    "security.mass_assignment": IssueSeverity.HIGH,
+    "security.open_redirect": IssueSeverity.MEDIUM,
+    "security.role_authorization": IssueSeverity.HIGH,
+    "security.sensitive_response_exposure": IssueSeverity.MEDIUM,
+}
 
 
 def _judge_batches(
@@ -56,10 +65,14 @@ def _judge_prompt(batch: list[ProbeEvidenceBundle]) -> str:
         "instruction": (
             "For each probe, decide whether the evidence proves a real issue. "
             "Do not invent files, rules, or missing behavior outside the chunks. "
-            "Return at least one candidate for every probe; use no_issue or "
-            "uncertain when evidence does not prove an issue. Preserve probe_id. "
+            "Return exactly one candidate for every probe; use no_issue or "
+            "uncertain when evidence does not prove an issue. Preserve probe_id "
+            "exactly and never return an unknown or duplicate probe_id. "
             "Return exactly one JSON object and no markdown. Persistable issues "
-            "require confidence >= 0.7."
+            "require confidence >= 0.7. A Pydantic request model only blocks "
+            "unknown fields; it does not prevent over-posting when a sensitive "
+            "field is declared in that model. When severity_policy is present, "
+            "use that exact severity for an issue verdict."
         ),
         "format_rules": [
             "candidates must be an array.",
@@ -67,6 +80,8 @@ def _judge_prompt(batch: list[ProbeEvidenceBundle]) -> str:
             "Use [] for empty evidence arrays; never use null or a string.",
             "Every evidence item must include file_path, chunk_index, line_start, "
             "and line_end.",
+            "The candidate file_path and line range must be covered by retrieved "
+            "source chunks and overlap at least one supporting evidence range.",
             "Use verdict values only: issue, no_issue, uncertain.",
         ],
         "output_schema": _judge_output_schema(),
@@ -103,7 +118,7 @@ def _judge_output_schema() -> dict[str, object]:
                 "supporting_evidence": [evidence_reference_schema],
                 "contradicting_evidence": [evidence_reference_schema],
                 "rule_id": "string | null",
-                "probe_id": "string | null",
+                "probe_id": "non-empty string",
             }
         ]
     }
@@ -112,6 +127,11 @@ def _judge_output_schema() -> dict[str, object]:
 def _bundle_for_prompt(bundle: ProbeEvidenceBundle) -> dict[str, object]:
     return {
         "probe": bundle.probe.prompt_payload(),
+        "severity_policy": (
+            severity.value
+            if (severity := PROBE_SEVERITY_POLICY.get(bundle.probe.probe_id))
+            else None
+        ),
         "retrieval_status": bundle.retrieval_status,
         "candidate_chunks": [
             {
@@ -230,3 +250,7 @@ def _issue_severity(value: str | None) -> IssueSeverity:
             if severity.value == normalized:
                 return severity
     return IssueSeverity.MEDIUM
+
+
+def _probe_issue_severity(probe_id: str, value: str | None) -> IssueSeverity:
+    return PROBE_SEVERITY_POLICY.get(probe_id, _issue_severity(value))

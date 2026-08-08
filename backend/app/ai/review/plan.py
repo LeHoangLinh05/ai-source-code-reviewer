@@ -75,12 +75,12 @@ class ChunkInfo:
 
 
 def get_review_mode(options: dict[str, object] | None) -> str:
-    """Return the AI review mode, defaulting to targeted smart review."""
+    """Return the AI review mode, defaulting to full source audit."""
 
     if not options:
-        return REVIEW_MODE_SMART
+        return REVIEW_MODE_FULL_AUDIT
 
-    value = options.get("review_mode", REVIEW_MODE_SMART)
+    value = options.get("review_mode", REVIEW_MODE_FULL_AUDIT)
     if not isinstance(value, str):
         raise ValueError("review_mode must be a string")
 

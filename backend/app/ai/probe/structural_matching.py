@@ -41,7 +41,11 @@ def _structural_candidates(
         )
         if candidate is not None:
             chunk_type = str(document.get("chunk_type") or "").lower()
-            function_bonus = 0.4 if chunk_type == "function" else 0.0
+            function_bonus = _structural_shape_bonus(
+                probe=probe,
+                chunk_type=chunk_type,
+                file_path=candidate.file_path,
+            )
             candidates.append(
                 replace(
                     candidate,
@@ -49,6 +53,20 @@ def _structural_candidates(
                 )
             )
     return sorted(candidates, key=_structural_candidate_rank, reverse=True)
+
+
+def _structural_shape_bonus(
+    *,
+    probe: ProbeDefinition,
+    chunk_type: str,
+    file_path: str,
+) -> float:
+    normalized_path = file_path.replace("\\", "/").lower()
+    if probe.probe_id == "security.sensitive_response_exposure":
+        if chunk_type == "class" and "/schemas/" in normalized_path:
+            return 0.8
+        return 0.0
+    return 0.4 if chunk_type == "function" else 0.0
 
 
 def _structural_candidate_rank(
@@ -158,13 +176,171 @@ def _matches_object_authorization(content: str) -> bool:
 
 
 def _matches_role_authorization(content: str) -> bool:
-    return "admin" in content and "get_current_user" in content
+    has_authenticated_route = "@router." in content and "get_current_user" in content
+    has_privileged_semantics = _contains_any(
+        content,
+        "admin",
+        "cost_price",
+        "margin",
+        "profit",
+        "report",
+    )
+    has_stronger_authorization = _contains_any(
+        content,
+        "require_admin",
+        "require_role",
+        "is_admin",
+        "check_permission",
+        "has_permission",
+    )
+    return (
+        has_authenticated_route
+        and has_privileged_semantics
+        and not has_stronger_authorization
+    )
 
 
 def _matches_mass_assignment(content: str) -> bool:
-    return "setattr(" in content and _contains_any(
-        content, "payload", ".items()", "dict"
+    has_dynamic_assignment = "setattr(" in content and _contains_any(
+        content,
+        "payload",
+        ".items()",
+        "model_dump(",
+        "dict",
     )
+    has_sensitive_field = (
+        re.search(
+            r"\b(cost_price|is_admin|is_active|owner_id|role)\b",
+            content,
+        )
+        is not None
+    )
+    defines_request_fields = "basemodel" in content or "model_dump(" in content
+    return has_dynamic_assignment or (has_sensitive_field and defines_request_fields)
+
+
+def _matches_jwt_algorithm_allowlist(content: str) -> bool:
+    try:
+        tree = ast.parse(content)
+    except SyntaxError:
+        return "jwt.decode(" in content and _contains_any(
+            content,
+            '"none"',
+            "'none'",
+        )
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not _is_jwt_decode_call(node):
+            continue
+        algorithms = next(
+            (keyword.value for keyword in node.keywords if keyword.arg == "algorithms"),
+            None,
+        )
+        if algorithms is None:
+            return True
+        if _unsafe_jwt_algorithms(algorithms):
+            return True
+    return False
+
+
+def _is_jwt_decode_call(call: ast.Call) -> bool:
+    return (
+        isinstance(call.func, ast.Attribute)
+        and call.func.attr == "decode"
+        and isinstance(call.func.value, ast.Name)
+        and call.func.value.id == "jwt"
+    )
+
+
+def _unsafe_jwt_algorithms(algorithms: ast.expr) -> bool:
+    if not isinstance(algorithms, (ast.List, ast.Tuple, ast.Set)):
+        return True
+
+    values = algorithms.elts
+    if len(values) != 1:
+        return True
+    value = values[0]
+    if isinstance(value, ast.Constant) and isinstance(value.value, str):
+        return True
+    return not (
+        isinstance(value, ast.Attribute)
+        and isinstance(value.value, ast.Name)
+        and value.value.id == "settings"
+        and value.attr == "algorithm"
+    )
+
+
+def _matches_sensitive_response(content: str) -> bool:
+    has_sensitive_field = _contains_any(
+        content,
+        "cost_price",
+        "hashed_password",
+        "private_key",
+        "profit",
+        "margin",
+    )
+    defines_response_schema = (
+        has_sensitive_field
+        and "basemodel" in content
+        and re.search(r"class\s+[a-z0-9_]*response\b", content) is not None
+    )
+    return defines_response_schema
+
+
+def _matches_insecure_randomness(content: str) -> bool:
+    has_security_value = _contains_any(
+        content,
+        "token",
+        "secret",
+        "password",
+        "credential",
+        "nonce",
+    )
+    has_predictable_randomness = _contains_any(
+        content,
+        "random.seed(",
+        "random.choice(",
+        "random.randint(",
+        "random.random(",
+    )
+    return has_security_value and has_predictable_randomness
+
+
+def _matches_open_redirect(content: str) -> bool:
+    has_redirect_sink = "redirectresponse(" in content and "url=" in content
+    has_request_target = _contains_any(content, "next", "redirect", "return_url")
+    if not has_redirect_sink or not has_request_target:
+        return False
+    has_relative_path_allowlist = (
+        "startswith(" in content
+        and "//" in content
+        and _contains_any(content, "\\\\", "backslash")
+    )
+    return not has_relative_path_allowlist
+
+
+def _matches_inventory_invariant(content: str) -> bool:
+    has_quantity_mutation = (
+        re.search(r"\bquantity\s*\+=\s*[a-z_]", content) is not None
+        or re.search(
+            r"\bquantity\s*=\s*[a-z0-9_.]+\.quantity\s*\+\s*[a-z_]",
+            content,
+        )
+        is not None
+    )
+    if not has_quantity_mutation or "delta" not in content:
+        return False
+    has_non_negative_guard = re.search(
+        r"(?:quantity\s*\+\s*delta|new_quantity)\s*<\s*0",
+        content,
+    ) is not None or _contains_any(
+        content,
+        "checkconstraint",
+        "quantity >= 0",
+        "quantity>=0",
+        "max(0",
+    )
+    return not has_non_negative_guard
 
 
 def _matches_weak_hash(content: str) -> bool:
@@ -271,11 +447,16 @@ _STRUCTURAL_MATCHERS: dict[str, Any] = {
     "security.object_authorization": _matches_object_authorization,
     "security.role_authorization": _matches_role_authorization,
     "security.mass_assignment": _matches_mass_assignment,
+    "security.jwt_algorithm_allowlist": _matches_jwt_algorithm_allowlist,
+    "security.insecure_randomness": _matches_insecure_randomness,
+    "security.open_redirect": _matches_open_redirect,
+    "security.sensitive_response_exposure": _matches_sensitive_response,
     "security.weak_password_hash": _matches_weak_hash,
     "security.reset_token_lifecycle": _matches_reset_token,
     "security.refresh_token_validation": _matches_refresh_validation,
     "security.logout_revocation": _matches_logout,
     "bug.async_concurrency": _matches_race,
+    "bug.inventory_invariant": _matches_inventory_invariant,
     "bug.state_transaction_consistency": _matches_transaction,
     "performance.n_plus_one": _matches_n_plus_one,
     "performance.pagination_bounds": _matches_pagination,

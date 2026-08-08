@@ -584,10 +584,12 @@ Khi có roadmap, smart mode dành call budget logic là defect 4 batch, coverage
 
 `options.review_mode` nhận:
 
-- `smart` — mặc định. Tập trung vào probe/risk và budget.
-- `full_audit` — sau các bundle thông thường, tạo thêm coverage bundle cho **mọi chunk chưa được schedule**, tối đa 6 chunk/bundle.
+- `full_audit` — mặc định. Sau các bundle thông thường, tạo thêm coverage bundle cho **mọi chunk chưa được schedule**, tối đa 6 chunk/bundle.
+- `smart` — chế độ opt-in tập trung vào probe/risk và budget.
 
 Trong `full_audit`, phần bổ sung mọi chunk diễn ra sau lane trimming và không áp lại global `max_chunks`. Vì vậy số LLM batch/call có thể tăng mạnh; repository lớn có thể chạm `LLM_JOB_CALL_BUDGET`.
+
+Trước semantic indexing, hệ thống bỏ lockfile, source map, minified/generated output và file rỗng. Static analyzers vẫn nhận manifest file ban đầu; bộ lọc này chỉ giảm nhiễu và token cho semantic retrieval/judge.
 
 Hệ thống cũng có `build_chunk_review_plan()` để tính **coverage metric trên UI/trace**:
 

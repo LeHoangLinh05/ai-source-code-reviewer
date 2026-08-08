@@ -140,6 +140,21 @@ class ReportRepository:
         result = await self.session.execute(statement)
         return result.scalar_one_or_none()
 
+    async def list_issues_by_ids(
+        self,
+        *,
+        job_id: UUID,
+        issue_ids: list[UUID],
+    ) -> list[ReviewIssue]:
+        """Return selected issues that belong to one review job."""
+
+        statement = select(ReviewIssue).where(
+            ReviewIssue.job_id == job_id,
+            ReviewIssue.id.in_(issue_ids),
+        )
+        result = await self.session.execute(statement)
+        return list(result.scalars().all())
+
     async def replace_analysis_results(
         self,
         *,

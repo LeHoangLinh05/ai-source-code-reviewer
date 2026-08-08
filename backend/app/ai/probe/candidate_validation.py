@@ -64,32 +64,41 @@ def _supporting_bundle_chunks(
     anchor_chunks: dict[tuple[str, int], ProbeCandidateChunk] = {}
 
     for evidence in candidate.supporting_evidence:
-        chunk = chunks_by_key.get((evidence.file_path, evidence.chunk_index))
-        if chunk is None:
+        evidence_chunks = _resolve_evidence_chunks(
+            evidence_file_path=evidence.file_path,
+            evidence_chunk_index=evidence.chunk_index,
+            evidence_line_start=evidence.line_start,
+            evidence_line_end=evidence.line_end,
+            chunks_by_key=chunks_by_key,
+        )
+        if not evidence_chunks:
             return []
-        if not (
-            chunk.line_start <= evidence.line_start
-            and chunk.line_end >= evidence.line_end
-        ):
-            return []
-
-        matched_chunks[chunk.key] = chunk
         evidence_range = range(evidence.line_start, evidence.line_end + 1)
-        if chunk.file_path == file_path and _ranges_overlap(
-            candidate_range,
-            evidence_range,
-        ):
-            anchor_chunks[chunk.key] = chunk
+        for chunk in evidence_chunks:
+            matched_chunks[chunk.key] = chunk
+            if chunk.file_path == file_path and _ranges_overlap(
+                candidate_range,
+                evidence_range,
+            ):
+                anchor_chunks[chunk.key] = chunk
 
     if not anchor_chunks:
         return []
 
-    anchors = list(anchor_chunks.values())
+    candidate_file_chunks = [
+        chunk
+        for chunk in chunks_by_key.values()
+        if chunk.file_path == file_path
+        and chunk.line_start <= line_end
+        and line_start <= chunk.line_end
+    ]
     start_is_supported = any(
-        chunk.line_start <= line_start <= chunk.line_end for chunk in anchors
+        chunk.line_start <= line_start <= chunk.line_end
+        for chunk in candidate_file_chunks
     )
     end_is_supported = any(
-        chunk.line_start <= line_end <= chunk.line_end for chunk in anchors
+        chunk.line_start <= line_end <= chunk.line_end
+        for chunk in candidate_file_chunks
     )
     if not start_is_supported or not end_is_supported:
         return []
@@ -103,6 +112,39 @@ def _supporting_bundle_chunks(
             chunk.chunk_index,
         ),
     )
+
+
+def _resolve_evidence_chunks(
+    *,
+    evidence_file_path: str,
+    evidence_chunk_index: int,
+    evidence_line_start: int,
+    evidence_line_end: int,
+    chunks_by_key: dict[tuple[str, int], ProbeCandidateChunk],
+) -> list[ProbeCandidateChunk]:
+    referenced_chunk = chunks_by_key.get((evidence_file_path, evidence_chunk_index))
+    if referenced_chunk is None or not (
+        referenced_chunk.line_start <= evidence_line_end
+        and evidence_line_start <= referenced_chunk.line_end
+    ):
+        return []
+
+    overlapping_chunks = [
+        chunk
+        for chunk in chunks_by_key.values()
+        if chunk.file_path == evidence_file_path
+        and chunk.line_start <= evidence_line_end
+        and evidence_line_start <= chunk.line_end
+    ]
+    start_is_supported = any(
+        chunk.line_start <= evidence_line_start <= chunk.line_end
+        for chunk in overlapping_chunks
+    )
+    end_is_supported = any(
+        chunk.line_start <= evidence_line_end <= chunk.line_end
+        for chunk in overlapping_chunks
+    )
+    return overlapping_chunks if start_is_supported and end_is_supported else []
 
 
 def _ranges_overlap(left: range, right: range) -> bool:

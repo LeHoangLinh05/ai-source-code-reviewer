@@ -15,7 +15,7 @@ export function TechnicalDetails({
   children,
   className,
   contentClassName,
-  description = "Additional diagnostic information for developers.",
+  description,
   title = "Technical details",
 }: TechnicalDetailsProps) {
   return (
@@ -33,9 +33,11 @@ export function TechnicalDetails({
           <span className="block text-sm font-semibold text-foreground">
             {title}
           </span>
-          <span className="mt-0.5 block text-xs leading-5 text-muted-foreground">
-            {description}
-          </span>
+          {description ? (
+            <span className="mt-0.5 block text-xs leading-5 text-muted-foreground">
+              {description}
+            </span>
+          ) : null}
         </span>
         <ChevronDown
           aria-hidden="true"

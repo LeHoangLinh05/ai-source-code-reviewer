@@ -1,9 +1,19 @@
-import { Activity, FileText, ListChecks, type LucideIcon } from "lucide-react";
+import {
+  Activity,
+  FileText,
+  ListChecks,
+  Wrench,
+  type LucideIcon,
+} from "lucide-react";
 import Link from "next/link";
 
 import { cn } from "@/lib/utils";
 
-export type ReviewWorkspaceTab = "overview" | "issues" | "report" | "trace";
+export type ReviewWorkspaceTab =
+  | "overview"
+  | "issues"
+  | "report"
+  | "fixes";
 
 const TABS: Array<{
   icon: LucideIcon;
@@ -14,6 +24,7 @@ const TABS: Array<{
   { icon: Activity, id: "overview", label: "Overview" },
   { icon: ListChecks, id: "issues", label: "Issues" },
   { icon: FileText, id: "report", label: "Report" },
+  { icon: Wrench, id: "fixes", label: "Fixes" },
 ];
 
 type ReviewWorkspaceTabsProps = {

@@ -1,6 +1,7 @@
 """Review job request and response schemas."""
 
 from datetime import datetime
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -8,12 +9,32 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from app.models.review_job import ReviewJobStatus
 
 
+class ReviewRuleProfile(BaseModel):
+    """Optional roadmap profile applied to one review job."""
+
+    id: Literal["roadmap_bootcamp_v1"]
+    weeks_included: list[int] | None = None
+
+
+class ReviewJobOptions(BaseModel):
+    """Validated runtime options for source review behavior."""
+
+    model_config = ConfigDict(extra="allow")
+
+    review_mode: Literal["smart", "full_audit"] = "full_audit"
+    rule_profile: ReviewRuleProfile | None = None
+
+
 class ReviewJobCreate(BaseModel):
     """Payload for starting a repository review job."""
 
     repository_id: UUID
     branch: str | None = Field(default=None, max_length=100)
-    options: dict[str, object] = Field(default_factory=dict)
+    commit_sha: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-fA-F]{40}$",
+    )
+    options: ReviewJobOptions = Field(default_factory=ReviewJobOptions)
 
     @field_validator("branch")
     @classmethod
@@ -25,6 +46,13 @@ class ReviewJobCreate(BaseModel):
 
         stripped_value = value.strip()
         return stripped_value or None
+
+    @field_validator("commit_sha")
+    @classmethod
+    def normalize_optional_commit_sha(cls, value: str | None) -> str | None:
+        """Normalize an optional pinned Git commit."""
+
+        return value.lower() if value is not None else None
 
 
 class ReviewJobCreateResponse(BaseModel):
@@ -56,8 +84,8 @@ class ReviewJobResponse(BaseModel):
     stream_url: str
 
 
-class ReviewJobCancelResponse(BaseModel):
-    """Response returned after canceling a review job."""
+class ReviewJobDeleteResponse(BaseModel):
+    """Response returned after deleting a review job."""
 
     message: str
 

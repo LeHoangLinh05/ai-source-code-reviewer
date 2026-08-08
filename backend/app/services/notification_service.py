@@ -14,6 +14,7 @@ from redis.exceptions import RedisError
 
 from app.db.redis import get_redis_client
 from app.schemas.notification import JobProgressEvent, JobProgressEventType
+from app.services.realtime_progress_errors import is_realtime_progress_error
 
 JOB_PROGRESS_EVENTS: set[JobProgressEventType] = {
     "status_change",
@@ -66,7 +67,10 @@ async def publish_job_progress(
                 serialized_event,
             )
         )
-    except RedisError:
+    except (RedisError, RuntimeError) as error:
+        if not is_realtime_progress_error(error):
+            raise
+
         logger.warning(
             "Unable to publish realtime progress for review job %s",
             job_id,

@@ -7,7 +7,6 @@ import {
   ExternalLink,
   GitBranch,
   Play,
-  RefreshCw,
   Trash2,
   X,
 } from "lucide-react";
@@ -54,7 +53,7 @@ import {
   setSelectedRepository,
   upsertRepository,
 } from "@/store/slices/repositorySlice";
-import type { ReviewJob } from "@/types/review-job";
+import type { ReviewJob, ReviewJobStatus } from "@/types/review-job";
 import type { ReviewReport } from "@/types/report";
 import type { RepoSummary } from "@/types/repository";
 
@@ -66,6 +65,11 @@ type StartReviewFormValues = z.infer<typeof startReviewSchema>;
 
 const BRANCH_PRESETS = ["main", "master"] as const;
 const ROADMAP_RULE_PROFILE_ID = "roadmap_bootcamp_v1";
+const REVIEW_JOB_POLLING_INTERVAL_MS = 5_000;
+const TERMINAL_REVIEW_STATUSES = new Set<ReviewJobStatus>([
+  "COMPLETED",
+  "FAILED",
+]);
 
 export default function RepositoryDetailPage() {
   const params = useParams<{ id: string }>();
@@ -95,13 +99,6 @@ export default function RepositoryDetailPage() {
       branch: "main",
     },
   });
-  const createdAt = useMemo(() => {
-    if (!selectedRepository?.created_at) {
-      return null;
-    }
-
-    return formatDateTime(selectedRepository.created_at);
-  }, [selectedRepository?.created_at]);
   const lastReviewedAt = useMemo(() => {
     if (selectedRepository?.last_reviewed_at) {
       return selectedRepository.last_reviewed_at;
@@ -111,6 +108,10 @@ export default function RepositoryDetailPage() {
   }, [reviewJobs, selectedRepository?.last_reviewed_at]);
   const latestCompletedReviewJob = useMemo(
     () => getLatestCompletedReviewJob(reviewJobs),
+    [reviewJobs],
+  );
+  const hasActiveReviewJobs = useMemo(
+    () => reviewJobs.some((job) => !TERMINAL_REVIEW_STATUSES.has(job.status)),
     [reviewJobs],
   );
 
@@ -132,44 +133,61 @@ export default function RepositoryDetailPage() {
     }
   }, [dispatch, repositoryId]);
 
-  const loadLatestReport = useCallback(async (jobs: ReviewJob[]) => {
-    setLatestReport(null);
-    setLatestReportError(null);
-    setIsLatestReportLoading(false);
+  const loadLatestReport = useCallback(async (
+    jobs: ReviewJob[],
+    isBackground = false,
+  ) => {
+    if (!isBackground) {
+      setLatestReport(null);
+      setLatestReportError(null);
+      setIsLatestReportLoading(false);
+    }
 
     const completedJob = getLatestCompletedReviewJob(jobs);
     if (!completedJob) {
       return;
     }
 
-    setIsLatestReportLoading(true);
+    if (!isBackground) {
+      setIsLatestReportLoading(true);
+    }
 
     try {
       setLatestReport(await getReport(completedJob.id));
     } catch (requestError) {
-      setLatestReportError(
-        getApiErrorMessage(requestError, "Unable to load latest report."),
-      );
+      if (!isBackground) {
+        setLatestReportError(
+          getApiErrorMessage(requestError, "Unable to load latest report."),
+        );
+      }
     } finally {
-      setIsLatestReportLoading(false);
+      if (!isBackground) {
+        setIsLatestReportLoading(false);
+      }
     }
   }, []);
 
-  const loadReviewJobs = useCallback(async () => {
-    setAreReviewJobsLoading(true);
-    setReviewJobsError(null);
+  const loadReviewJobs = useCallback(async (isBackground = false) => {
+    if (!isBackground) {
+      setAreReviewJobsLoading(true);
+      setReviewJobsError(null);
+    }
 
     try {
       const jobs = await getReviewJobs({ repository_id: repositoryId });
       setReviewJobs(jobs);
-      void loadLatestReport(jobs);
+      void loadLatestReport(jobs, isBackground);
     } catch (requestError) {
-      setReviewJobsError(
-        getApiErrorMessage(requestError, "Unable to load review history."),
-      );
-      setLatestReport(null);
+      if (!isBackground) {
+        setReviewJobsError(
+          getApiErrorMessage(requestError, "Unable to load review history."),
+        );
+        setLatestReport(null);
+      }
     } finally {
-      setAreReviewJobsLoading(false);
+      if (!isBackground) {
+        setAreReviewJobsLoading(false);
+      }
     }
   }, [loadLatestReport, repositoryId]);
 
@@ -201,11 +219,20 @@ export default function RepositoryDetailPage() {
     };
   }, [dispatch, loadRepository, loadRepositorySummary, loadReviewJobs]);
 
-  function refreshPageData() {
-    void loadRepository();
-    void loadReviewJobs();
-    void loadRepositorySummary();
-  }
+  useEffect(() => {
+    if (!hasActiveReviewJobs) {
+      return;
+    }
+
+    const intervalId = window.setInterval(() => {
+      void loadReviewJobs(true);
+    }, REVIEW_JOB_POLLING_INTERVAL_MS);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [hasActiveReviewJobs, loadReviewJobs]);
+
 
   async function handleDeleteRepository() {
     if (!selectedRepository) {
@@ -249,6 +276,7 @@ export default function RepositoryDetailPage() {
       const response = await createReviewJob({
         branch: values.branch,
         options: {
+          review_mode: "full_audit",
           rule_profile: {
             id: ROADMAP_RULE_PROFILE_ID,
           },
@@ -280,14 +308,6 @@ export default function RepositoryDetailPage() {
           </Link>
         </Button>
         <div className="flex flex-wrap gap-2">
-          <Button
-            disabled={isLoading || areReviewJobsLoading}
-            onClick={refreshPageData}
-            variant="secondary"
-          >
-            <RefreshCw aria-hidden="true" />
-            Refresh
-          </Button>
           {selectedRepository ? (
             <Button onClick={openStartReviewModal}>
               <Play aria-hidden="true" />
@@ -319,15 +339,6 @@ export default function RepositoryDetailPage() {
 
       {!isLoading && !error && selectedRepository ? (
         <>
-          <section className="grid gap-4 md:grid-cols-3">
-            <InfoCard
-              label="Platform"
-              value={selectedRepository.platform ?? "unknown"}
-            />
-            <InfoCard label="Branch" value={selectedRepository.default_branch} />
-            <InfoCard label="Created" value={createdAt ?? "Not available"} />
-          </section>
-
           <Card>
             <CardHeader>
               <div>
@@ -509,26 +520,6 @@ export default function RepositoryDetailPage() {
         </div>
       ) : null}
     </>
-  );
-}
-
-type InfoCardProps = {
-  label: string;
-  value: string;
-};
-
-function InfoCard({ label, value }: InfoCardProps) {
-  return (
-    <Card>
-      <CardContent className="p-5">
-        <p className="text-xs font-medium uppercase text-muted-foreground">
-          {label}
-        </p>
-        <p className="mt-2 text-lg font-semibold capitalize tracking-normal">
-          {value}
-        </p>
-      </CardContent>
-    </Card>
   );
 }
 
@@ -832,16 +823,6 @@ function ReviewHistorySkeleton() {
 function RepositoryDetailSkeleton() {
   return (
     <div className="grid gap-4">
-      <div className="grid gap-4 md:grid-cols-3">
-        {Array.from({ length: 3 }).map((_, index) => (
-          <Card key={index}>
-            <CardContent className="p-5">
-              <div className="h-4 w-20 animate-pulse rounded bg-muted" />
-              <div className="mt-3 h-6 w-32 animate-pulse rounded bg-muted" />
-            </CardContent>
-          </Card>
-        ))}
-      </div>
       <Card>
         <CardContent className="space-y-4 p-6">
           {Array.from({ length: 4 }).map((_, index) => (

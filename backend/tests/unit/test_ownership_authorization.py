@@ -18,9 +18,11 @@ from app.repositories.mongodb_repository import (
 from app.repositories.report_repository import ReportRepository
 from app.repositories.repository_repository import RepositoryRepository
 from app.repositories.review_job_repository import ReviewJobRepository
+from app.routers.fix_jobs import stream_fix_job_progress_route
 from app.routers.notifications import stream_review_job_progress
 from app.routers.review_jobs import get_review_job_ai_trace
 from app.services.ai_trace.service import AITraceService
+from app.services.fix_job_service import FixJobService
 from app.services.job_queue_service import JobQueueService
 from app.services.job_service import ReviewJobService
 from app.services.repo_summary.query_service import RepoSummaryQueryService
@@ -146,5 +148,23 @@ async def test_sse_route_checks_job_ownership_before_subscribing() -> None:
             cast(Request, SimpleNamespace()),
             cast(User, other_user),
             cast(ReviewJobService, JobServiceStub()),
+            cast(Redis, SimpleNamespace()),
+        )
+
+
+@pytest.mark.asyncio
+async def test_fix_sse_route_checks_owner_before_subscribing() -> None:
+    _owner, other_user = build_users()
+
+    class FixJobServiceStub:
+        async def get_progress_snapshot(self, _fix_id: object, _user: object) -> None:
+            raise AuthorizationError("Fix job access is restricted to its owner")
+
+    with pytest.raises(AuthorizationError, match="restricted to its owner"):
+        await stream_fix_job_progress_route(
+            uuid4(),
+            cast(Request, SimpleNamespace()),
+            cast(User, other_user),
+            cast(FixJobService, FixJobServiceStub()),
             cast(Redis, SimpleNamespace()),
         )

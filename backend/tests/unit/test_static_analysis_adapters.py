@@ -30,6 +30,8 @@ def test_ruff_to_normalized_maps_json_findings() -> None:
     assert issues[0].file_path == "src/app.py"
     assert issues[0].source == IssueSource.RUFF
     assert issues[0].category == IssueCategory.STYLE
+    assert issues[0].title == "Ruff F401: unused import"
+    assert issues[0].description == "unused import"
     assert issues[0].line_start == 2
     assert issues[0].raw_output is not None
     assert issues[0].raw_output["code"] == "F401"

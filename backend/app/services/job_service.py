@@ -4,7 +4,7 @@ import logging
 from datetime import UTC, datetime
 from uuid import UUID
 
-from app.core.exceptions import AuthorizationError, ConflictError, NotFoundError
+from app.core.exceptions import AuthorizationError, NotFoundError
 from app.models.review_job import ReviewJob, ReviewJobStatus
 from app.models.user import User
 from app.repositories.repository_repository import RepositoryRepository
@@ -20,6 +20,10 @@ from app.services.job_queue_service import JobQueueService
 from app.services.notification_service import publish_job_progress
 
 logger = logging.getLogger(__name__)
+TERMINAL_REVIEW_JOB_STATUSES = {
+    ReviewJobStatus.COMPLETED,
+    ReviewJobStatus.FAILED,
+}
 
 
 class ReviewJobService:
@@ -57,7 +61,8 @@ class ReviewJobService:
                 repository_id=source_repository.id,
                 user_id=current_user.id,
                 branch=branch,
-                options=payload.options,
+                commit_sha=payload.commit_sha,
+                options=payload.options.model_dump(mode="json"),
             )
         except Exception:
             await self.review_job_repository.rollback()
@@ -98,31 +103,33 @@ class ReviewJobService:
         review_job = await self._get_authorized_job(job_id, current_user)
         return self._to_response(review_job)
 
-    async def cancel_job(self, job_id: UUID, current_user: User) -> None:
-        """Cancel a review job by deleting it while it is still active."""
+    async def delete_job(self, job_id: UUID, current_user: User) -> None:
+        """Delete a review job, canceling queued work first when still active."""
 
         review_job = await self._get_authorized_job(job_id, current_user)
-        if review_job.status in {ReviewJobStatus.COMPLETED, ReviewJobStatus.FAILED}:
-            raise ConflictError("Completed or failed review jobs cannot be canceled")
+        is_active_job = review_job.status not in TERMINAL_REVIEW_JOB_STATUSES
 
-        await self.job_queue_service.cancel(job_id)
+        if is_active_job:
+            await self.job_queue_service.cancel(job_id)
+
         try:
             await self.review_job_repository.delete(review_job)
         except Exception:
             await self.review_job_repository.rollback()
             raise
 
-        logger.info("Review job %s canceled by user %s", job_id, current_user.id)
-        await publish_job_progress(
-            job_id,
-            "failed",
-            {
-                "status": ReviewJobStatus.FAILED.value,
-                "progress": 100,
-                "message": "Review job canceled",
-                "data": {"reason": "canceled"},
-            },
-        )
+        logger.info("Review job %s deleted by user %s", job_id, current_user.id)
+        if is_active_job:
+            await publish_job_progress(
+                job_id,
+                "failed",
+                {
+                    "status": ReviewJobStatus.FAILED.value,
+                    "progress": 100,
+                    "message": "Review job deleted",
+                    "data": {"reason": "deleted"},
+                },
+            )
 
     async def update_job_status(
         self,

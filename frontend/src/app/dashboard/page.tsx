@@ -1,7 +1,6 @@
 "use client";
 
-import { AlertCircle, RefreshCw } from "lucide-react";
-import Link from "next/link";
+import { AlertCircle } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
 import { ActiveReviews } from "@/components/dashboard/active-reviews";
@@ -18,7 +17,6 @@ import {
   buildActiveReviews,
   buildLatestReportSummary,
   buildNeedsAttention,
-  buildPrimaryAction,
   buildRecentReviews,
   buildRepositoryOverview,
   selectRecentCompletedJobs,
@@ -93,7 +91,6 @@ export default function DashboardPage() {
 
   const derived = useMemo(
     () => ({
-      primaryAction: buildPrimaryAction(data),
       needsAttention: buildNeedsAttention(data),
       activeReviews: buildActiveReviews(data),
       recentReviews: buildRecentReviews(data),
@@ -108,24 +105,6 @@ export default function DashboardPage() {
 
   return (
     <>
-      <div className="flex flex-wrap justify-end gap-2">
-        <Button
-          disabled={isLoading}
-          onClick={() => void loadDashboard()}
-          variant="secondary"
-        >
-          <RefreshCw aria-hidden="true" />
-          Refresh
-        </Button>
-        {!showOnboarding ? (
-          <Button asChild>
-            <Link href={derived.primaryAction.href}>
-              {derived.primaryAction.label}
-            </Link>
-          </Button>
-        ) : null}
-      </div>
-
       {error ? (
         <Card className="border-destructive/40">
           <CardContent className="flex flex-col gap-4 p-5 sm:flex-row sm:items-center sm:justify-between">
@@ -147,7 +126,6 @@ export default function DashboardPage() {
               onClick={() => void loadDashboard()}
               variant="secondary"
             >
-              <RefreshCw aria-hidden="true" />
               Try again
             </Button>
           </CardContent>

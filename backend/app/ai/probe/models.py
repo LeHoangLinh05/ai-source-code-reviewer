@@ -2,7 +2,7 @@
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Literal, Protocol
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -99,7 +99,7 @@ class ProbeJudgeEvidenceReference(BaseModel):
 class ProbeJudgeIssueCandidate(BaseModel):
     """Structured issue candidate returned by the evidence-only judge."""
 
-    verdict: str
+    verdict: Literal["issue", "no_issue", "uncertain"]
     claim_type: str | None = None
     title: str | None = None
     description: str | None = None
@@ -115,7 +115,7 @@ class ProbeJudgeIssueCandidate(BaseModel):
         default_factory=list
     )
     rule_id: str | None = None
-    probe_id: str | None = None
+    probe_id: str = Field(min_length=1)
 
     @field_validator(
         "supporting_evidence",

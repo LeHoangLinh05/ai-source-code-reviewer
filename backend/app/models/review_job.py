@@ -15,6 +15,7 @@ from sqlalchemy.types import Uuid
 from app.models.base import Base
 
 if TYPE_CHECKING:
+    from app.models.fix_job import FixJob
     from app.models.job_status_history import JobStatusHistory
     from app.models.repository import Repository
     from app.models.review_issue import ReviewIssue
@@ -99,4 +100,9 @@ class ReviewJob(Base):
         back_populates="review_job",
         cascade="all, delete-orphan",
         order_by="JobStatusHistory.changed_at",
+    )
+    fix_jobs: Mapped[list[FixJob]] = relationship(
+        back_populates="review_job",
+        cascade="all, delete-orphan",
+        order_by="FixJob.created_at",
     )

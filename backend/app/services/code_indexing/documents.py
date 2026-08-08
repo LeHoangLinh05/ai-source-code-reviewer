@@ -18,6 +18,32 @@ from app.schemas.normalized_issue import NormalizedIssue
 
 logger = logging.getLogger(__name__)
 
+SEMANTIC_IGNORED_DIRECTORY_NAMES = {
+    ".next",
+    "coverage",
+    "generated",
+    "vendor",
+}
+SEMANTIC_IGNORED_FILENAMES = {
+    "bun.lock",
+    "bun.lockb",
+    "cargo.lock",
+    "composer.lock",
+    "npm-shrinkwrap.json",
+    "package-lock.json",
+    "pipfile.lock",
+    "pnpm-lock.yaml",
+    "poetry.lock",
+    "uv.lock",
+    "yarn.lock",
+}
+SEMANTIC_IGNORED_FILE_SUFFIXES = (
+    ".css.map",
+    ".js.map",
+    ".min.css",
+    ".min.js",
+)
+
 
 def build_source_chunk_documents(
     *,
@@ -28,14 +54,19 @@ def build_source_chunk_documents(
 ) -> list[ChunkMetadataDocument]:
     """Build code chunk documents for all supported source files."""
 
+    semantic_files = [
+        file_path
+        for file_path in filtered_files
+        if should_index_semantic_file(file_path)
+    ]
     python_files = [
-        file_path for file_path in filtered_files if file_path.suffix == ".py"
+        file_path for file_path in semantic_files if file_path.suffix == ".py"
     ]
     python_file_set = set(python_files)
     logger.info(
         "Review job %s chunking started: %d filtered files, %d Python files",
         job_id,
-        len(filtered_files),
+        len(semantic_files),
         len(python_files),
     )
     chunk_documents = _build_python_chunk_documents(
@@ -44,7 +75,7 @@ def build_source_chunk_documents(
         python_files=python_files,
         issues=issues,
     )
-    for file_path in filtered_files:
+    for file_path in semantic_files:
         if file_path in python_file_set:
             continue
         chunk_documents.extend(
@@ -81,6 +112,7 @@ def _build_python_chunk_documents(
         documents.extend(
             _chunk_metadata_document(job_id=job_id, chunk=chunk)
             for chunk in file_chunks
+            if chunk.content.strip()
         )
     return documents
 
@@ -134,9 +166,24 @@ def build_plain_file_chunk_metadata_documents(
 def should_chunk_plain_file(file_path: Path) -> bool:
     """Return whether a non-Python file should enter semantic code chunks."""
 
+    if not should_index_semantic_file(file_path):
+        return False
     if file_path.suffix.lower() != ".md":
         return True
     return file_path.name.lower() in {"readme.md", "readme.markdown"}
+
+
+def should_index_semantic_file(file_path: Path) -> bool:
+    """Return whether a source file contains useful semantic-review evidence."""
+
+    normalized_parts = {part.lower() for part in file_path.parts[:-1]}
+    if normalized_parts & SEMANTIC_IGNORED_DIRECTORY_NAMES:
+        return False
+
+    filename = file_path.name.lower()
+    if filename in SEMANTIC_IGNORED_FILENAMES:
+        return False
+    return not filename.endswith(SEMANTIC_IGNORED_FILE_SUFFIXES)
 
 
 def _chunk_metadata_document(

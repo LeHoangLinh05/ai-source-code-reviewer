@@ -6,7 +6,7 @@ import argparse
 import asyncio
 import json
 import sys
-from collections import defaultdict
+from collections import Counter, defaultdict
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -35,6 +35,7 @@ class ExpectedIssue:
     line_start: int
     line_end: int
     category: str
+    severity: str | None
     expected_probes: tuple[str, ...]
 
 
@@ -53,8 +54,11 @@ class Finding:
     line_start: int
     line_end: int
     category: str
+    severity: str
     title: str
     source: str
+    probe_id: str | None
+    supporting_evidence: tuple[dict[str, object], ...]
 
 
 @dataclass(slots=True, frozen=True)
@@ -65,20 +69,35 @@ class IssueEvaluation:
     any_probe_rank: int | None
     judge_hit: bool
     end_to_end_hit: bool
+    severity_match: bool
+
+
+@dataclass(slots=True, frozen=True)
+class BenchmarkManifest:
+    name: str
+    repository_url: str
+    commit_sha: str
+    required_options: dict[str, object]
+    expected_issues: tuple[ExpectedIssue, ...]
+    false_positive_baits: tuple[FalsePositiveBait, ...]
+    smart_baseline: dict[str, object]
+    require_full_recall: bool
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--job-id", required=True, type=UUID)
-    parser.add_argument("--ground-truth", required=True, type=Path)
-    parser.add_argument("--false-positives", required=True, type=Path)
-    parser.add_argument("--probe-map", required=True, type=Path)
+    parser.add_argument("--manifest", type=Path)
+    parser.add_argument("--ground-truth", type=Path)
+    parser.add_argument("--false-positives", type=Path)
+    parser.add_argument("--probe-map", type=Path)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--run-name", default=None)
     args = parser.parse_args()
     asyncio.run(
         run_benchmark(
             job_id=args.job_id,
+            manifest_path=args.manifest,
             ground_truth_path=args.ground_truth,
             false_positives_path=args.false_positives,
             probe_map_path=args.probe_map,
@@ -91,22 +110,30 @@ def main() -> None:
 async def run_benchmark(
     *,
     job_id: UUID,
-    ground_truth_path: Path,
-    false_positives_path: Path,
-    probe_map_path: Path,
+    manifest_path: Path | None,
+    ground_truth_path: Path | None,
+    false_positives_path: Path | None,
+    probe_map_path: Path | None,
     output_dir: Path,
     run_name: str | None,
 ) -> None:
     from app.db.mongodb import (
         CHUNK_METADATA_COLLECTION,
+        RAW_STATIC_ANALYSIS_OUTPUTS_COLLECTION,
         TOOL_CALL_LOGS_COLLECTION,
         get_mongodb_database,
     )
     from app.db.postgres import AsyncSessionLocal, close_postgres_engine
     from app.models.review_job import ReviewJob
 
-    expected_issues = _load_expected_issues(ground_truth_path, probe_map_path)
-    baits = _load_false_positive_baits(false_positives_path)
+    manifest = _load_benchmark_inputs(
+        manifest_path=manifest_path,
+        ground_truth_path=ground_truth_path,
+        false_positives_path=false_positives_path,
+        probe_map_path=probe_map_path,
+    )
+    expected_issues = list(manifest.expected_issues)
+    baits = list(manifest.false_positive_baits)
     database = get_mongodb_database()
     try:
         trace_documents = cast(
@@ -123,6 +150,12 @@ async def run_benchmark(
             .find({"job_id": str(job_id)})
             .to_list(length=None),
         )
+        static_documents = cast(
+            list[dict[str, Any]],
+            await database[RAW_STATIC_ANALYSIS_OUTPUTS_COLLECTION]
+            .find({"job_id": str(job_id)})
+            .to_list(length=None),
+        )
         async with AsyncSessionLocal() as session:
             findings = await _load_findings(session, job_id)
             job = await session.scalar(select(ReviewJob).where(ReviewJob.id == job_id))
@@ -134,7 +167,10 @@ async def run_benchmark(
             findings=findings,
             trace_documents=trace_documents,
             chunk_documents=chunk_documents,
+            static_documents=static_documents,
             runtime_seconds=_job_runtime_seconds(job),
+            manifest=manifest,
+            job=job,
         )
         output_dir.mkdir(parents=True, exist_ok=True)
         run_id = run_name or datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
@@ -159,7 +195,10 @@ def evaluate_job(
     findings: list[Finding],
     trace_documents: list[dict[str, Any]],
     chunk_documents: list[dict[str, Any]],
+    static_documents: list[dict[str, Any]],
     runtime_seconds: float | None,
+    manifest: BenchmarkManifest,
+    job: Any | None,
 ) -> dict[str, object]:
     retrieval_documents = [
         document
@@ -231,16 +270,40 @@ def evaluate_job(
     runtime_is_accepted = (
         runtime_seconds is not None and runtime_seconds <= MAX_RUNTIME_SECONDS
     )
+    full_recall_target = len(evaluations)
+    required_retrieval_hits = (
+        full_recall_target if manifest.require_full_recall else MIN_RETRIEVAL_HITS
+    )
+    required_end_to_end_hits = (
+        full_recall_target if manifest.require_full_recall else MIN_END_TO_END_HITS
+    )
+    severity_is_accepted = all(evaluation.severity_match for evaluation in evaluations)
+    judge_contract = _judge_contract_metrics(judge_documents)
+    configuration = _benchmark_configuration(job, manifest)
     acceptance = {
-        "retrieval": aligned_hits >= MIN_RETRIEVAL_HITS,
-        "end_to_end": end_to_end_hits >= MIN_END_TO_END_HITS,
+        "configuration": configuration["matches"],
+        "retrieval": aligned_hits >= required_retrieval_hits,
+        "end_to_end": end_to_end_hits >= required_end_to_end_hits,
+        "severity": severity_is_accepted,
         "false_positive_bait": not bait_hits,
-        "judge_calls": len(judge_documents) <= MAX_JUDGE_CALLS,
-        "runtime": runtime_is_accepted,
+        "judge_contract": judge_contract["is_complete"],
+        "judge_calls": (
+            True
+            if manifest.require_full_recall
+            else len(judge_documents) <= MAX_JUDGE_CALLS
+        ),
+        "runtime": True if manifest.require_full_recall else runtime_is_accepted,
     }
     acceptance["passed"] = all(acceptance.values())
     return {
         "job_id": str(job_id),
+        "benchmark": {
+            "name": manifest.name,
+            "repository_url": manifest.repository_url,
+            "commit_sha": manifest.commit_sha,
+            "required_options": manifest.required_options,
+        },
+        "configuration": configuration,
         "generated_at": datetime.now(UTC).isoformat(),
         "ground_truth_count": len(expected_issues),
         "indexed_chunk_count": len(chunk_documents),
@@ -275,7 +338,16 @@ def evaluate_job(
         "out_of_scope_findings": out_of_scope,
         "finding_count": len(findings),
         "judge_call_count": len(judge_documents),
+        "judge_contract": judge_contract,
         "runtime_seconds": runtime_seconds,
+        "token_totals": _token_totals(trace_documents),
+        "smart_baseline": manifest.smart_baseline,
+        "cost_comparison": _cost_comparison(
+            token_totals=_token_totals(trace_documents),
+            runtime_seconds=runtime_seconds,
+            smart_baseline=manifest.smart_baseline,
+        ),
+        "static_analysis": _static_analysis_metrics(static_documents),
         "lane_metrics": lane_metrics,
         "issues": [asdict(evaluation) for evaluation in evaluations],
         "acceptance": acceptance,
@@ -283,12 +355,16 @@ def evaluate_job(
 
 
 async def _load_findings(session: Any, job_id: UUID) -> list[Finding]:
-    from app.models.review_issue import IssueSource, ReviewIssue
+    from app.models.review_issue import IssueCategory, IssueSource, ReviewIssue
 
     ai_sources = (IssueSource.AI_REVIEW, IssueSource.KB)
     result = await session.scalars(
         select(ReviewIssue)
-        .where(ReviewIssue.job_id == job_id, ReviewIssue.source.in_(ai_sources))
+        .where(
+            ReviewIssue.job_id == job_id,
+            ReviewIssue.source.in_(ai_sources),
+            ReviewIssue.category != IssueCategory.STYLE,
+        )
         .order_by(ReviewIssue.created_at, ReviewIssue.id)
     )
     return [
@@ -298,8 +374,11 @@ async def _load_findings(session: Any, job_id: UUID) -> list[Finding]:
             line_start=issue.line_start,
             line_end=issue.line_end,
             category=issue.category.value,
+            severity=issue.severity.value,
             title=issue.title,
             source=issue.source.value,
+            probe_id=_finding_probe_id(issue.raw_output),
+            supporting_evidence=_finding_supporting_evidence(issue.raw_output),
         )
         for issue in result.all()
     ]
@@ -311,15 +390,26 @@ def _load_expected_issues(
 ) -> list[ExpectedIssue]:
     ground_truth = _json_list(ground_truth_path)
     raw_probe_map = _json_object(probe_map_path)
+    return _expected_issues_from_items(ground_truth, raw_probe_map=raw_probe_map)
+
+
+def _expected_issues_from_items(
+    ground_truth: list[dict[str, object]],
+    *,
+    raw_probe_map: dict[str, object] | None = None,
+) -> list[ExpectedIssue]:
     issues: list[ExpectedIssue] = []
     for item in ground_truth:
         detectors = _string_list(item.get("detector_expected"))
-        if "ai_review" not in detectors:
+        if detectors and "ai_review" not in detectors:
             continue
         issue_id = _required_string(item, "id")
-        expected_probes = _string_list(raw_probe_map.get(issue_id))
+        expected_probes = _string_list(item.get("expected_probes"))
+        if not expected_probes and raw_probe_map is not None:
+            expected_probes = _string_list(raw_probe_map.get(issue_id))
         if not expected_probes:
             raise ValueError(f"Missing expected probe mapping for {issue_id}")
+        severity = item.get("severity")
         issues.append(
             ExpectedIssue(
                 issue_id=issue_id,
@@ -327,6 +417,7 @@ def _load_expected_issues(
                 line_start=_required_int(item, "line_start"),
                 line_end=_required_int(item, "line_end"),
                 category=_required_string(item, "category"),
+                severity=severity if isinstance(severity, str) else None,
                 expected_probes=tuple(expected_probes),
             )
         )
@@ -334,9 +425,17 @@ def _load_expected_issues(
 
 
 def _load_false_positive_baits(path: Path) -> list[FalsePositiveBait]:
+    return _false_positive_baits_from_items(_json_list(path))
+
+
+def _false_positive_baits_from_items(
+    items: list[dict[str, object]],
+) -> list[FalsePositiveBait]:
     baits: list[FalsePositiveBait] = []
-    for item in _json_list(path):
-        line_start = _required_int(item, "line")
+    for item in items:
+        line_start = _safe_int(item.get("line_start") or item.get("line"))
+        if line_start <= 0:
+            raise ValueError("False-positive bait requires line or line_start")
         baits.append(
             FalsePositiveBait(
                 bait_id=_required_string(item, "id"),
@@ -346,6 +445,49 @@ def _load_false_positive_baits(path: Path) -> list[FalsePositiveBait]:
             )
         )
     return baits
+
+
+def _load_benchmark_inputs(
+    *,
+    manifest_path: Path | None,
+    ground_truth_path: Path | None,
+    false_positives_path: Path | None,
+    probe_map_path: Path | None,
+) -> BenchmarkManifest:
+    if manifest_path is not None:
+        payload = _json_object(manifest_path)
+        expected_items = payload.get("expected_issues")
+        bait_items = payload.get("false_positive_baits", [])
+        if not isinstance(expected_items, list) or not isinstance(bait_items, list):
+            raise ValueError("Benchmark manifest issues and baits must be arrays")
+        expected = [item for item in expected_items if isinstance(item, dict)]
+        baits = [item for item in bait_items if isinstance(item, dict)]
+        return BenchmarkManifest(
+            name=_required_string(payload, "name"),
+            repository_url=_required_string(payload, "repository_url"),
+            commit_sha=_required_string(payload, "commit_sha"),
+            required_options=_mapping(payload.get("review_options")),
+            expected_issues=tuple(_expected_issues_from_items(expected)),
+            false_positive_baits=tuple(_false_positive_baits_from_items(baits)),
+            smart_baseline=_mapping(payload.get("smart_baseline")),
+            require_full_recall=payload.get("require_full_recall") is True,
+        )
+
+    if not ground_truth_path or not false_positives_path or not probe_map_path:
+        raise ValueError(
+            "Use --manifest or provide --ground-truth, --false-positives, "
+            "and --probe-map"
+        )
+    return BenchmarkManifest(
+        name="legacy_probe_review",
+        repository_url="",
+        commit_sha="",
+        required_options={},
+        expected_issues=tuple(_load_expected_issues(ground_truth_path, probe_map_path)),
+        false_positive_baits=tuple(_load_false_positive_baits(false_positives_path)),
+        smart_baseline={},
+        require_full_recall=False,
+    )
 
 
 def _evaluate_issue(
@@ -377,6 +519,11 @@ def _evaluate_issue(
         ),
         end_to_end_hit=any(
             _finding_matches_issue(finding, issue) for finding in findings
+        ),
+        severity_match=any(
+            _finding_matches_issue(finding, issue)
+            and _severities_compatible(finding.severity, issue.severity)
+            for finding in findings
         ),
     )
 
@@ -415,24 +562,55 @@ def _judge_candidate_matches_issue(
 ) -> bool:
     if candidate.get("verdict") != "issue":
         return False
+    if str(candidate.get("probe_id") or "") not in issue.expected_probes:
+        return False
     category = str(candidate.get("category") or "")
-    return _categories_compatible(category, issue.category) and _document_matches_issue(
-        candidate,
-        issue,
+    return _categories_compatible(category, issue.category) and (
+        _document_matches_issue(candidate, issue)
+        or any(
+            _document_matches_issue(evidence, issue)
+            for evidence in _object_list(candidate.get("supporting_evidence"))
+        )
     )
 
 
 def _finding_matches_issue(finding: Finding, issue: ExpectedIssue) -> bool:
-    return (
-        _path_matches(finding.file_path, issue.file_path)
-        and _ranges_overlap(
-            finding.line_start,
-            finding.line_end,
-            issue.line_start,
-            issue.line_end,
-        )
-        and _categories_compatible(finding.category, issue.category)
+    if finding.probe_id not in issue.expected_probes:
+        return False
+    location_matches = _path_matches(
+        finding.file_path, issue.file_path
+    ) and _ranges_overlap(
+        finding.line_start,
+        finding.line_end,
+        issue.line_start,
+        issue.line_end,
     )
+    evidence_matches = any(
+        _document_matches_issue(evidence, issue)
+        for evidence in finding.supporting_evidence
+    )
+    return _categories_compatible(finding.category, issue.category) and (
+        location_matches or evidence_matches
+    )
+
+
+def _finding_probe_id(raw_output: object) -> str | None:
+    probe_review = _mapping(_mapping(raw_output).get("probe_review"))
+    probe_id = probe_review.get("probe_id")
+    return probe_id if isinstance(probe_id, str) and probe_id else None
+
+
+def _finding_supporting_evidence(
+    raw_output: object,
+) -> tuple[dict[str, object], ...]:
+    probe_review = _mapping(_mapping(raw_output).get("probe_review"))
+    return tuple(_object_list(probe_review.get("supporting_evidence")))
+
+
+def _object_list(value: object) -> list[dict[str, object]]:
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, dict)]
 
 
 def _finding_matches_bait(finding: Finding, bait: FalsePositiveBait) -> bool:
@@ -516,6 +694,146 @@ def _lane_metrics(
     return dict(sorted(metrics.items()))
 
 
+def _judge_contract_metrics(
+    judge_documents: list[dict[str, Any]],
+) -> dict[str, object]:
+    missing_count = 0
+    duplicate_count = 0
+    unknown_count = 0
+    contract_error_count = 0
+    retry_count = 0
+    observed_violation_count = 0
+    for document in judge_documents:
+        tool_input = _mapping(document.get("input"))
+        output = _mapping(document.get("output"))
+        requested = _string_list(tool_input.get("probe_ids"))
+        candidates = output.get("candidates")
+        candidate_items = candidates if isinstance(candidates, list) else []
+        received = [
+            str(candidate.get("probe_id"))
+            for candidate in candidate_items
+            if isinstance(candidate, dict) and candidate.get("probe_id")
+        ]
+        counts = Counter(received)
+        missing = _string_list(output.get("missing_probe_ids")) or [
+            probe_id for probe_id in requested if counts[probe_id] == 0
+        ]
+        duplicates = _string_list(output.get("duplicate_probe_ids")) or [
+            probe_id for probe_id in requested if counts[probe_id] > 1
+        ]
+        unknown = _string_list(output.get("unknown_probe_ids")) or [
+            probe_id for probe_id in counts if probe_id not in set(requested)
+        ]
+        missing_count += len(missing)
+        duplicate_count += len(duplicates)
+        unknown_count += len(unknown)
+        retry_count += _safe_int(output.get("retry_count"))
+        contract_error_count += output.get("status") == "contract_error"
+        attempts = output.get("contract_attempts")
+        if isinstance(attempts, list):
+            observed_violation_count += sum(
+                bool(_string_list(_mapping(attempt).get("missing_probe_ids")))
+                or bool(_string_list(_mapping(attempt).get("duplicate_probe_ids")))
+                or bool(_string_list(_mapping(attempt).get("unknown_probe_ids")))
+                or _safe_int(_mapping(attempt).get("schema_rejected_count")) > 0
+                for attempt in attempts
+            )
+    return {
+        "is_complete": not (
+            missing_count or duplicate_count or unknown_count or contract_error_count
+        ),
+        "missing_verdict_count": missing_count,
+        "duplicate_verdict_count": duplicate_count,
+        "unknown_verdict_count": unknown_count,
+        "contract_error_count": contract_error_count,
+        "retry_count": retry_count,
+        "observed_violation_count": observed_violation_count,
+    }
+
+
+def _token_totals(trace_documents: list[dict[str, Any]]) -> dict[str, int]:
+    totals = {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "estimated_input_tokens": 0,
+    }
+    for document in trace_documents:
+        usage = _mapping(document.get("token_usage"))
+        for key in ("input_tokens", "output_tokens", "total_tokens"):
+            totals[key] += _safe_int(usage.get(key))
+        totals["estimated_input_tokens"] += _safe_int(
+            _mapping(document.get("output")).get("estimated_input_tokens")
+        )
+    return totals
+
+
+def _static_analysis_metrics(
+    static_documents: list[dict[str, Any]],
+) -> dict[str, dict[str, int]]:
+    metrics: defaultdict[str, dict[str, int]] = defaultdict(
+        lambda: {"runs": 0, "finding_count": 0, "nonzero_exit_count": 0}
+    )
+    for document in static_documents:
+        tool = str(document.get("tool") or "unknown")
+        parsed_issues = document.get("parsed_issues")
+        metrics[tool]["runs"] += 1
+        metrics[tool]["finding_count"] += (
+            len(parsed_issues) if isinstance(parsed_issues, list) else 0
+        )
+        metrics[tool]["nonzero_exit_count"] += _safe_int(document.get("exit_code")) != 0
+    return dict(sorted(metrics.items()))
+
+
+def _benchmark_configuration(
+    job: Any | None,
+    manifest: BenchmarkManifest,
+) -> dict[str, object]:
+    actual_commit_sha = getattr(job, "commit_sha", None) if job is not None else None
+    actual_options = _mapping(getattr(job, "options", None))
+    commit_matches = not manifest.commit_sha or actual_commit_sha == manifest.commit_sha
+    option_mismatches = {
+        key: {"expected": expected, "actual": actual_options.get(key)}
+        for key, expected in manifest.required_options.items()
+        if actual_options.get(key) != expected
+    }
+    return {
+        "matches": commit_matches and not option_mismatches,
+        "actual_commit_sha": actual_commit_sha,
+        "commit_matches": commit_matches,
+        "actual_options": actual_options,
+        "option_mismatches": option_mismatches,
+    }
+
+
+def _cost_comparison(
+    *,
+    token_totals: dict[str, int],
+    runtime_seconds: float | None,
+    smart_baseline: dict[str, object],
+) -> dict[str, float | None]:
+    baseline_tokens = _safe_int(smart_baseline.get("total_tokens"))
+    baseline_runtime = smart_baseline.get("runtime_seconds")
+    runtime_value = (
+        float(baseline_runtime)
+        if isinstance(baseline_runtime, int | float)
+        and not isinstance(baseline_runtime, bool)
+        else 0.0
+    )
+    return {
+        "token_ratio": (
+            round(token_totals["total_tokens"] / baseline_tokens, 4)
+            if baseline_tokens > 0
+            else None
+        ),
+        "runtime_ratio": (
+            round(runtime_seconds / runtime_value, 4)
+            if runtime_seconds is not None and runtime_value > 0
+            else None
+        ),
+    }
+
+
 def _latest_probe_session(
     documents: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
@@ -576,6 +894,10 @@ def _categories_compatible(actual: str, expected: str) -> bool:
     if actual == expected:
         return True
     return expected == "maintainability" and actual in {"requirement", "style"}
+
+
+def _severities_compatible(actual: str, expected: str | None) -> bool:
+    return expected is None or actual.strip().lower() == expected.strip().lower()
 
 
 def _path_matches(value: object, expected: str) -> bool:
@@ -676,6 +998,9 @@ def _markdown_report(payload: dict[str, object]) -> str:
     judge = _mapping(payload["judge_recall_given_evidence"])
     end_to_end = _mapping(payload["end_to_end_recall"])
     acceptance = _mapping(payload["acceptance"])
+    token_totals = _mapping(payload["token_totals"])
+    judge_contract = _mapping(payload["judge_contract"])
+    cost_comparison = _mapping(payload["cost_comparison"])
     bait_count = len(cast(list[object], payload["false_positive_baits"]))
     lines = [
         "# AI Probe Benchmark",
@@ -691,22 +1016,30 @@ def _markdown_report(payload: dict[str, object]) -> str:
         f"- False-positive baits: `{bait_count}`",
         f"- Duplicates: `{payload['duplicate_count']}`",
         f"- Judge calls: `{payload['judge_call_count']}`",
+        f"- Judge contract complete: `{judge_contract.get('is_complete')}`",
+        f"- Judge retries: `{judge_contract.get('retry_count')}`",
+        f"- Total tokens: `{token_totals.get('total_tokens')}`",
+        f"- Token ratio vs smart: `{cost_comparison.get('token_ratio')}`",
         f"- Runtime: `{payload['runtime_seconds']}` seconds",
+        f"- Runtime ratio vs smart: `{cost_comparison.get('runtime_ratio')}`",
         f"- Acceptance: `{'PASS' if acceptance.get('passed') else 'FAIL'}`",
         "",
         "## Per Issue",
         "",
-        "| Issue | Indexed | Aligned rank | Any rank | Judge | End-to-end |",
-        "|---|---:|---:|---:|---:|---:|",
+        "| Issue | Indexed | Aligned rank | Any rank | Judge | End-to-end | Severity |",
+        "|---|---:|---:|---:|---:|---:|---:|",
     ]
     for issue in cast(list[dict[str, object]], payload["issues"]):
         lines.append(
             f"| {issue['issue_id']} | {issue['indexed']} | "
             f"{issue['aligned_rank']} | {issue['any_probe_rank']} | "
-            f"{issue['judge_hit']} | {issue['end_to_end_hit']} |"
+            f"{issue['judge_hit']} | {issue['end_to_end_hit']} | "
+            f"{issue['severity_match']} |"
         )
     lines.extend(["", "## Lane Metrics", "", "```json"])
     lines.append(json.dumps(payload["lane_metrics"], indent=2, sort_keys=True))
+    lines.extend(["```", "", "## Static Analysis", "", "```json"])
+    lines.append(json.dumps(payload["static_analysis"], indent=2, sort_keys=True))
     lines.extend(["```", ""])
     return "\n".join(lines)
 

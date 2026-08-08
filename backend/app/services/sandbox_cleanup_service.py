@@ -2,12 +2,16 @@
 
 import logging
 import shutil
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from uuid import UUID
 
 from app.core.config import Settings
+from app.models.fix_job import FixJob
 from app.models.review_job import ReviewJob
+from app.repositories.fix_job_repository import FixJobRepository
 from app.repositories.review_job_repository import ReviewJobRepository
 
 logger = logging.getLogger(__name__)
@@ -31,9 +35,11 @@ class SandboxCleanupService:
         *,
         settings: Settings,
         review_job_repository: ReviewJobRepository,
+        fix_job_repository: FixJobRepository | None = None,
     ) -> None:
         self.settings = settings
         self.review_job_repository = review_job_repository
+        self.fix_job_repository = fix_job_repository
 
     async def cleanup_expired_sandboxes(self) -> SandboxCleanupSummary:
         """Clean terminal job sandboxes older than the configured TTL."""
@@ -41,6 +47,16 @@ class SandboxCleanupService:
         cutoff = datetime.now(UTC) - timedelta(hours=self.settings.sandbox_ttl_hours)
         sandbox_root = Path(self.settings.sandbox_root)
         review_jobs = await self.review_job_repository.list_expired_with_sandbox(cutoff)
+        fix_jobs = (
+            await self.fix_job_repository.list_expired_with_sandbox(cutoff)
+            if self.fix_job_repository is not None
+            else []
+        )
+        publish_fix_jobs = (
+            await self.fix_job_repository.list_expired_with_publish_sandbox(cutoff)
+            if self.fix_job_repository is not None
+            else []
+        )
         cleaned_jobs = 0
         skipped_jobs = 0
         freed_bytes = 0
@@ -57,8 +73,32 @@ class SandboxCleanupService:
             cleaned_jobs += 1
             freed_bytes += cleaned_bytes
 
+        for fix_job in fix_jobs:
+            cleaned_bytes = await self._cleanup_fix_job_sandbox(
+                fix_job,
+                sandbox_root,
+            )
+            if cleaned_bytes is None:
+                skipped_jobs += 1
+                continue
+
+            cleaned_jobs += 1
+            freed_bytes += cleaned_bytes
+
+        for fix_job in publish_fix_jobs:
+            cleaned_bytes = await self._cleanup_fix_job_publish_sandbox(
+                fix_job,
+                sandbox_root,
+            )
+            if cleaned_bytes is None:
+                skipped_jobs += 1
+                continue
+
+            cleaned_jobs += 1
+            freed_bytes += cleaned_bytes
+
         return SandboxCleanupSummary(
-            scanned_jobs=len(review_jobs),
+            scanned_jobs=len(review_jobs) + len(fix_jobs) + len(publish_fix_jobs),
             cleaned_jobs=cleaned_jobs,
             skipped_jobs=skipped_jobs,
             freed_bytes=freed_bytes,
@@ -72,11 +112,60 @@ class SandboxCleanupService:
         if review_job.sandbox_path is None:
             return None
 
-        sandbox_path = Path(review_job.sandbox_path)
+        return await self._cleanup_sandbox_path(
+            record_id=review_job.id,
+            sandbox_path=Path(review_job.sandbox_path),
+            sandbox_root=sandbox_root,
+            record_label="review job",
+            clear_sandbox_path=self.review_job_repository.clear_sandbox_path,
+        )
+
+    async def _cleanup_fix_job_sandbox(
+        self,
+        fix_job: FixJob,
+        sandbox_root: Path,
+    ) -> int | None:
+        if fix_job.sandbox_path is None or self.fix_job_repository is None:
+            return None
+
+        return await self._cleanup_sandbox_path(
+            record_id=fix_job.id,
+            sandbox_path=Path(fix_job.sandbox_path),
+            sandbox_root=sandbox_root,
+            record_label="fix job",
+            clear_sandbox_path=self.fix_job_repository.clear_sandbox_path,
+        )
+
+    async def _cleanup_fix_job_publish_sandbox(
+        self,
+        fix_job: FixJob,
+        sandbox_root: Path,
+    ) -> int | None:
+        if fix_job.publish_sandbox_path is None or self.fix_job_repository is None:
+            return None
+
+        return await self._cleanup_sandbox_path(
+            record_id=fix_job.id,
+            sandbox_path=Path(fix_job.publish_sandbox_path),
+            sandbox_root=sandbox_root,
+            record_label="fix publish job",
+            clear_sandbox_path=self.fix_job_repository.clear_publish_sandbox_path,
+        )
+
+    async def _cleanup_sandbox_path(
+        self,
+        *,
+        record_id: UUID,
+        sandbox_path: Path,
+        sandbox_root: Path,
+        record_label: str,
+        clear_sandbox_path: Callable[[UUID], Awaitable[None]],
+    ) -> int | None:
         if not is_path_inside_directory(sandbox_path, sandbox_root):
             logger.warning(
-                "Skipping unsafe sandbox cleanup for review job %s path=%s",
-                review_job.id,
+                "Skipping unsafe sandbox cleanup for %s %s path=%s",
+                record_label,
+                record_id,
                 sandbox_path,
             )
             return None
@@ -85,8 +174,9 @@ class SandboxCleanupService:
             freed_bytes = calculate_path_size(sandbox_path)
         except OSError:
             logger.warning(
-                "Unable to calculate sandbox size for review job %s path=%s",
-                review_job.id,
+                "Unable to calculate sandbox size for %s %s path=%s",
+                record_label,
+                record_id,
                 sandbox_path,
                 exc_info=True,
             )
@@ -97,16 +187,18 @@ class SandboxCleanupService:
                 shutil.rmtree(sandbox_path)
         except OSError:
             logger.exception(
-                "Failed to cleanup sandbox for review job %s path=%s",
-                review_job.id,
+                "Failed to cleanup sandbox for %s %s path=%s",
+                record_label,
+                record_id,
                 sandbox_path,
             )
             return None
 
-        await self.review_job_repository.clear_sandbox_path(review_job.id)
+        await clear_sandbox_path(record_id)
         logger.info(
-            "Cleaned sandbox for review job %s path=%s freed_bytes=%s",
-            review_job.id,
+            "Cleaned sandbox for %s %s path=%s freed_bytes=%s",
+            record_label,
+            record_id,
             sandbox_path,
             freed_bytes if freed_bytes is not None else "unknown",
         )

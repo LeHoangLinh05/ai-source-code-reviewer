@@ -1,6 +1,5 @@
 "use client";
 
-import { RefreshCw } from "lucide-react";
 import Link from "next/link";
 import { useEffect } from "react";
 
@@ -37,7 +36,6 @@ export default function GlobalError({ error, reset }: GlobalErrorProps) {
         <CardContent className="grid gap-4">
           <div className="flex flex-col gap-3 sm:flex-row">
             <Button onClick={reset} type="button">
-              <RefreshCw aria-hidden="true" />
               Retry
             </Button>
             <Button asChild type="button" variant="secondary">

@@ -4,7 +4,6 @@ import {
   CirclePlay,
   GitFork,
   LayoutDashboard,
-  LogOut,
   Menu,
   PanelLeftClose,
   PanelLeftOpen,
@@ -17,7 +16,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useState, type ReactNode } from "react";
 
-import { LogoutButton } from "@/components/auth/logout-button";
+import { AccountMenu } from "@/components/layout/account-menu";
 import { ThemeToggle } from "@/components/layout/theme-toggle";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -66,7 +65,6 @@ export function AppShell({ children }: AppShellProps) {
               onNavigate={() => setIsMobileNavOpen(false)}
               pathname={pathname}
             />
-            <ShellSessionActions />
           </aside>
         </div>
       ) : null}
@@ -88,6 +86,7 @@ export function AppShell({ children }: AppShellProps) {
 
           <div className="ml-auto flex items-center gap-2">
             <ThemeToggle />
+            <AccountMenu />
           </div>
         </header>
 
@@ -121,7 +120,7 @@ function DesktopSidebar({
       <ShellNav isCollapsed={isCollapsed} pathname={pathname} />
       <div
         className={cn(
-          "flex border-t border-border p-3",
+          "mt-auto flex border-t border-border p-3",
           isCollapsed ? "justify-center" : "justify-end",
         )}
       >
@@ -144,7 +143,6 @@ function DesktopSidebar({
           </span>
         </Button>
       </div>
-      <ShellSessionActions isCollapsed={isCollapsed} />
     </aside>
   );
 }
@@ -246,21 +244,5 @@ function ShellNav({
         );
       })}
     </nav>
-  );
-}
-
-function ShellSessionActions({ isCollapsed = false }: { isCollapsed?: boolean }) {
-  return (
-    <section className="border-t border-border p-3" aria-label="Session">
-      <LogoutButton
-        className={cn(
-          "w-full border border-border bg-background text-muted-foreground hover:bg-accent hover:text-accent-foreground",
-          isCollapsed ? "justify-center px-0" : "justify-start",
-        )}
-        icon={LogOut}
-        showLabel={!isCollapsed}
-        variant="outline"
-      />
-    </section>
   );
 }

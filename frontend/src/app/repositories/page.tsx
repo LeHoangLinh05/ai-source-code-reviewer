@@ -5,7 +5,6 @@ import {
   GitBranch,
   GitFork,
   Plus,
-  RefreshCw,
   Trash2,
   X,
 } from "lucide-react";
@@ -177,22 +176,6 @@ export default function RepositoriesPage() {
         </Button>
       </div>
 
-      <section className="grid gap-4 md:grid-cols-3">
-        <MetricCard label="Total repositories" value={items.length.toString()} />
-        <MetricCard
-          label="GitHub"
-          value={items
-            .filter((repository) => repository.platform === "github")
-            .length.toString()}
-        />
-        <MetricCard
-          label="GitLab"
-          value={items
-            .filter((repository) => repository.platform === "gitlab")
-            .length.toString()}
-        />
-      </section>
-
       <Card className="overflow-hidden">
         <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
@@ -201,15 +184,6 @@ export default function RepositoriesPage() {
               Source targets available for static analysis and AI review jobs.
             </CardDescription>
           </div>
-          <Button
-            disabled={isLoading}
-            onClick={() => void loadRepositories()}
-            size="sm"
-            variant="secondary"
-          >
-            <RefreshCw aria-hidden="true" />
-            Refresh
-          </Button>
         </CardHeader>
         <CardContent className="p-0">
           {isLoading ? <RepositoryListSkeleton /> : null}
@@ -351,24 +325,6 @@ export default function RepositoriesPage() {
         </div>
       ) : null}
     </>
-  );
-}
-
-type MetricCardProps = {
-  label: string;
-  value: string;
-};
-
-function MetricCard({ label, value }: MetricCardProps) {
-  return (
-    <Card>
-      <CardContent className="p-5">
-        <p className="text-xs font-medium uppercase text-muted-foreground">
-          {label}
-        </p>
-        <p className="mt-2 text-4xl font-extrabold tracking-normal">{value}</p>
-      </CardContent>
-    </Card>
   );
 }
 

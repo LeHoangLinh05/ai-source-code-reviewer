@@ -1,6 +1,6 @@
 "use client";
 
-import { AlertTriangle, ArrowLeft, RefreshCw } from "lucide-react";
+import { AlertTriangle, ArrowLeft } from "lucide-react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -95,12 +95,6 @@ export default function ReviewReportPage() {
             Review Job
           </Link>
         </Button>
-        <div className="flex flex-wrap gap-2">
-          <Button disabled={isLoading} onClick={() => void loadReport()}>
-            <RefreshCw aria-hidden="true" />
-            Refresh
-          </Button>
-        </div>
       </div>
 
       <ReviewWorkspaceTabs activeTab="report" jobId={jobId} />

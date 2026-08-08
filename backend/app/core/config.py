@@ -32,6 +32,7 @@ class Settings(BaseSettings):
     environment: str = "development"
     debug: bool = False
     api_prefix: str = "/api"
+    frontend_base_url: str | None = None
     cors_allowed_origins: Annotated[list[str], NoDecode] = Field(
         default=[
             "http://localhost:3000",
@@ -79,6 +80,12 @@ class Settings(BaseSettings):
     max_repo_size_mb: int = 500
     max_source_file_size_bytes: int = 1_048_576
     analysis_subprocess_timeout_seconds: int = 60
+
+    github_app_id: str | None = None
+    github_app_private_key: SecretStr | None = None
+    github_app_install_url: str | None = None
+    github_api_base_url: str = "https://api.github.com"
+    github_api_version: str = "2026-03-10"
 
     jwt_secret_key: SecretStr = SecretStr("")
     jwt_algorithm: str = "HS256"
@@ -179,6 +186,36 @@ class Settings(BaseSettings):
         return [
             origin.strip() for origin in normalized_value.split(",") if origin.strip()
         ]
+
+    @field_validator(
+        "frontend_base_url",
+        "github_app_id",
+        "github_app_install_url",
+        mode="before",
+    )
+    @classmethod
+    def strip_optional_setting(cls, value: object) -> object:
+        """Normalize optional string settings."""
+
+        if not isinstance(value, str):
+            return value
+
+        stripped_value = value.strip()
+        return stripped_value or None
+
+    @field_validator("github_app_private_key", mode="before")
+    @classmethod
+    def normalize_github_app_private_key(cls, value: object) -> object:
+        """Accept PEM values with escaped newlines from environment files."""
+
+        if not isinstance(value, str):
+            return value
+
+        stripped_value = value.strip()
+        if not stripped_value:
+            return None
+
+        return stripped_value.replace("\\n", "\n")
 
     @field_validator("jwt_secret_key")
     @classmethod

@@ -18,8 +18,10 @@ from app.db.mongodb import close_mongodb_client, ensure_mongodb_indexes, ping_mo
 from app.db.postgres import close_postgres_engine, ping_postgres
 from app.db.redis import close_redis_client, get_redis_client
 from app.routers.auth import router as auth_router
+from app.routers.fix_jobs import router as fix_jobs_router
 from app.routers.health import router as health_router
 from app.routers.notifications import router as notifications_router
+from app.routers.providers import router as providers_router
 from app.routers.reports import router as reports_router
 from app.routers.repositories import router as repositories_router
 from app.routers.review_jobs import router as review_jobs_router
@@ -115,7 +117,9 @@ async def handle_unexpected_error(
 
 
 app.include_router(auth_router, prefix=settings.api_prefix)
+app.include_router(fix_jobs_router, prefix=settings.api_prefix)
 app.include_router(health_router, prefix=settings.api_prefix)
+app.include_router(providers_router, prefix=settings.api_prefix)
 app.include_router(repositories_router, prefix=settings.api_prefix)
 app.include_router(review_jobs_router, prefix=settings.api_prefix)
 app.include_router(notifications_router, prefix=settings.api_prefix)

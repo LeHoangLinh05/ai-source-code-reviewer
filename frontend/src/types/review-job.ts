@@ -113,14 +113,22 @@ export type AITrace = {
   };
 };
 
+export type ReviewMode = "smart" | "full_audit";
+
+export type ReviewJobOptions = {
+  review_mode?: ReviewMode;
+  rule_profile?: {
+    id: "roadmap_bootcamp_v1";
+    weeks_included?: number[] | null;
+  } | null;
+  [key: string]: unknown;
+};
+
 export type CreateReviewJobPayload = {
   repository_id: string;
   branch: string;
-  options: {
-    rule_profile: {
-      id: string;
-    };
-  };
+  commit_sha?: string | null;
+  options?: ReviewJobOptions;
 };
 
 export type CreateReviewJobResponse = {
@@ -135,7 +143,7 @@ export type ReviewJobFilters = {
   status?: ReviewJobStatus;
 };
 
-export type CancelReviewJobResponse = {
+export type DeleteReviewJobResponse = {
   message: string;
 };
 

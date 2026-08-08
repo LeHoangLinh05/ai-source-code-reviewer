@@ -23,6 +23,7 @@ class ReviewJobRepository:
         repository_id: UUID,
         user_id: UUID,
         branch: str,
+        commit_sha: str | None,
         options: dict[str, object],
     ) -> ReviewJob:
         """Persist a pending review job with its initial status history."""
@@ -32,6 +33,7 @@ class ReviewJobRepository:
             user_id=user_id,
             status=ReviewJobStatus.PENDING,
             branch=branch,
+            commit_sha=commit_sha,
             options=options,
         )
         self.session.add(review_job)

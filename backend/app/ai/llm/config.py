@@ -114,9 +114,9 @@ class ManagedOpenAILLM(Runnable[Any, Any]):
             self.model,
             "openai",
             self.state,
-            input,
-            config,
-            kwargs,
+            input=input,
+            config=config,
+            kwargs=kwargs,
         )
 
     async def ainvoke(
@@ -129,9 +129,9 @@ class ManagedOpenAILLM(Runnable[Any, Any]):
             self.model,
             "openai",
             self.state,
-            input,
-            config,
-            kwargs,
+            input=input,
+            config=config,
+            kwargs=kwargs,
         )
 
 
@@ -240,6 +240,7 @@ def _invoke_model(
     model: ChatOpenAI,
     provider: str,
     state: LLMSessionState,
+    *,
     input: Any,
     config: RunnableConfig | None,
     kwargs: dict[str, Any],
@@ -269,6 +270,7 @@ async def _ainvoke_model(
     model: ChatOpenAI,
     provider: str,
     state: LLMSessionState,
+    *,
     input: Any,
     config: RunnableConfig | None,
     kwargs: dict[str, Any],
@@ -488,5 +490,23 @@ def _is_timeout_error(error: Exception) -> bool:
     )
 
 
+def _is_connection_error(error: Exception) -> bool:
+    error_name = type(error).__name__.lower()
+    message = str(error).lower()
+    return (
+        "connectionerror" in error_name
+        or "connecterror" in error_name
+        or "connection error" in message
+        or "connection reset" in message
+        or "connection refused" in message
+        or "server disconnected" in message
+        or "event loop is closed" in message
+    )
+
+
 def _is_transient_provider_error(error: Exception) -> bool:
-    return _is_rate_limit_error(error) or _is_timeout_error(error)
+    return (
+        _is_rate_limit_error(error)
+        or _is_timeout_error(error)
+        or _is_connection_error(error)
+    )

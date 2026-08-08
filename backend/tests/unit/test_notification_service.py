@@ -97,7 +97,11 @@ class FakeRedis:
 
 
 class FailingRedis(FakeRedis):
-    """Redis fake that simulates an unavailable realtime backend."""
+    """Redis fake that simulates unavailable realtime publishing."""
+
+    def __init__(self, error: RedisError | RuntimeError) -> None:
+        super().__init__()
+        self.error = error
 
     async def set(
         self,
@@ -107,7 +111,7 @@ class FailingRedis(FakeRedis):
         ex: int,
     ) -> bool:
         del key, value, ex
-        raise RedisError("unavailable")
+        raise self.error
 
 
 class FakeRequest:
@@ -202,10 +206,41 @@ async def test_publish_failure_does_not_raise_after_business_commit() -> None:
             "progress": 100,
             "message": "Review failed",
         },
-        cast(Redis, FailingRedis()),
+        cast(Redis, FailingRedis(RedisError("unavailable"))),
     )
 
     assert result == 0
+
+
+@pytest.mark.asyncio
+async def test_publish_closed_event_loop_does_not_raise_after_business_commit() -> None:
+    result = await publish_job_progress(
+        uuid4(),
+        "failed",
+        {
+            "status": "FAILED",
+            "progress": 100,
+            "message": "Review failed",
+        },
+        cast(Redis, FailingRedis(RuntimeError("Event loop is closed"))),
+    )
+
+    assert result == 0
+
+
+@pytest.mark.asyncio
+async def test_publish_job_progress_raises_unexpected_runtime_error() -> None:
+    with pytest.raises(RuntimeError, match="different failure"):
+        await publish_job_progress(
+            uuid4(),
+            "failed",
+            {
+                "status": "FAILED",
+                "progress": 100,
+                "message": "Review failed",
+            },
+            cast(Redis, FailingRedis(RuntimeError("different failure"))),
+        )
 
 
 @pytest.mark.asyncio
@@ -306,5 +341,6 @@ async def test_stream_sends_heartbeat_and_cleans_up_on_disconnect(
 def test_sse_router_is_registered_without_admin_routes() -> None:
     paths = set(app.openapi()["paths"])
 
+    assert "/api/fixes/{fix_id}/stream" in paths
     assert "/api/review-jobs/{job_id}/stream" in paths
     assert not any(path.startswith("/api/admin") for path in paths)

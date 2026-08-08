@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections import Counter
 from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
@@ -21,11 +22,11 @@ from app.ai.probe.candidate_validation import (
 )
 from app.ai.probe.judging import (
     _issue_category,
-    _issue_severity,
     _json_object_from_text,
     _judge_batches,
     _judge_prompt,
     _message_content,
+    _probe_issue_severity,
     _probe_judge_response_from_payload,
 )
 from app.ai.probe.models import (
@@ -58,6 +59,49 @@ class _CandidatePersistenceContext:
     category: IssueCategory
     severity: IssueSeverity
     rule_id: str | None
+
+
+@dataclass(slots=True, frozen=True)
+class _ProbeVerdictContract:
+    requested_probe_ids: tuple[str, ...]
+    received_probe_ids: tuple[str, ...]
+    missing_probe_ids: tuple[str, ...]
+    duplicate_probe_ids: tuple[str, ...]
+    unknown_probe_ids: tuple[str, ...]
+    schema_rejected_count: int
+
+    @property
+    def is_valid(self) -> bool:
+        return not (
+            self.missing_probe_ids
+            or self.duplicate_probe_ids
+            or self.unknown_probe_ids
+            or self.schema_rejected_count
+        )
+
+
+@dataclass(slots=True, frozen=True)
+class _JudgeBatchOutcome:
+    response: ProbeJudgeResponse
+    contract_attempts: tuple[_ProbeVerdictContract, ...]
+    duration_ms: int
+
+
+class ProbeJudgeContractError(RuntimeError):
+    """Raised when retries cannot produce one verdict per requested probe."""
+
+    def __init__(
+        self,
+        *,
+        batch: list[ProbeEvidenceBundle],
+        response: ProbeJudgeResponse,
+        contract_attempts: tuple[_ProbeVerdictContract, ...],
+    ) -> None:
+        super().__init__("Probe judge did not return exactly one verdict per probe")
+        self.batch = batch
+        self.response = response
+        self.contract_attempts = contract_attempts
+        self.duration_ms = 0
 
 
 class ProbeJudgeService:
@@ -117,10 +161,23 @@ class ProbeJudgeService:
         try:
             completed_tasks = asyncio.as_completed(tasks)
             for completed_task in completed_tasks:
-                _, batch, response, duration_ms = await completed_task
+                try:
+                    _, batch, outcome = await completed_task
+                except ProbeJudgeContractError as error:
+                    await _write_probe_judge_trace(
+                        trace_writer=trace_writer,
+                        batch=error.batch,
+                        response=error.response,
+                        created_count=0,
+                        rejected_count=len(error.response.candidates),
+                        duration_ms=error.duration_ms,
+                        contract_attempts=error.contract_attempts,
+                        status="contract_error",
+                    )
+                    raise
                 batch_created, batch_rejected = await self._persist_batch(
                     job_id=job_id,
-                    candidates=response.candidates,
+                    candidates=outcome.response.candidates,
                     bundles=batch,
                 )
                 judged_batches += 1
@@ -129,10 +186,11 @@ class ProbeJudgeService:
                 await _write_probe_judge_trace(
                     trace_writer=trace_writer,
                     batch=batch,
-                    response=response,
+                    response=outcome.response,
                     created_count=batch_created,
                     rejected_count=batch_rejected,
-                    duration_ms=duration_ms,
+                    duration_ms=outcome.duration_ms,
+                    contract_attempts=outcome.contract_attempts,
                 )
                 if on_batch_completed is not None:
                     await on_batch_completed(judged_batches, total_batches)
@@ -150,18 +208,78 @@ class ProbeJudgeService:
         batch_index: int,
         batch: list[ProbeEvidenceBundle],
         semaphore: asyncio.Semaphore,
-    ) -> tuple[int, list[ProbeEvidenceBundle], ProbeJudgeResponse, int]:
+    ) -> tuple[int, list[ProbeEvidenceBundle], _JudgeBatchOutcome]:
         """Run one LLM batch under the configured concurrency limit."""
 
         async with semaphore:
             started_at = time.perf_counter()
-            response = await self._judge_batch(batch)
+            try:
+                response, contract_attempts = await self._judge_batch_with_retries(
+                    batch
+                )
+            except ProbeJudgeContractError as error:
+                error.duration_ms = int((time.perf_counter() - started_at) * 1000)
+                raise
         return (
             batch_index,
             batch,
-            response,
-            int((time.perf_counter() - started_at) * 1000),
+            _JudgeBatchOutcome(
+                response=response,
+                contract_attempts=contract_attempts,
+                duration_ms=int((time.perf_counter() - started_at) * 1000),
+            ),
         )
+
+    async def _judge_batch_with_retries(
+        self,
+        batch: list[ProbeEvidenceBundle],
+    ) -> tuple[ProbeJudgeResponse, tuple[_ProbeVerdictContract, ...]]:
+        expected_by_id = {bundle.probe.probe_id: bundle for bundle in batch}
+        expected_ids = tuple(expected_by_id)
+        accepted: dict[str, ProbeJudgeIssueCandidate] = {}
+        attempts: list[_ProbeVerdictContract] = []
+
+        response = await self._judge_batch(batch)
+        contract = _probe_verdict_contract(response, expected_ids)
+        attempts.append(contract)
+        if contract.is_valid:
+            return response, tuple(attempts)
+
+        accepted.update(_single_candidates_by_probe(response, expected_ids))
+        retry_ids = _contract_retry_probe_ids(contract)
+        retry_batch = [expected_by_id[probe_id] for probe_id in retry_ids]
+        retry_response = await self._judge_batch(retry_batch)
+        retry_contract = _probe_verdict_contract(retry_response, retry_ids)
+        attempts.append(retry_contract)
+        if retry_contract.is_valid:
+            accepted.update(_single_candidates_by_probe(retry_response, retry_ids))
+            return _ordered_probe_response(accepted, expected_ids), tuple(attempts)
+
+        retry_candidates = _single_candidates_by_probe(retry_response, retry_ids)
+        accepted.update(retry_candidates)
+        unresolved_ids = _contract_retry_probe_ids(retry_contract)
+        for probe_id in unresolved_ids:
+            single_response = await self._judge_batch([expected_by_id[probe_id]])
+            single_contract = _probe_verdict_contract(
+                single_response,
+                (probe_id,),
+            )
+            attempts.append(single_contract)
+            if not single_contract.is_valid:
+                raise ProbeJudgeContractError(
+                    batch=batch,
+                    response=_ordered_probe_response(accepted, expected_ids),
+                    contract_attempts=tuple(attempts),
+                )
+            accepted.update(_single_candidates_by_probe(single_response, (probe_id,)))
+
+        if set(accepted) != set(expected_ids):
+            raise ProbeJudgeContractError(
+                batch=batch,
+                response=_ordered_probe_response(accepted, expected_ids),
+                contract_attempts=tuple(attempts),
+            )
+        return _ordered_probe_response(accepted, expected_ids), tuple(attempts)
 
     async def _persist_batch(
         self,
@@ -255,7 +373,7 @@ class ProbeJudgeService:
             line_end=line_end,
             evidence_chunk=evidence_chunks[0],
             category=category,
-            severity=_issue_severity(candidate.severity),
+            severity=_probe_issue_severity(candidate.probe_id, candidate.severity),
             rule_id=rule_id,
         )
 
@@ -358,6 +476,68 @@ class ProbeJudgeService:
         return result.scalars().first()
 
 
+def _probe_verdict_contract(
+    response: ProbeJudgeResponse,
+    requested_probe_ids: tuple[str, ...],
+) -> _ProbeVerdictContract:
+    received_probe_ids = tuple(candidate.probe_id for candidate in response.candidates)
+    counts = Counter(received_probe_ids)
+    expected = set(requested_probe_ids)
+    return _ProbeVerdictContract(
+        requested_probe_ids=requested_probe_ids,
+        received_probe_ids=received_probe_ids,
+        missing_probe_ids=tuple(
+            probe_id for probe_id in requested_probe_ids if counts[probe_id] == 0
+        ),
+        duplicate_probe_ids=tuple(
+            probe_id for probe_id in requested_probe_ids if counts[probe_id] > 1
+        ),
+        unknown_probe_ids=tuple(
+            sorted(probe_id for probe_id in counts if probe_id not in expected)
+        ),
+        schema_rejected_count=response.schema_rejected_count,
+    )
+
+
+def _single_candidates_by_probe(
+    response: ProbeJudgeResponse,
+    requested_probe_ids: tuple[str, ...],
+) -> dict[str, ProbeJudgeIssueCandidate]:
+    counts = Counter(candidate.probe_id for candidate in response.candidates)
+    requested = set(requested_probe_ids)
+    return {
+        candidate.probe_id: candidate
+        for candidate in response.candidates
+        if candidate.probe_id in requested and counts[candidate.probe_id] == 1
+    }
+
+
+def _contract_retry_probe_ids(
+    contract: _ProbeVerdictContract,
+) -> tuple[str, ...]:
+    invalid_ids = set(contract.missing_probe_ids) | set(contract.duplicate_probe_ids)
+    if not invalid_ids and (
+        contract.unknown_probe_ids or contract.schema_rejected_count
+    ):
+        return contract.requested_probe_ids
+    return tuple(
+        probe_id for probe_id in contract.requested_probe_ids if probe_id in invalid_ids
+    )
+
+
+def _ordered_probe_response(
+    candidates_by_probe: dict[str, ProbeJudgeIssueCandidate],
+    requested_probe_ids: tuple[str, ...],
+) -> ProbeJudgeResponse:
+    return ProbeJudgeResponse(
+        candidates=[
+            candidates_by_probe[probe_id]
+            for probe_id in requested_probe_ids
+            if probe_id in candidates_by_probe
+        ]
+    )
+
+
 async def _write_probe_judge_trace(
     *,
     trace_writer: SyntheticTraceWriter,
@@ -366,7 +546,11 @@ async def _write_probe_judge_trace(
     created_count: int,
     rejected_count: int,
     duration_ms: int,
+    contract_attempts: tuple[_ProbeVerdictContract, ...] = (),
+    status: str = "ok",
 ) -> None:
+    requested_probe_ids = tuple(_probe_id(bundle.probe) for bundle in batch)
+    final_contract = _probe_verdict_contract(response, requested_probe_ids)
     await trace_writer.write_synthetic_tool_log(
         tool_name=PROBE_JUDGE_TOOL_NAME,
         tool_input={
@@ -375,10 +559,27 @@ async def _write_probe_judge_trace(
             "chunk_count": sum(len(bundle.candidate_chunks) for bundle in batch),
         },
         output={
-            "status": "ok",
+            "status": status,
             "duration_ms": duration_ms,
             "candidate_count": len(response.candidates),
             "schema_rejected_count": response.schema_rejected_count,
+            "requested_probe_ids": list(requested_probe_ids),
+            "received_probe_ids": list(final_contract.received_probe_ids),
+            "missing_probe_ids": list(final_contract.missing_probe_ids),
+            "duplicate_probe_ids": list(final_contract.duplicate_probe_ids),
+            "unknown_probe_ids": list(final_contract.unknown_probe_ids),
+            "retry_count": max(0, len(contract_attempts) - 1),
+            "contract_attempts": [
+                {
+                    "requested_probe_ids": list(attempt.requested_probe_ids),
+                    "received_probe_ids": list(attempt.received_probe_ids),
+                    "missing_probe_ids": list(attempt.missing_probe_ids),
+                    "duplicate_probe_ids": list(attempt.duplicate_probe_ids),
+                    "unknown_probe_ids": list(attempt.unknown_probe_ids),
+                    "schema_rejected_count": attempt.schema_rejected_count,
+                }
+                for attempt in contract_attempts
+            ],
             "created_count": created_count,
             "rejected_count": rejected_count,
             "candidates": [

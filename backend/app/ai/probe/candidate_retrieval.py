@@ -33,7 +33,26 @@ PATH_HINTS_BY_CATEGORY = {
     "requirement": ("app", "src", "backend", "frontend", "config"),
 }
 RRF_K = 60
-MAX_RELATED_CHUNKS = 2
+MAX_RELATED_CHUNKS = 3
+MAX_RELATED_CHUNKS_PER_FILE = 2
+CROSS_FILE_PROBE_IDS = {
+    "bug.inventory_invariant",
+    "security.insecure_randomness",
+    "security.jwt_algorithm_allowlist",
+    "security.mass_assignment",
+    "security.open_redirect",
+    "security.role_authorization",
+    "security.sensitive_response_exposure",
+}
+PATH_HINTS_BY_PROBE = {
+    "bug.inventory_invariant": ("/repositories/", "/services/", "/schemas/"),
+    "security.insecure_randomness": ("/security.py", "/auth.py"),
+    "security.jwt_algorithm_allowlist": ("/deps.py", "/security.py", "/config.py"),
+    "security.mass_assignment": ("/schemas/", "/repositories/", "/api/"),
+    "security.open_redirect": ("/auth.py", "/api/", "/routes/"),
+    "security.role_authorization": ("/reports", "/api/", "/services/"),
+    "security.sensitive_response_exposure": ("/schemas/", "/reports", "/api/"),
+}
 
 
 def _candidate_from_semantic_result(
@@ -148,26 +167,47 @@ def _expand_related_candidates(
     top_k: int,
     excluded_keys: set[tuple[str, int]],
 ) -> list[ProbeCandidateChunk]:
-    """Add at most two directly called function chunks as supporting context."""
+    """Add adjacent and symbol-linked chunks as supporting context."""
 
-    call_names = {
-        name.lower()
-        for candidate in selected
-        for name in re.findall(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*\(", candidate.content)
-        if name.lower() not in _IGNORED_CALL_NAMES
-    }
-    if not call_names:
+    retained_count = max(1, top_k - MAX_RELATED_CHUNKS)
+    context_anchors = selected[:retained_count]
+    symbol_priorities = _reference_symbol_priorities(context_anchors)
+    call_names = {name for name in symbol_priorities if name[0].islower()}
+    class_names = set(symbol_priorities) - call_names
+    is_cross_file_probe = probe.probe_id in CROSS_FILE_PROBE_IDS
+    if (
+        not call_names
+        and not class_names
+        and not any(
+            _needs_adjacent_route_context(candidate) for candidate in context_anchors
+        )
+    ):
         return selected[:top_k]
-    if len(selected) >= top_k:
+    if len(selected) >= top_k and not is_cross_file_probe:
         return selected[:top_k]
 
     related: list[ProbeCandidateChunk] = []
     selected_keys = {candidate.key for candidate in selected}
     for document in chunk_documents:
-        function_name = str(document.get("function_name") or "").lower()
-        if not function_name or function_name not in call_names:
+        document_path = str(document.get("file_path") or "")
+        if probe.file_scope is not None and document_path != probe.file_scope:
             continue
-        key = (str(document.get("file_path") or ""), document.get("chunk_index"))
+        function_name = str(document.get("function_name") or "").lower()
+        class_name = str(document.get("class_name") or "").lower()
+        content = str(document.get("chunk_text") or "").lower()
+        matched_symbol_priorities = [
+            priority
+            for name, priority in symbol_priorities.items()
+            if re.search(rf"\b{re.escape(name)}\b", content)
+        ]
+        has_symbol_reference = bool(matched_symbol_priorities)
+        if (
+            function_name not in call_names
+            and class_name not in class_names
+            and not has_symbol_reference
+        ):
+            continue
+        key = (document_path, document.get("chunk_index"))
         if key in selected_keys or key in excluded_keys:
             continue
         candidate = _candidate_from_document(
@@ -180,28 +220,170 @@ def _expand_related_candidates(
         )
         if candidate is None:
             continue
-        related.append(candidate)
-        if len(related) >= MAX_RELATED_CHUNKS:
-            break
+        reference_priority = max(matched_symbol_priorities, default=0.0)
+        related.append(
+            replace(
+                candidate,
+                final_score=candidate.final_score + reference_priority,
+            )
+        )
 
-    if not related:
+    adjacent = _adjacent_candidates(
+        selected=[*context_anchors, *related],
+        chunk_documents=chunk_documents,
+        probe=probe,
+        excluded_keys=excluded_keys,
+    )
+    if not related and not adjacent:
         return selected[:top_k]
-    remaining_slots = top_k - len(selected)
-    return [*selected, *related[:remaining_slots]]
+    ranked_related = _rank_related_candidates([*adjacent, *related])
+    if len(selected) < top_k:
+        return [*selected, *ranked_related[: top_k - len(selected)]]
+
+    related_slots = min(len(ranked_related), MAX_RELATED_CHUNKS, top_k - 1)
+    retained = selected[: top_k - related_slots]
+    return [*retained, *ranked_related[:related_slots]]
+
+
+def _reference_symbol_priorities(
+    selected: list[ProbeCandidateChunk],
+) -> dict[str, float]:
+    priorities: dict[str, float] = {}
+    for index, candidate in enumerate(selected):
+        priority = 2.0 / (index + 1)
+        raw_names = [
+            *re.findall(
+                r"\b([A-Za-z_][A-Za-z0-9_]*)\s*\(",
+                candidate.content,
+            ),
+            *re.findall(r"\b([A-Z][A-Za-z0-9_]+)\b", candidate.content),
+        ]
+        for raw_name in raw_names:
+            name = raw_name.lower()
+            if name in _IGNORED_CALL_NAMES:
+                continue
+            priorities[name] = max(priorities.get(name, 0.0), priority)
+    return priorities
+
+
+def _rank_related_candidates(
+    candidates: list[ProbeCandidateChunk],
+) -> list[ProbeCandidateChunk]:
+    ranked = sorted(
+        _unique_candidates(candidates),
+        key=lambda candidate: candidate.final_score,
+        reverse=True,
+    )
+    selected: list[ProbeCandidateChunk] = []
+    selected_keys: set[tuple[str, int]] = set()
+    per_file_count: dict[str, int] = {}
+    for strategy in ("related", "adjacent"):
+        candidate = next(
+            (
+                item
+                for item in ranked
+                if strategy in item.strategies and item.key not in selected_keys
+            ),
+            None,
+        )
+        if candidate is not None:
+            selected.append(candidate)
+            selected_keys.add(candidate.key)
+            per_file_count[candidate.file_path] = 1
+
+    for candidate in ranked:
+        if len(selected) >= MAX_RELATED_CHUNKS:
+            break
+        if candidate.key in selected_keys:
+            continue
+        if per_file_count.get(candidate.file_path, 0) >= MAX_RELATED_CHUNKS_PER_FILE:
+            continue
+        selected.append(candidate)
+        selected_keys.add(candidate.key)
+        per_file_count[candidate.file_path] = (
+            per_file_count.get(candidate.file_path, 0) + 1
+        )
+    return selected
+
+
+def _adjacent_candidates(
+    *,
+    selected: list[ProbeCandidateChunk],
+    chunk_documents: list[dict[str, Any]],
+    probe: ProbeDefinition,
+    excluded_keys: set[tuple[str, int]],
+) -> list[ProbeCandidateChunk]:
+    route_candidates = [
+        (index, candidate)
+        for index, candidate in enumerate(selected)
+        if _needs_adjacent_route_context(candidate)
+    ]
+    selected_keys = {candidate.key for candidate in selected}
+    adjacent_priorities = {
+        (candidate.file_path, candidate.chunk_index + offset): 2.0 / (index + 1)
+        for index, candidate in route_candidates
+        for offset in (-1, 1)
+    }
+    candidates: list[ProbeCandidateChunk] = []
+    for document in chunk_documents:
+        key = (str(document.get("file_path") or ""), document.get("chunk_index"))
+        if (
+            key not in adjacent_priorities
+            or key in selected_keys
+            or key in excluded_keys
+        ):
+            continue
+        candidate = _candidate_from_document(
+            document,
+            probe=probe,
+            query=probe.primary_query,
+            semantic_score=0.0,
+            lexical_score=1.0,
+            strategy="adjacent",
+        )
+        if candidate is not None:
+            candidates.append(
+                replace(
+                    candidate,
+                    final_score=(
+                        candidate.final_score + adjacent_priorities.get(key, 0.0)
+                    ),
+                )
+            )
+    return candidates
+
+
+def _needs_adjacent_route_context(candidate: ProbeCandidateChunk) -> bool:
+    content = candidate.content.lower()
+    return "@router." in content or (
+        "depends(" in content and ("def " in content or "async def " in content)
+    )
 
 
 _IGNORED_CALL_NAMES = {
+    "apirouter",
+    "asyncsession",
+    "basemodel",
+    "depends",
     "dict",
+    "false",
     "float",
+    "get",
     "int",
     "len",
     "list",
     "max",
     "min",
+    "none",
+    "post",
     "print",
+    "put",
     "str",
     "sum",
     "super",
+    "token",
+    "true",
+    "user",
 }
 
 
@@ -263,7 +445,19 @@ def _unique_candidates(
         key=lambda item: item.final_score,
         reverse=True,
     ):
-        if candidate.key in seen:
+        existing_index = next(
+            (
+                index
+                for index, current in enumerate(unique)
+                if current.key == candidate.key
+            ),
+            None,
+        )
+        if existing_index is not None:
+            unique[existing_index] = _merge_candidate(
+                unique[existing_index],
+                candidate,
+            )
             continue
         nested_index = next(
             (
@@ -320,6 +514,7 @@ def _merge_candidate(
         semantic_score=max(current.semantic_score, incoming.semantic_score),
         lexical_score=max(current.lexical_score, incoming.lexical_score),
         path_score=max(current.path_score, incoming.path_score),
+        final_score=max(current.final_score, incoming.final_score),
         strategies=tuple(sorted(set(current.strategies) | set(incoming.strategies))),
     )
 
@@ -486,6 +681,12 @@ def _path_score(
         score += 0.2
     if any(term in normalized_path for term in _important_terms(query)[:10]):
         score += 0.1
+    probe_hints = PATH_HINTS_BY_PROBE.get(probe.probe_id, ())
+    for index, hint in enumerate(probe_hints):
+        if hint not in normalized_path:
+            continue
+        score += max(0.12, 0.34 - index * 0.1)
+        break
     if _is_non_runtime_path(normalized_path):
         score -= 0.45
     return score

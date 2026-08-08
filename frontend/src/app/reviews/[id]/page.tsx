@@ -10,7 +10,6 @@ import {
   FileCode2,
   GitBranch,
   Loader2,
-  RefreshCw,
   SearchCheck,
   Trash2,
   Wifi,
@@ -37,7 +36,7 @@ import {
 } from "@/lib/job-progress";
 import { useJobProgress } from "@/hooks/use-job-progress";
 import {
-  cancelReviewJob,
+  deleteReviewJob,
   getReviewJob,
   getReviewJobAiTrace,
 } from "@/lib/review-jobs";
@@ -195,7 +194,7 @@ export default function ReviewJobDetailPage() {
     dispatch(setJobMutating(true));
 
     try {
-      await cancelReviewJob(currentJob.id);
+      await deleteReviewJob(currentJob.id);
       dispatch(removeJob(currentJob.id));
       dispatch(setCurrentJob(null));
       toast.success("Review job canceled.");
@@ -228,16 +227,6 @@ export default function ReviewJobDetailPage() {
               Cancel
             </Button>
           ) : null}
-          <Button
-            disabled={isLoading}
-            onClick={() => {
-              void loadJob();
-              void loadAiTrace();
-            }}
-          >
-            <RefreshCw aria-hidden="true" />
-            Refresh
-          </Button>
         </div>
       </div>
 
