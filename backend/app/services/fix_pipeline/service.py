@@ -6,22 +6,38 @@ from pathlib import Path
 from typing import cast
 from uuid import UUID
 
+from app.ai.llm.config import llm_session
 from app.core.config import Settings
 from app.models.fix_job import FixJob, FixJobStatus, FixValidationStatus
 from app.models.review_issue import ReviewIssue
 from app.repositories.fix_job_repository import FixJobRepository
 from app.repositories.report_repository import ReportRepository
-from app.schemas.fix_job import FixValidationResult
+from app.schemas.fix_job import FixIssuePlan, FixIssueResult, FixValidationResult
 from app.services.fix_notification_service import publish_fix_job_progress
+from app.services.fix_pipeline.contracts import FixIssueSpec, FixVerificationContext
 from app.services.fix_pipeline.errors import (
     FixPipelineError,
     build_fix_error_message,
 )
+from app.services.fix_pipeline.execution import (
+    DockerFixCommandExecutor,
+    FixCommandExecutor,
+)
 from app.services.fix_pipeline.generation import (
     generate_fix_changes,
-    repair_validation_failures,
+    repair_fix_failures,
+)
+from app.services.fix_pipeline.planning import build_fix_issue_plans
+from app.services.fix_pipeline.scenario_testing import (
+    cleanup_temporary_tests,
+    prepare_fix_verification,
+    run_patched_verification,
 )
 from app.services.fix_pipeline.validation import validate_fix
+from app.services.fix_pipeline.verification import (
+    merge_validation_results,
+    verify_fix_issues,
+)
 from app.services.fix_pipeline.workspace import (
     get_changed_files,
     get_git_diff,
@@ -32,6 +48,8 @@ from app.services.review_pipeline.workspace import validate_repo_size
 logger = logging.getLogger(__name__)
 
 MAX_VALIDATION_REPAIR_ATTEMPTS = 2
+BASE_LLM_CALL_RESERVE = 4
+LLM_CALLS_PER_SELECTED_ISSUE = 4
 
 
 class FixPipelineService:
@@ -43,10 +61,12 @@ class FixPipelineService:
         settings: Settings,
         fix_job_repository: FixJobRepository,
         report_repository: ReportRepository,
+        executor: FixCommandExecutor | None = None,
     ) -> None:
         self.settings = settings
         self.fix_job_repository = fix_job_repository
         self.report_repository = report_repository
+        self.executor = executor or DockerFixCommandExecutor.from_settings(settings)
 
     async def run(self, fix_job_id: UUID) -> None:
         """Run the full patch-only fix pipeline for one job."""
@@ -65,7 +85,8 @@ class FixPipelineService:
                 sandbox_path=str(sandbox_path),
             )
             await publish_fix_job_progress(fix_job)
-            await self._run_pipeline_steps(fix_job, sandbox_path, sandbox_root)
+            async with llm_session():
+                await self._run_pipeline_steps(fix_job, sandbox_path, sandbox_root)
             elapsed_seconds = time.perf_counter() - started_at
             logger.info("Fix job %s prepared in %.2fs", fix_job_id, elapsed_seconds)
         except Exception as error:
@@ -97,32 +118,75 @@ class FixPipelineService:
 
         fix_job = await self._transition(fix_job, FixJobStatus.GENERATING_PATCH)
         issues = await self._load_selected_issues(fix_job)
-        await generate_fix_changes(
+        self._ensure_llm_call_budget(issue_count=len(issues))
+        specs, plans = await build_fix_issue_plans(
             sandbox_path=sandbox_path,
             issues=issues,
-            timeout_seconds=self.settings.analysis_subprocess_timeout_seconds,
         )
-        diff = get_git_diff(sandbox_path)
-        if not diff.strip():
-            raise FixPipelineError("Fix generation produced no code changes")
-
-        changed_files = get_changed_files(sandbox_path)
-        fix_job = await self.fix_job_repository.save_patch(
+        plan_payload = [
+            cast(dict[str, object], plan.model_dump(mode="json")) for plan in plans
+        ]
+        fix_job = await self.fix_job_repository.save_issue_plan(
             fix_job,
-            diff=diff,
-            changed_files=changed_files,
+            issue_plan=plan_payload,
         )
-
-        fix_job = await self._transition(
+        await publish_fix_job_progress(
             fix_job,
-            FixJobStatus.VALIDATING,
-            data={"changed_files": changed_files},
+            message="Planned cross-file fixes for the selected issues.",
+            data={
+                "planned_issues": sum(plan.status.value == "planned" for plan in plans),
+                "uncertain_issues": sum(
+                    plan.status.value != "planned" for plan in plans
+                ),
+            },
         )
-        validation_result, changed_files = await self._validate_and_repair_patch(
-            fix_job=fix_job,
+        verification_context = await prepare_fix_verification(
             sandbox_path=sandbox_path,
-            changed_files=changed_files,
+            specs=specs,
+            plans=plans,
+            timeout_seconds=self.settings.analysis_subprocess_timeout_seconds,
+            executor=self.executor,
         )
+        try:
+            await generate_fix_changes(
+                sandbox_path=sandbox_path,
+                issues=issues,
+                specs=specs,
+                plans=plans,
+                timeout_seconds=self.settings.analysis_subprocess_timeout_seconds,
+                executor=self.executor,
+            )
+            diff = get_git_diff(sandbox_path)
+            if not diff.strip():
+                raise FixPipelineError("Fix generation produced no code changes")
+
+            changed_files = get_changed_files(sandbox_path)
+            fix_job = await self.fix_job_repository.save_patch(
+                fix_job,
+                diff=diff,
+                changed_files=changed_files,
+            )
+
+            fix_job = await self._transition(
+                fix_job,
+                FixJobStatus.VALIDATING,
+                data={"changed_files": changed_files},
+            )
+            (
+                validation_result,
+                changed_files,
+                issue_results,
+            ) = await self._validate_and_repair_patch(
+                fix_job=fix_job,
+                sandbox_path=sandbox_path,
+                changed_files=changed_files,
+                issues=issues,
+                specs=specs,
+                plans=plans,
+                verification_context=verification_context,
+            )
+        finally:
+            cleanup_temporary_tests(verification_context)
         diff = get_git_diff(sandbox_path)
         if not diff.strip():
             raise FixPipelineError("Validation repair removed all code changes")
@@ -131,6 +195,14 @@ class FixPipelineService:
             fix_job,
             diff=diff,
             changed_files=changed_files,
+        )
+        results_payload = [
+            cast(dict[str, object], result.model_dump(mode="json"))
+            for result in issue_results
+        ]
+        fix_job = await self.fix_job_repository.save_issue_results(
+            fix_job,
+            issue_results=results_payload,
         )
         validation_payload = cast(
             dict[str, object],
@@ -144,9 +216,20 @@ class FixPipelineService:
         await self._transition(
             fix_job,
             FixJobStatus.WAITING_APPROVAL,
+            message=(
+                "Patch generated; verification failed."
+                if validation_result.status == FixValidationStatus.FAILED
+                else "Patch is ready for review."
+            ),
             data={
                 "changed_files": changed_files,
                 "validation_summary": validation_payload,
+                "fixed_issues": sum(
+                    result.verdict.value == "fixed" for result in issue_results
+                ),
+                "unresolved_issues": sum(
+                    result.verdict.value != "fixed" for result in issue_results
+                ),
             },
         )
 
@@ -156,19 +239,55 @@ class FixPipelineService:
         fix_job: FixJob,
         sandbox_path: Path,
         changed_files: list[str],
-    ) -> tuple[FixValidationResult, list[str]]:
+        issues: list[ReviewIssue],
+        specs: list[FixIssueSpec],
+        plans: list[FixIssuePlan],
+        verification_context: FixVerificationContext | None = None,
+    ) -> tuple[FixValidationResult, list[str], list[FixIssueResult]]:
         current_changed_files = changed_files
         for attempt in range(MAX_VALIDATION_REPAIR_ATTEMPTS + 1):
-            validation_result = validate_fix(
+            command_result = validate_fix(
                 sandbox_path=sandbox_path,
                 changed_files=current_changed_files,
                 timeout_seconds=self.settings.analysis_subprocess_timeout_seconds,
+                executor=self.executor,
+            )
+            scenario_results = (
+                run_patched_verification(
+                    sandbox_path=sandbox_path,
+                    plans=plans,
+                    context=verification_context,
+                    timeout_seconds=(self.settings.analysis_subprocess_timeout_seconds),
+                    executor=self.executor,
+                )
+                if verification_context is not None
+                else None
+            )
+            issue_results = await verify_fix_issues(
+                sandbox_path=sandbox_path,
+                issues=issues,
+                specs=specs,
+                plans=plans,
+                timeout_seconds=self.settings.analysis_subprocess_timeout_seconds,
+                attempt=attempt + 1,
+                executor=self.executor,
+                scenario_results_by_issue=scenario_results,
+            )
+            for result in issue_results:
+                result.changed_files = [
+                    path
+                    for path in result.planned_files
+                    if path in current_changed_files
+                ]
+            validation_result = merge_validation_results(
+                command_result,
+                issue_results,
             )
             if (
                 validation_result.status != FixValidationStatus.FAILED
                 or attempt >= MAX_VALIDATION_REPAIR_ATTEMPTS
             ):
-                return validation_result, current_changed_files
+                return validation_result, current_changed_files, issue_results
 
             validation_payload = cast(
                 dict[str, object],
@@ -185,17 +304,19 @@ class FixPipelineService:
                     "validation_summary": validation_payload,
                 },
             )
-            repaired = await repair_validation_failures(
+            repaired = await repair_fix_failures(
                 sandbox_path=sandbox_path,
-                changed_files=current_changed_files,
+                specs=specs,
+                plans=plans,
+                issue_results=issue_results,
                 validation_result=validation_result,
             )
             if not repaired:
-                return validation_result, current_changed_files
+                return validation_result, current_changed_files, issue_results
 
             current_changed_files = get_changed_files(sandbox_path)
             if not current_changed_files:
-                return validation_result, current_changed_files
+                return validation_result, current_changed_files, issue_results
 
             await publish_fix_job_progress(
                 fix_job,
@@ -207,6 +328,17 @@ class FixPipelineService:
             )
 
         raise FixPipelineError("Validation repair loop ended unexpectedly")
+
+    def _ensure_llm_call_budget(self, *, issue_count: int) -> None:
+        estimated_calls = BASE_LLM_CALL_RESERVE + (
+            issue_count * LLM_CALLS_PER_SELECTED_ISSUE
+        )
+        if estimated_calls > self.settings.llm_job_call_budget:
+            raise FixPipelineError(
+                "Selected issues require an estimated "
+                f"{estimated_calls} LLM calls, exceeding LLM_JOB_CALL_BUDGET="
+                f"{self.settings.llm_job_call_budget}. Split the fix into fewer issues."
+            )
 
     async def _load_selected_issues(self, fix_job: FixJob) -> list[ReviewIssue]:
         issue_ids = [UUID(issue_id) for issue_id in fix_job.issue_ids]
@@ -224,13 +356,14 @@ class FixPipelineService:
         fix_job: FixJob,
         status: FixJobStatus,
         *,
+        message: str | None = None,
         data: dict[str, object] | None = None,
     ) -> FixJob:
         updated_job = await self.fix_job_repository.update_status(
             fix_job,
             status=status,
         )
-        await publish_fix_job_progress(updated_job, data=data)
+        await publish_fix_job_progress(updated_job, message=message, data=data)
         return updated_job
 
     async def _handle_failure(self, fix_job_id: UUID, error: Exception) -> None:

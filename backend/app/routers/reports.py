@@ -49,8 +49,7 @@ async def get_report(
 ) -> ReportResponse:
     """Return the full report for an authorized completed review job."""
 
-    report = await report_service.get_report(job_id, current_user)
-    return ReportResponse.model_validate(report)
+    return await report_service.get_report(job_id, current_user)
 
 
 @router.get(
@@ -63,7 +62,7 @@ async def get_report_summary(
     current_user: CurrentUserDep,
     report_service: ReportServiceDep,
 ) -> ReportSummaryResponse:
-    """Return executive summary and scores for an authorized report."""
+    """Return the executive summary for an authorized report."""
 
     return await report_service.get_summary(job_id, current_user)
 

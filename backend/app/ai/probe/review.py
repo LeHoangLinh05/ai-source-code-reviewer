@@ -9,7 +9,6 @@ from typing import Any
 from uuid import UUID
 
 from motor.motor_asyncio import AsyncIOMotorDatabase
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai.probe.contracts import ProbeDefinition
@@ -17,6 +16,7 @@ from app.ai.probe.judge_service import ProbeJudgeService
 from app.ai.probe.models import (
     ProbeBatchProgressCallback,
     ProbeEvidenceBundle,
+    ProbeJudgeSummary,
     ProbeReviewConfig,
     ProbeReviewResult,
     SyntheticTraceWriter,
@@ -29,7 +29,7 @@ from app.ai.review.plan import REVIEW_MODE_FULL_AUDIT, get_review_mode
 from app.ai.roadmap.knowledge import RoadmapRequirement, load_roadmap_requirements
 from app.ai.roadmap.selection import build_roadmap_context
 from app.db.mongodb import FILE_ANALYSIS_RESULTS_COLLECTION
-from app.models.review_job import ReviewJob
+from app.repositories.report_repository import ReportRepository
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +47,8 @@ async def run_backend_directed_probe_review(
 ) -> ProbeReviewResult:
     """Run the default backend-directed review path."""
 
-    job_options = await _load_job_options(postgres_session, job_id)
+    report_repository = ReportRepository(postgres_session)
+    job_options = await _load_job_options(report_repository, job_id)
     probes = await build_backend_probe_plan(
         job_id=job_id,
         database=mongodb_database,
@@ -72,41 +73,47 @@ async def run_backend_directed_probe_review(
     )
     judge_service = ProbeJudgeService(
         llm=llm,
-        postgres_session=postgres_session,
+        report_repository=report_repository,
         max_probes_per_batch=config.max_probes_per_batch,
         max_chunks_per_batch=config.max_chunks_per_batch,
         max_concurrency=config.max_concurrency,
     )
-    judge_counts = await judge_service.judge_and_persist(
+    judge_summary = await judge_service.judge_and_persist(
         job_id=job_id,
         bundles=bundles,
         trace_writer=trace_writer,
         on_batch_completed=on_batch_completed,
     )
-    return _build_probe_review_result(probes, bundles, judge_counts)
+    return _build_probe_review_result(probes, bundles, judge_summary)
 
 
 def _build_probe_review_result(
     probes: list[ProbeDefinition],
     bundles: list[ProbeEvidenceBundle],
-    judge_counts: tuple[int, int, int],
+    judge_summary: ProbeJudgeSummary,
 ) -> ProbeReviewResult:
-    judged_batches, created_issues, rejected_candidates = judge_counts
     retrieved_probes = sum(1 for bundle in bundles if bundle.candidate_chunks)
     no_evidence_probes = len(bundles) - retrieved_probes
     return ProbeReviewResult(
         total_probes=len(probes),
         retrieved_probes=retrieved_probes,
         no_evidence_probes=no_evidence_probes,
-        judged_batches=judged_batches,
-        created_issues=created_issues,
-        rejected_candidates=rejected_candidates,
+        judged_batches=judge_summary.judged_batches,
+        reported_issues=judge_summary.reported_issues,
+        created_issues=judge_summary.created_issues,
+        rejected_issues=judge_summary.rejected_issues,
+        no_issue_results=judge_summary.no_issue_results,
+        uncertain_results=judge_summary.uncertain_results,
         handoff=(
             "Backend-directed probe review completed: "
             f"{len(probes)} probes, {retrieved_probes} with evidence, "
             f"{no_evidence_probes} without candidate evidence, "
-            f"{judged_batches} judge batches, {created_issues} issues created, "
-            f"{rejected_candidates} candidates rejected."
+            f"{judge_summary.judged_batches} judge batches, "
+            f"{judge_summary.reported_issues} issues reported, "
+            f"{judge_summary.created_issues} issues created, "
+            f"{judge_summary.rejected_issues} issues rejected, "
+            f"{judge_summary.no_issue_results} no-issue verdicts, and "
+            f"{judge_summary.uncertain_results} uncertain verdicts."
         ),
     )
 
@@ -140,13 +147,11 @@ async def build_backend_probe_plan(
 
 
 async def _load_job_options(
-    postgres_session: AsyncSession,
+    report_repository: ReportRepository,
     job_id: UUID,
 ) -> dict[str, object] | None:
-    result = await postgres_session.execute(
-        select(ReviewJob.options).where(ReviewJob.id == job_id)
-    )
-    options = result.scalar_one_or_none()
+    job = await report_repository.get_job_by_id(job_id)
+    options = job.options if job is not None else None
     return options if isinstance(options, dict) else None
 
 

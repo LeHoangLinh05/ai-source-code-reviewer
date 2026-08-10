@@ -86,6 +86,19 @@ def get_changed_files(sandbox_path: Path) -> list[str]:
     return [line.strip() for line in output.splitlines() if line.strip()]
 
 
+def restore_index_files(sandbox_path: Path, file_paths: list[str]) -> None:
+    """Restore tracked files that an untrusted verification test modified."""
+
+    git_executable = _get_required_git_executable()
+    for file_path in file_paths:
+        resolve_repo_file(sandbox_path, file_path)
+        _run_git(
+            [git_executable, "checkout-index", "--force", "--", file_path],
+            cwd=sandbox_path,
+            timeout_seconds=GIT_SHORT_TIMEOUT_SECONDS,
+        )
+
+
 def apply_git_diff(
     *,
     sandbox_path: Path,

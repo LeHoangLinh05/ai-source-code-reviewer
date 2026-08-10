@@ -21,10 +21,6 @@ class FinalReportDraft(BaseModel):
     """Structured LLM contract for the final report synthesis step."""
 
     executive_summary: str = Field(min_length=1)
-    security_score: float = Field(ge=0.0, le=10.0)
-    maintainability_score: float = Field(ge=0.0, le=10.0)
-    performance_score: float = Field(ge=0.0, le=10.0)
-    overall_score: float = Field(ge=0.0, le=10.0)
     top_priorities: list[str] = Field(default_factory=list)
     tech_stack: TechStackInput | None = None
 
@@ -116,8 +112,8 @@ async def _invoke_raw_json_final_report(report_input: str) -> FinalReportDraft:
                 (
                     "human",
                     report_input + "\n\nReturn only a JSON object with these keys: "
-                    "executive_summary, security_score, maintainability_score, "
-                    "performance_score, overall_score, top_priorities, tech_stack.",
+                    "executive_summary and top_priorities. Do not generate scores "
+                    "or infer the technology stack.",
                 ),
             ]
         )
@@ -177,12 +173,7 @@ def build_deterministic_final_report_draft(report_context: str) -> FinalReportDr
     )
     return FinalReportDraft(
         executive_summary=executive_summary,
-        security_score=0.0,
-        maintainability_score=0.0,
-        performance_score=0.0,
-        overall_score=0.0,
         top_priorities=top_priorities,
-        tech_stack={},
     )
 
 

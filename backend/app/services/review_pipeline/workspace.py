@@ -12,6 +12,7 @@ from app.services.review_pipeline.errors import ReviewPipelineError
 
 CLONE_TIMEOUT_SECONDS = 120
 GIT_METADATA_TIMEOUT_SECONDS = 10
+REPOSITORY_UNAVAILABLE_MESSAGE = "Repository does not exist or is private."
 
 
 def clone_repository(review_job: ReviewJob, sandbox_path: Path) -> None:
@@ -29,7 +30,11 @@ def clone_repository(review_job: ReviewJob, sandbox_path: Path) -> None:
         sandbox_path=sandbox_path,
         commit_sha=review_job.commit_sha,
     )
-    _run_git_command(command, error_prefix="Git clone failed")
+    try:
+        _run_git_command(command, error_prefix="Git clone failed")
+    except ReviewPipelineError as error:
+        raise ReviewPipelineError(REPOSITORY_UNAVAILABLE_MESSAGE) from error
+
     if review_job.commit_sha is not None:
         _checkout_commit(git_executable, sandbox_path, review_job.commit_sha)
 

@@ -8,6 +8,7 @@ import pytest
 
 from app.models.review_job import ReviewJob
 from app.services.review_pipeline import workspace
+from app.services.review_pipeline.errors import ReviewPipelineError
 
 
 def test_clone_repository_uses_shallow_clone_for_branch_head(
@@ -53,6 +54,30 @@ def test_clone_repository_checks_out_pinned_commit(
         ["git", "checkout", "--detach", commit_sha],
         tmp_path / "repo",
     )
+
+
+def test_clone_repository_reports_missing_or_private_repository(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(workspace, "_get_required_git_executable", lambda: "git")
+
+    def fail_clone(
+        command: list[str],
+        *,
+        error_prefix: str,
+        cwd: Path | None = None,
+    ) -> None:
+        del command, error_prefix, cwd
+        raise ReviewPipelineError("Git clone failed: terminal prompts disabled")
+
+    monkeypatch.setattr(workspace, "_run_git_command", fail_clone)
+
+    with pytest.raises(
+        ReviewPipelineError,
+        match=r"^Repository does not exist or is private\.$",
+    ):
+        workspace.clone_repository(build_review_job(commit_sha=None), tmp_path / "repo")
 
 
 def record_git_commands(

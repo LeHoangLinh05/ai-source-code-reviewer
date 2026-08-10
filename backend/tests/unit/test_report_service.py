@@ -23,7 +23,7 @@ from app.services.reporting.service import ReportService
 
 
 @pytest.mark.asyncio
-async def test_refresh_report_aggregates_recalculates_scores_from_all_issues() -> None:
+async def test_refresh_report_aggregates_clears_deprecated_scores() -> None:
     job_id = uuid4()
     report = SimpleNamespace(
         job_id=job_id,
@@ -56,10 +56,10 @@ async def test_refresh_report_aggregates_recalculates_scores_from_all_issues() -
     assert report.critical_count == 1
     assert report.high_count == 1
     assert report.low_count == 1
-    assert report.security_score == 7.4
-    assert report.maintainability_score == 8.2
-    assert report.performance_score == 10.0
-    assert report.overall_score == 5.9
+    assert report.security_score is None
+    assert report.maintainability_score is None
+    assert report.performance_score is None
+    assert report.overall_score is None
 
 
 def test_source_context_falls_back_to_persisted_chunk() -> None:
@@ -95,6 +95,28 @@ def test_issue_group_key_prefers_static_rule_id() -> None:
         IssueCategory.SECURITY,
         title="Hardcoded password literal",
         raw_output={"test_id": "B105"},
+    )
+
+    assert _issue_group_key(cast(ReviewIssue, first_issue)) == _issue_group_key(
+        cast(ReviewIssue, second_issue)
+    )
+
+
+def test_issue_group_key_prefers_semantic_finding_key_for_ai_issues() -> None:
+    job_id = uuid4()
+    first_issue = _issue(
+        job_id,
+        IssueSeverity.HIGH,
+        IssueCategory.SECURITY,
+        title="Password is written to logs",
+        raw_output={"finding_key": "security:sensitive_data_in_logs"},
+    )
+    second_issue = _issue(
+        job_id,
+        IssueSeverity.MEDIUM,
+        IssueCategory.SECURITY,
+        title="Login diagnostics expose a credential",
+        raw_output={"finding_key": "security:sensitive_data_logging"},
     )
 
     assert _issue_group_key(cast(ReviewIssue, first_issue)) == _issue_group_key(

@@ -1,7 +1,12 @@
 """Mapping helpers for fix job API responses."""
 
 from app.models.fix_job import FixJob, FixPublishStatus
-from app.schemas.fix_job import FixJobResponse, normalize_fix_validation_result
+from app.schemas.fix_job import (
+    FixIssuePlan,
+    FixIssueResult,
+    FixJobResponse,
+    normalize_fix_validation_result,
+)
 
 FIX_STREAM_PATH_PREFIX = "/api/fixes"
 
@@ -27,10 +32,19 @@ def build_fix_job_response(fix_job: FixJob) -> FixJobResponse:
         error_message=fix_job.error_message,
         failure_reason=fix_job.error_message,
         changed_files=fix_job.changed_files,
+        issue_plan=[
+            FixIssuePlan.model_validate(payload)
+            for payload in (fix_job.issue_plan or [])
+        ],
+        issue_results=[
+            FixIssueResult.model_validate(payload)
+            for payload in (fix_job.issue_results or [])
+        ],
         validation_output=fix_job.validation_output,
         validation_summary=validation_summary,
         publish_status=publish_status,
         publish_error=fix_job.publish_error,
+        publish_override_reason=fix_job.publish_override_reason,
         published_branch=fix_job.published_branch,
         published_commit_sha=fix_job.published_commit_sha,
         provider=fix_job.provider,

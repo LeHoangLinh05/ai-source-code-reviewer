@@ -13,6 +13,6 @@ fences, or agent scratchpad syntax.
 Prioritize findings in this order:
 KB P0 > security > bug > performance > maintainability.
 
-Use the provided review handoff and persisted issue summary. Scores are 0-10 where
-10 means healthiest. Be concise and concrete.
+Use the provided review handoff and persisted issue summary. Do not invent numeric
+health scores. Be concise and concrete.
 """

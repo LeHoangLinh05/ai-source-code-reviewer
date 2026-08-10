@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import { canPublishFix, splitUnifiedDiffByFile } from "@/lib/fix-job-view";
+import {
+  canPublishFix,
+  getFixProgressMessage,
+  getUnresolvedFixResults,
+  requiresFailedValidationOverride,
+  splitUnifiedDiffByFile,
+} from "@/lib/fix-job-view";
 import type { FixDiff, FixJob } from "@/types/fix-job";
 
 function buildFixJob(overrides: Partial<FixJob> = {}): FixJob {
@@ -17,6 +23,8 @@ function buildFixJob(overrides: Partial<FixJob> = {}): FixJob {
     error_message: null,
     failure_reason: null,
     changed_files: ["src/app.py"],
+    issue_plan: [],
+    issue_results: [],
     validation_output: null,
     validation_summary: {
       status: "PASSED",
@@ -25,6 +33,8 @@ function buildFixJob(overrides: Partial<FixJob> = {}): FixJob {
         {
           name: "ruff check",
           command: "ruff check src/app.py",
+          kind: "lint",
+          required: true,
           status: "passed",
           exit_code: 0,
           stdout: "",
@@ -35,6 +45,7 @@ function buildFixJob(overrides: Partial<FixJob> = {}): FixJob {
     },
     publish_status: "NOT_REQUESTED",
     publish_error: null,
+    publish_override_reason: null,
     published_branch: null,
     published_commit_sha: null,
     provider: null,
@@ -60,6 +71,31 @@ describe("fix job view helpers", () => {
     expect(canPublishFix(buildFixJob({ validation_summary: null }))).toBe(false);
     expect(canPublishFix(buildFixJob({ publish_status: "PUBLISHING" }))).toBe(
       false,
+    );
+  });
+
+  it("requires an explicit override and names failed verification accurately", () => {
+    const fix = buildFixJob({
+      validation_status: "FAILED",
+      issue_results: [
+        {
+          issue_id: "issue-1",
+          probe_id: "security.mass_assignment",
+          verdict: "unresolved",
+          summary: "Sensitive field remains",
+          planned_files: ["src/app.py"],
+          changed_files: ["src/app.py"],
+          verification_attempts: 2,
+          evidence: [],
+          scenario_results: [],
+        },
+      ],
+    });
+
+    expect(requiresFailedValidationOverride(fix)).toBe(true);
+    expect(getUnresolvedFixResults(fix)).toHaveLength(1);
+    expect(getFixProgressMessage(fix)).toBe(
+      "Patch generated; verification failed.",
     );
   });
 

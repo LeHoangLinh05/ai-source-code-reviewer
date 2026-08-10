@@ -18,7 +18,6 @@ import { toast } from "sonner";
 import { z } from "zod";
 
 import { StatusBadge } from "@/components/reviews/review-badges";
-import { ScoreTrack } from "@/components/reviews/score-track";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -565,8 +564,7 @@ function LatestReportSummary({
           No completed report yet
         </h2>
         <p className="mx-auto mt-2 max-w-md text-[15px] leading-6 text-muted-foreground">
-          Start a review and this panel will show the latest score and critical
-          findings.
+          Start a review and this panel will show the latest confirmed findings.
         </p>
       </div>
     );
@@ -574,14 +572,8 @@ function LatestReportSummary({
 
   return (
     <div className="grid gap-5">
-      <ScoreTrack
-        caption={`${report.total_files_analyzed} files analyzed`}
-        label="Overall score"
-        showNoFindings={report.total_issues === 0}
-        value={report.overall_score}
-      />
       <div className="grid gap-3 sm:grid-cols-3">
-        <ReportMetric label="Total findings" value={report.total_issues} />
+        <ReportMetric label="Total findings" value={report.total_findings} />
         <ReportMetric label="Critical" value={report.critical_count} />
         <ReportMetric label="High" value={report.high_count} />
       </div>

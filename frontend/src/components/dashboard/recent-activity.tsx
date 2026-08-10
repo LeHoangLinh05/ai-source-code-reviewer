@@ -51,7 +51,6 @@ export function RecentActivity({ reviews }: { reviews: RecentReview[] }) {
                     </div>
                     <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[13px] text-muted-foreground">
                       <span>Branch {review.branch}</span>
-                      <span>{formatScore(review.score)}</span>
                       <span>{formatFindings(review.totalIssues)}</span>
                       <span>{formatDateTime(review.date)}</span>
                     </div>
@@ -67,7 +66,6 @@ export function RecentActivity({ reviews }: { reviews: RecentReview[] }) {
                   <tr>
                     <th className="px-5 py-3 font-medium">Repository</th>
                     <th className="px-5 py-3 font-medium">Status</th>
-                    <th className="px-5 py-3 font-medium">Score</th>
                     <th className="px-5 py-3 font-medium">Findings</th>
                     <th className="px-5 py-3 font-medium">Branch</th>
                     <th className="px-5 py-3 font-medium">Date</th>
@@ -91,9 +89,6 @@ export function RecentActivity({ reviews }: { reviews: RecentReview[] }) {
                         <StatusBadge status={review.status} />
                       </td>
                       <td className="px-5 py-4 tabular-nums text-muted-foreground">
-                        {formatScore(review.score)}
-                      </td>
-                      <td className="px-5 py-4 tabular-nums text-muted-foreground">
                         {formatFindings(review.totalIssues)}
                       </td>
                       <td className="px-5 py-4 text-muted-foreground">
@@ -112,10 +107,6 @@ export function RecentActivity({ reviews }: { reviews: RecentReview[] }) {
       </CardContent>
     </Card>
   );
-}
-
-function formatScore(score: number | null) {
-  return score === null ? "--" : `${score.toFixed(1)}/10`;
 }
 
 function formatFindings(total: number | null) {

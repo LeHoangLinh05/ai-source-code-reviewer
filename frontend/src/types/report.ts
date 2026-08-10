@@ -17,6 +17,9 @@ export type ReviewReport = {
   job_id: string;
   total_files_analyzed: number;
   total_issues: number;
+  total_findings: number;
+  total_occurrences: number;
+  total_raw_issues: number;
   critical_count: number;
   high_count: number;
   medium_count: number;

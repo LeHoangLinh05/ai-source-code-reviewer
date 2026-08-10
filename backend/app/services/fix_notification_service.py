@@ -225,6 +225,8 @@ def _build_fix_job_event_data(fix_job: FixJob) -> dict[str, object]:
         "failure_reason": fix_job.error_message,
         "fix_branch": fix_job.fix_branch,
         "issue_ids": fix_job.issue_ids,
+        "issue_plan": fix_job.issue_plan or [],
+        "issue_results": fix_job.issue_results or [],
         "pr_url": fix_job.pr_url,
         "provider": fix_job.provider.value if fix_job.provider is not None else None,
         "publish_error": fix_job.publish_error,

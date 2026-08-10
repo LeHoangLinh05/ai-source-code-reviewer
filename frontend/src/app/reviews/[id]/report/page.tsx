@@ -9,7 +9,6 @@ import { SeverityBreakdownChart } from "@/components/dashboard/severity-breakdow
 import { CategoryDistributionChart } from "@/components/reviews/category-distribution-chart";
 import { SeverityBadge } from "@/components/reviews/review-badges";
 import { ReviewWorkspaceTabs } from "@/components/reviews/review-workspace-tabs";
-import { ScoreTrack } from "@/components/reviews/score-track";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -24,24 +23,8 @@ import { getReport, getReportIssues } from "@/lib/reports";
 import type { IssueCategory, IssueSeverity, ReviewIssue } from "@/types/issue";
 import type { ReviewReport, TopRiskyFile } from "@/types/report";
 
-const SCORE_WEIGHTS: Record<IssueSeverity, number> = {
-  critical: 3,
-  high: 2,
-  medium: 1,
-  low: 0.3,
-  info: 0.1,
-};
-const SCORE_DECAY_FACTOR = 10;
-
 const AI_REPORT_MODEL = "langchain-react-agent-v1";
 const REPORT_ISSUES_PAGE_SIZE = 100;
-
-type DisplayScores = {
-  maintainability_score: number | null;
-  overall_score: number | null;
-  performance_score: number | null;
-  security_score: number | null;
-};
 
 export default function ReviewReportPage() {
   const params = useParams<{ id: string }>();
@@ -81,10 +64,6 @@ export default function ReviewReportPage() {
     return buildSeverityData(report);
   }, [report]);
   const categoryData = useMemo(() => buildCategoryData(issues), [issues]);
-  const displayScores = useMemo(
-    () => (report ? buildDisplayScores(report, issues) : null),
-    [issues, report],
-  );
 
   return (
     <>
@@ -109,37 +88,13 @@ export default function ReviewReportPage() {
         </Card>
       ) : null}
 
-      {report && displayScores ? (
+      {report ? (
         <>
           <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-            <ScoreCard
-              description="All confirmed findings"
-              findingCount={report.total_issues}
-              label="Overall"
-              value={displayScores.overall_score}
-            />
-            <ScoreCard
-              description="Security category"
-              findingCount={getCategoryCount(categoryData, "security")}
-              label="Security"
-              value={displayScores.security_score}
-            />
-            <ScoreCard
-              description="Bugs, style, and maintainability"
-              findingCount={
-                getCategoryCount(categoryData, "bug") +
-                getCategoryCount(categoryData, "maintainability") +
-                getCategoryCount(categoryData, "style")
-              }
-              label="Maintainability"
-              value={displayScores.maintainability_score}
-            />
-            <ScoreCard
-              description="Performance category"
-              findingCount={getCategoryCount(categoryData, "performance")}
-              label="Performance"
-              value={displayScores.performance_score}
-            />
+            <FindingMetric label="Total findings" value={report.total_findings} />
+            <FindingMetric label="Critical" value={report.critical_count} />
+            <FindingMetric label="High" value={report.high_count} />
+            <FindingMetric label="Medium" value={report.medium_count} />
           </section>
 
           <section className="grid gap-4 xl:grid-cols-[0.95fr_1.05fr]">
@@ -147,7 +102,7 @@ export default function ReviewReportPage() {
               <CardHeader>
                 <CardTitle>Severity Mix</CardTitle>
                 <CardDescription>
-                  Distribution across {report.total_issues} confirmed findings.
+                  Distribution across {report.total_findings} confirmed findings.
                 </CardDescription>
               </CardHeader>
               <CardContent>
@@ -205,7 +160,8 @@ export default function ReviewReportPage() {
             </CardHeader>
             <CardContent className="grid gap-4 sm:grid-cols-2">
               <Metric label="Files analyzed" value={report.total_files_analyzed} />
-              <Metric label="Total findings" value={report.total_issues} />
+              <Metric label="Findings" value={report.total_findings} />
+              <Metric label="Occurrences" value={report.total_occurrences} />
             </CardContent>
           </Card>
 
@@ -241,30 +197,15 @@ export default function ReviewReportPage() {
   );
 }
 
-function ScoreCard({
-  description,
-  findingCount,
-  label,
-  value,
-}: {
-  description: string;
-  findingCount: number;
-  label: string;
-  value: number | null;
-}) {
-  const status = getScoreStatus(value, findingCount);
-
+function FindingMetric({ label, value }: { label: string; value: number }) {
   return (
     <Card>
-      <CardContent className="grid min-h-[150px] gap-4 p-5">
-        <ScoreTrack
-          caption={status}
-          label={label}
-          showNoFindings={findingCount === 0}
-          value={value}
-        />
-        <p className="text-xs leading-5 text-muted-foreground">
-          {description}
+      <CardContent className="grid min-h-[120px] content-center gap-2 p-5">
+        <p className="text-xs font-medium uppercase text-muted-foreground">
+          {label}
+        </p>
+        <p className="text-4xl font-extrabold tabular-nums text-foreground">
+          {value}
         </p>
       </CardContent>
     </Card>
@@ -392,64 +333,4 @@ function countCategory(issues: ReviewIssue[], category: IssueCategory) {
   return issues
     .filter((issue) => issue.category === category)
     .reduce((sum, issue) => sum + issue.occurrence_count, 0);
-}
-
-function getCategoryCount(
-  data: Array<{ label: IssueCategory; value: number }>,
-  category: IssueCategory,
-) {
-  return data.find((item) => item.label === category)?.value ?? 0;
-}
-
-function buildDisplayScores(
-  report: ReviewReport,
-  issues: ReviewIssue[],
-): DisplayScores {
-  return {
-    maintainability_score:
-      report.maintainability_score ??
-      calculateIssueScore(issues, (issue) =>
-        ["bug", "maintainability", "style"].includes(issue.category),
-      ),
-    overall_score:
-      report.overall_score ?? calculateIssueScore(issues, () => true),
-    performance_score:
-      report.performance_score ??
-      calculateIssueScore(issues, (issue) => issue.category === "performance"),
-    security_score:
-      report.security_score ??
-      calculateIssueScore(issues, (issue) => issue.category === "security"),
-  };
-}
-
-function calculateIssueScore(
-  issues: ReviewIssue[],
-  shouldIncludeIssue: (issue: ReviewIssue) => boolean,
-) {
-  const penalty = issues
-    .filter(shouldIncludeIssue)
-    .reduce(
-      (sum, issue) =>
-        sum + SCORE_WEIGHTS[issue.severity] * Math.max(issue.occurrence_count, 1),
-      0,
-    );
-
-  return Number((10 * Math.exp(-penalty / SCORE_DECAY_FACTOR)).toFixed(1));
-}
-
-function getScoreStatus(value: number | null, findingCount: number) {
-  if (value === null) {
-    return "Not scored";
-  }
-  if (findingCount === 0) {
-    return "No findings";
-  }
-  if (value < 5) {
-    return "Needs attention";
-  }
-  if (value < 8) {
-    return "Watch closely";
-  }
-
-  return "Healthy";
 }

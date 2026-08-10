@@ -17,15 +17,18 @@ class ReportResponse(BaseModel):
     job_id: UUID
     total_files_analyzed: int
     total_issues: int
+    total_findings: int = 0
+    total_occurrences: int = 0
+    total_raw_issues: int = 0
     critical_count: int
     high_count: int
     medium_count: int
     low_count: int
     info_count: int
-    security_score: float | None
-    maintainability_score: float | None
-    performance_score: float | None
-    overall_score: float | None
+    security_score: float | None = Field(default=None, deprecated=True)
+    maintainability_score: float | None = Field(default=None, deprecated=True)
+    performance_score: float | None = Field(default=None, deprecated=True)
+    overall_score: float | None = Field(default=None, deprecated=True)
     tech_stack: dict[str, object] | None
     top_risky_files: list[dict[str, object]] | None
     executive_summary: str | None
@@ -34,26 +37,31 @@ class ReportResponse(BaseModel):
 
 
 class ReportScores(BaseModel):
-    """Score fields included in report summaries."""
+    """Deprecated score fields retained as nullable API compatibility fields."""
 
-    security_score: float | None
-    maintainability_score: float | None
-    performance_score: float | None
-    overall_score: float | None
+    security_score: float | None = Field(default=None, deprecated=True)
+    maintainability_score: float | None = Field(default=None, deprecated=True)
+    performance_score: float | None = Field(default=None, deprecated=True)
+    overall_score: float | None = Field(default=None, deprecated=True)
 
 
 class ReportSummaryResponse(BaseModel):
-    """Executive summary and scores for a report."""
+    """Executive summary, canonical counts, and deprecated score compatibility."""
 
     job_id: UUID
     executive_summary: str | None
     scores: ReportScores
+    total_findings: int = 0
+    total_occurrences: int = 0
+    total_raw_issues: int = 0
 
 
 class IssueOccurrenceResponse(BaseModel):
     """One concrete source location for a grouped issue."""
 
     issue_id: UUID
+    raw_issue_ids: list[UUID] = Field(default_factory=list)
+    sources: list[IssueSource] = Field(default_factory=list)
     file_path: str
     line_start: int
     line_end: int
@@ -86,8 +94,10 @@ class IssueResponse(BaseModel):
     created_at: datetime
     group_key: str | None = None
     occurrence_count: int = 1
+    raw_issue_count: int = 1
     affected_files: list[str] = Field(default_factory=list)
     primary_issue_id: UUID | None = None
+    fix_issue_ids: list[UUID] = Field(default_factory=list)
     occurrences: list[IssueOccurrenceResponse] = Field(default_factory=list)
 
 

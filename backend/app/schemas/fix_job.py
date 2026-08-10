@@ -5,11 +5,26 @@ from enum import StrEnum
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 from app.models.fix_audit_log import FixAuditAction
 from app.models.fix_job import FixJobStatus, FixPublishStatus, FixValidationStatus
 from app.models.repository import RepositoryPlatform
+
+MIN_OVERRIDE_REASON_LENGTH = 20
+
+
+def _optional_contract_part(value: object) -> str:
+    if not isinstance(value, str):
+        return ""
+    return value.strip()
 
 
 class FixValidationCheckStatus(StrEnum):
@@ -20,11 +35,150 @@ class FixValidationCheckStatus(StrEnum):
     SKIPPED = "skipped"
 
 
+class FixValidationCheckKind(StrEnum):
+    """Kinds of checks contributing to the final patch verdict."""
+
+    COMMAND = "command"
+    LINT = "lint"
+    TEST = "test"
+    SEMANTIC = "semantic"
+
+
+class FixIssuePlanStatus(StrEnum):
+    """Planner outcomes for one selected issue."""
+
+    PLANNED = "planned"
+    NOT_FIXABLE = "not_fixable"
+    UNCERTAIN = "uncertain"
+
+
+class FixIssueVerdict(StrEnum):
+    """Post-patch verification verdicts for one selected issue."""
+
+    FIXED = "fixed"
+    UNRESOLVED = "unresolved"
+    UNCERTAIN = "uncertain"
+
+
+class FixScenarioKind(StrEnum):
+    """Behavior dimensions that a generated fix must preserve or change."""
+
+    EXPLOIT = "exploit"
+    PRESERVED_BEHAVIOR = "preserved_behavior"
+    RELATED_TEST = "related_test"
+
+
+class FixScenarioStatus(StrEnum):
+    """Execution state for one scenario in one repository revision."""
+
+    PASSED = "passed"
+    FAILED = "failed"
+    SKIPPED = "skipped"
+    NOT_RUN = "not_run"
+
+
+class FixVerificationScenario(BaseModel):
+    """Testable behavior contract produced independently from the patch."""
+
+    scenario_id: str = Field(min_length=1, max_length=120)
+    kind: FixScenarioKind
+    description: str = Field(min_length=1, max_length=1000)
+    related_files: list[str] = Field(default_factory=list)
+
+
+class FixScenarioResult(BaseModel):
+    """Baseline and patched outcomes for one verification scenario."""
+
+    scenario_id: str
+    kind: FixScenarioKind
+    framework: str | None = None
+    baseline_status: FixScenarioStatus = FixScenarioStatus.NOT_RUN
+    patched_status: FixScenarioStatus = FixScenarioStatus.NOT_RUN
+    output: str = ""
+
+
+class FixEvidenceReference(BaseModel):
+    """Bounded source evidence supporting a fix verdict."""
+
+    file_path: str
+    line_start: int | None = Field(default=None, ge=1)
+    line_end: int | None = Field(default=None, ge=1)
+    rationale: str
+
+
+class FixIssuePlan(BaseModel):
+    """Cross-file plan and acceptance contract for one selected issue."""
+
+    issue_id: UUID
+    probe_id: str | None = None
+    root_cause: str
+    safety_property: str
+    editable_files: list[str] = Field(default_factory=list)
+    context_files: list[str] = Field(default_factory=list)
+    affected_contracts: list[str] = Field(default_factory=list)
+    exploit_scenarios: list[FixVerificationScenario] = Field(default_factory=list)
+    preserved_behavior_scenarios: list[FixVerificationScenario] = Field(
+        default_factory=list
+    )
+    acceptance_checks: list[str] = Field(default_factory=list)
+    forbidden_shortcuts: list[str] = Field(default_factory=list)
+    status: FixIssuePlanStatus
+    reason: str | None = None
+
+    @field_validator("affected_contracts", mode="before")
+    @classmethod
+    def normalize_affected_contracts(cls, value: object) -> object:
+        """Accept the structured contract form commonly returned by LLMs."""
+
+        if not isinstance(value, list):
+            return value
+
+        normalized_contracts: list[object] = []
+        for contract in value:
+            if not isinstance(contract, dict):
+                normalized_contracts.append(contract)
+                continue
+
+            contract_id = contract.get("contract_id")
+            if not isinstance(contract_id, str) or not contract_id.strip():
+                normalized_contracts.append(contract)
+                continue
+
+            method = _optional_contract_part(contract.get("method"))
+            path = _optional_contract_part(contract.get("path"))
+            description = _optional_contract_part(contract.get("description"))
+            endpoint = " ".join(part for part in (method, path) if part)
+            normalized = contract_id.strip()
+            if endpoint:
+                normalized = f"{normalized} [{endpoint}]"
+            if description:
+                normalized = f"{normalized}: {description}"
+            normalized_contracts.append(normalized)
+
+        return normalized_contracts
+
+
+class FixIssueResult(BaseModel):
+    """Final verification result for one selected issue."""
+
+    issue_id: UUID
+    probe_id: str | None = None
+    verdict: FixIssueVerdict
+    summary: str
+    planned_files: list[str] = Field(default_factory=list)
+    changed_files: list[str] = Field(default_factory=list)
+    verification_attempts: int = Field(default=1, ge=0)
+    evidence: list[FixEvidenceReference] = Field(default_factory=list)
+    scenario_results: list[FixScenarioResult] = Field(default_factory=list)
+
+
 class FixValidationCheck(BaseModel):
     """One validation command run against a generated patch."""
 
     name: str
     command: str
+    kind: FixValidationCheckKind = FixValidationCheckKind.COMMAND
+    required: bool = True
     status: FixValidationCheckStatus
     exit_code: int | None
     stdout: str = ""
@@ -86,6 +240,24 @@ class PublishFixPayload(BaseModel):
 
     strategy: PublishStrategy = "fork"
     allow_failed_validation: bool = False
+    override_reason: str | None = Field(default=None, max_length=500)
+
+    @model_validator(mode="after")
+    def validate_override_reason(self) -> "PublishFixPayload":
+        """Require an auditable explanation for unverified publishing."""
+
+        if not self.allow_failed_validation:
+            self.override_reason = None
+            return self
+
+        reason = (self.override_reason or "").strip()
+        if len(reason) < MIN_OVERRIDE_REASON_LENGTH:
+            raise ValueError(
+                "override_reason must contain at least 20 characters when "
+                "allow_failed_validation is true"
+            )
+        self.override_reason = reason
+        return self
 
 
 class FixJobResponse(BaseModel):
@@ -105,10 +277,13 @@ class FixJobResponse(BaseModel):
     error_message: str | None
     failure_reason: str | None
     changed_files: list[str] | None
+    issue_plan: list[FixIssuePlan] = Field(default_factory=list)
+    issue_results: list[FixIssueResult] = Field(default_factory=list)
     validation_output: dict[str, object] | list[dict[str, object]] | None
     validation_summary: FixValidationResult | None
     publish_status: FixPublishStatus
     publish_error: str | None
+    publish_override_reason: str | None
     published_branch: str | None
     published_commit_sha: str | None
     provider: RepositoryPlatform | None

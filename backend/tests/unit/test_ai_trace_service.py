@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from app.models.review_job import ReviewJobStatus
 from app.schemas.ai_trace import AIToolCallTrace, AITraceCoverage
 from app.services.ai_trace.coverage import (
+    _broad_audited_chunk_count,
     _probe_slot_counts,
     _read_chunk_coverage,
 )
@@ -73,6 +74,35 @@ def test_probe_slot_counts_distinguish_retrieved_from_judged() -> None:
 
     assert retrieved == 8
     assert judged == 5
+
+
+def test_broad_audit_coverage_counts_unique_coverage_lane_chunks() -> None:
+    count = _broad_audited_chunk_count(
+        [
+            {
+                "tool_name": "probe_retrieval",
+                "input": {"lane": "defect"},
+                "output": {
+                    "results": [
+                        {"file_path": "app/auth.py", "chunk_index": 0},
+                    ]
+                },
+            },
+            {
+                "tool_name": "probe_retrieval",
+                "input": {"lane": "coverage"},
+                "output": {
+                    "results": [
+                        {"file_path": "app/auth.py", "chunk_index": 0},
+                        {"file_path": "app/files.py", "chunk_index": 1},
+                        {"file_path": "app/files.py", "chunk_index": 1},
+                    ]
+                },
+            },
+        ]
+    )
+
+    assert count == 2
 
 
 def test_ai_report_without_full_chunk_coverage_is_completed() -> None:

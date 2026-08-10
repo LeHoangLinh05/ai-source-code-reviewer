@@ -398,10 +398,18 @@ function AITracePanel({
           </div>
         ) : null}
 
-        <section className="grid gap-3 md:grid-cols-3">
+        <section className="grid gap-3 md:grid-cols-5">
           <TraceMetric label="Tool calls" value={trace?.tool_call_count ?? 0} />
           <TraceMetric label="AI issues" value={trace?.ai_issue_count ?? 0} />
           <TraceMetric label="Static issues" value={trace?.static_issue_count ?? 0} />
+          <TraceMetric
+            label="Broad audit chunks"
+            value={trace?.coverage.broad_audited_chunks ?? 0}
+          />
+          <TraceMetric
+            label="Broad audit coverage %"
+            value={trace?.coverage.broad_audit_chunk_percent ?? 0}
+          />
         </section>
 
         {trace ? (

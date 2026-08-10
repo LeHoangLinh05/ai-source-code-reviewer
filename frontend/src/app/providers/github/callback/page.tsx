@@ -7,7 +7,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -29,6 +29,14 @@ const REDIRECT_DELAY_MS = 900;
 type ConnectionState = "loading" | "success" | "failed" | "missing";
 
 export default function GitHubInstallationCallbackPage() {
+  return (
+    <Suspense fallback={<CallbackLoadingState />}>
+      <GitHubInstallationCallbackContent />
+    </Suspense>
+  );
+}
+
+function GitHubInstallationCallbackContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const installationId = searchParams.get("installation_id");
@@ -123,6 +131,17 @@ export default function GitHubInstallationCallbackPage() {
           ) : null}
         </CardContent>
       </Card>
+    </main>
+  );
+}
+
+function CallbackLoadingState() {
+  return (
+    <main className="flex min-h-screen items-center justify-center bg-background px-4">
+      <Loader2
+        aria-label="Loading GitHub App connection"
+        className="size-6 animate-spin text-sky-500"
+      />
     </main>
   );
 }

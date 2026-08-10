@@ -1,6 +1,6 @@
 # Luồng hoạt động đầy đủ của AI Pipeline trong RepoGuard AI
 
-> Tài liệu này mô tả **implementation hiện tại trong mã nguồn**, không chỉ mô tả ý tưởng kiến trúc. Nội dung được đối chiếu với code tại ngày 29/07/2026. Nếu code thay đổi, nên cập nhật lại tài liệu này cùng commit.
+> Tài liệu này mô tả **implementation hiện tại trong mã nguồn**, không chỉ mô tả ý tưởng kiến trúc. Nội dung được đối chiếu với code tại ngày 10/08/2026. Nếu code thay đổi, nên cập nhật lại tài liệu này cùng commit.
 
 ## 1. RepoGuard AI làm gì?
 
@@ -19,7 +19,7 @@ RepoGuard AI là hệ thống review source code theo mô hình bất đồng b�
 9. Backend tìm các chunk có khả năng liên quan bằng semantic search, BM25, exact match và structural match.
 10. LLM chỉ đánh giá các evidence bundle đã được backend chọn.
 11. Backend hậu kiểm output của LLM trước khi cho phép tạo issue.
-12. Hợp nhất static issue và AI issue, tính điểm bằng công thức xác định, sinh báo cáo cuối.
+12. Hợp nhất static issue và AI issue theo canonical finding/occurrence, rồi sinh báo cáo cuối không dùng thang điểm 0–10.
 13. Gửi trạng thái qua Redis Pub/Sub và SSE để frontend cập nhật thời gian thực.
 
 ## 2. Sơ đồ tổng quan end-to-end
@@ -306,7 +306,7 @@ Cơ chế bảo vệ:
 - Sau clone, tính tổng dung lượng và từ chối nếu lớn hơn `MAX_REPO_SIZE_MB`, mặc định 500 MB.
 - Chạy `git rev-parse HEAD`, lưu `commit_sha` vào PostgreSQL.
 
-Hệ quả: code hiện không có credential manager riêng cho private repository, không clone submodule và không xử lý Git LFS riêng.
+Nếu clone thất bại, UI chỉ nhận thông báo an toàn `Repository does not exist or is private.`; stderr Git chi tiết không bị lộ ra response. Code hiện không có credential manager riêng cho private repository, không clone submodule và không xử lý Git LFS riêng.
 
 ### 7.3 Xây file manifest
 
@@ -486,7 +486,7 @@ Nếu `options.rule_profile` tồn tại:
 3. Kiểm tra các roadmap rule tương ứng tồn tại trong knowledge base Chroma.
 4. Ghi một synthetic trace `roadmap_rule_catalog` chứa catalog rule còn thiếu trong trace của job.
 
-Roadmap hiện có 79 rule, 16 rule mang cờ lịch sử `needs_ai_verification=true`. Tuy nhiên probe builder hiện tạo `roadmap` probe từ toàn bộ `review_rules` được chọn, không chỉ 16 rule đó. Với toàn profile, các rule được nhóm theo review category và tối đa 3 rule/probe, tạo khoảng 29 roadmap probe.
+Roadmap hiện có 79 rule. Probe builder tạo chính xác một `roadmap` probe cho mỗi rule được chọn, kể cả các rule không mang cờ lịch sử `needs_ai_verification=true`. Vì vậy full profile tạo 79 roadmap probe và mỗi verdict luôn gắn với đúng một `rule_id`.
 
 ### 8.3 Tạo probe plan
 
@@ -494,10 +494,10 @@ Plan có ba lane:
 
 #### Lane `defect`
 
-Có 29 baseline probe cố định, bao phủ:
+Có 42 baseline probe cố định, bao phủ:
 
-- Security: SQL/NoSQL injection, command injection, XSS/template injection, SSRF, unsafe deserialization, hardcoded secret, object/role authorization, mass assignment, weak password hash, reset/refresh/logout token lifecycle, validation/CORS.
-- Bug: null/error edges, swallowed exception, async/concurrency, transaction consistency, incomplete branch.
+- Security: SQL/NoSQL injection, command injection, XSS/template injection, SSRF, unsafe deserialization, hardcoded/default credentials, OTP exposure/rate limit, upload validation, sensitive logging, object/role authorization, mass assignment, weak password hash, reset/refresh/logout token lifecycle, validation/CORS.
+- Bug: null/error edges, swallowed exception, async/concurrency, idempotency race, task retry/timeout, frontend registration contract, transaction consistency, incomplete branch.
 - Performance: N+1, pagination, repeated external call, memory/serialization/cache.
 - Maintainability: resource lifecycle, dead/complex code, duplication/side effects, layering/import.
 - Style: boundary contract và production diagnostics.
@@ -514,7 +514,7 @@ Static findings **không được truyền vào probe plan** để tránh AI ch�
 #### Lane `roadmap`
 
 - Chỉ có nếu review job bật rule profile.
-- Nhóm rule theo category, tối đa 3 rule/probe.
+- Tạo đúng một probe cho mỗi rule; `related_rule_ids` luôn chứa đúng một ID.
 - Query được lấy từ verification hint/requirement và giới hạn 64 từ.
 - Issue được gắn `rule_id` và có thể có source `KB`.
 
@@ -571,14 +571,14 @@ Backend còn:
 
 Mặc định từ `.env.example`:
 
-- Tối đa tổng 188 chunk retrieval.
+- Tối đa tổng 256 chunk retrieval.
 - Defect lane 120.
 - Coverage lane 24.
-- Roadmap lane 44.
+- Roadmap lane 120.
 - Một judge batch tối đa 8 probe và 24 chunk.
 - Judge concurrency mặc định 1.
 
-Khi có roadmap, smart mode dành call budget logic là defect 4 batch, coverage 1 batch, roadmap 4 batch. Defect bundle còn bị cap xấp xỉ `24 / 8 = 3` chunk/probe trước khi trim lane. Khi không có roadmap, defect được budget logic 8 batch và roadmap 0.
+Lane/global trim tự nâng cap hiệu dụng lên ít nhất số probe có evidence, nên mỗi rule còn tối thiểu một evidence slot trước khi judge batching. Cấu hình 8 probe/24 chunk mỗi batch vẫn quyết định số LLM call thực tế.
 
 ### 8.8 `smart` và `full_audit`
 
@@ -619,7 +619,7 @@ Mongo trace `probe_retrieval` **không lưu content source**. Nó chỉ lưu pat
 - Không trộn lane trong một batch.
 - Mỗi batch tối đa số probe/chunk đã cấu hình.
 - Tạo async task cho các batch, nhưng semaphore giới hạn concurrency.
-- Hoàn tất batch nào thì persist batch đó và publish progress 89–94.
+- Hoàn tất batch nào thì cập nhật progress 89–94 và giữ issue trong bộ nhớ.
 
 Judge nhận system instruction “evidence-only” và JSON payload chứa:
 
@@ -628,7 +628,7 @@ Judge nhận system instruction “evidence-only” và JSON payload chứa:
 - Retrieval scores.
 - Output schema bắt buộc.
 
-Judge phải trả ít nhất một candidate cho mỗi probe, với verdict `issue`, `no_issue` hoặc `uncertain`.
+Judge phải trả chính xác một result cho mỗi probe, với verdict `issue`, `no_issue` hoặc `uncertain`. Một result `issue` có thể chứa nhiều issue độc lập; `no_issue` và `uncertain` bắt buộc có mảng issue rỗng. Thiếu, trùng hoặc trả probe ID lạ sẽ retry theo đúng contract rồi fail toàn bước nếu vẫn không hợp lệ.
 
 ### 8.11 Hậu kiểm AI candidate
 
@@ -641,7 +641,7 @@ Một candidate chỉ được lưu khi thỏa mọi điều kiện:
 5. Mọi evidence reference trỏ tới chunk thực sự có trong bundle.
 6. Evidence line range nằm trong chunk.
 7. Candidate range được anchor và phủ bởi supporting chunk cùng file.
-8. Chưa có issue cùng job + file + line start + category.
+8. Chưa trùng canonical finding trên source range đang overlap.
 9. Nếu là roadmap dependency rule và `package.json` chứng minh dependency/version đã có, candidate “missing dependency” bị loại.
 
 Issue được lưu với:
@@ -652,7 +652,7 @@ Issue được lưu với:
 - Source context từ evidence chunk.
 - References như `roadmap_rule_catalog`, `backend_directed_security_probe` hoặc `backend_directed_probe`.
 
-LLM không được quyền tự ghi database; backend là cổng quyết định cuối cùng.
+LLM không được quyền tự ghi database; backend là cổng quyết định cuối cùng. Toàn bộ issue AI/KB chỉ được replace trong một transaction sau khi mọi judge batch thành công, nên batch cuối lỗi không để lại kết quả AI dở dang từ các batch trước.
 
 ## 9. LLM call management, retry và circuit breaker
 
@@ -696,48 +696,19 @@ Backend query toàn bộ static + AI + KB issue đã persist, rồi tạo contex
 LLM trả `FinalReportDraft`:
 
 - `executive_summary`.
-- Các score 0–10.
 - `top_priorities`.
-- `tech_stack`.
 
 Nếu JSON sai schema hoặc LLM lỗi, backend tạo draft xác định từ persisted issue context.
 
 ### 10.3 Phần nào do AI, phần nào do backend?
 
-Để tránh score tùy ý:
+Backend dùng executive summary/top priorities từ LLM khi hợp lệ; tech stack lấy từ report phân tích đã persist. Nếu summary rỗng/placeholder, backend thay bằng summary xác định. Các cột/API score cũ chỉ được giữ nullable và deprecated để tương thích; pipeline luôn ghi `null` và frontend không hiển thị chúng.
 
-- Executive summary, top priorities và tech stack có thể lấy từ LLM draft.
-- **Score do LLM trả không được dùng khi persist.**
-- Backend tính lại score xác định từ issue.
-- Nếu executive summary rỗng/placeholder, backend thay bằng summary xác định.
-
-Công thức:
-
-```text
-penalty = Σ severity_weight(issue)
-score = round(10 × exp(-penalty / 10), 1)
-```
-
-Weight:
-
-| Severity | Weight |
-|---|---:|
-| critical | 3.0 |
-| high | 2.0 |
-| medium | 1.0 |
-| low | 0.3 |
-| info | 0.1 |
-
-Các score:
-
-- Security: chỉ category `security`.
-- Maintainability: `bug` + `maintainability` + `style`.
-- Performance: chỉ `performance`.
-- Overall: mọi issue, gồm cả `requirement`.
+Static, AI và KB row được canonicalize theo category + claim family. Các row cùng finding và cùng source range overlap trở thành một occurrence, nhưng vẫn giữ `raw_issue_ids` và danh sách source để truy vết. Report trả riêng `total_findings`, `total_occurrences` và `total_raw_issues`; bulk fix dùng một representative issue ID cho mỗi occurrence để tránh tạo patch trùng.
 
 Final report xóa report tạm nhưng **không xóa issue**, rồi insert report mới với `ai_model_used=langchain-structured-report-v1`.
 
-Khi API GET report, `ReportService` lại refresh count, score và top risky files từ issue hiện tại, nên dữ liệu hiển thị cuối cùng vẫn bám persisted findings. Issue list còn được group theo signature để nhiều occurrence giống nhau thành một nhóm.
+Khi API GET report, `ReportService` refresh canonical count, severity và top risky files từ issue hiện tại, nên dữ liệu hiển thị cuối cùng luôn bám persisted findings.
 
 Pipeline chỉ chuyển `COMPLETED` nếu report tồn tại và `ai_model_used` đúng `langchain-structured-report-v1`.
 
@@ -948,13 +919,25 @@ Ranh giới cần hiểu đúng:
 | `CODE_EMBEDDING_MAX_BATCH_TOKENS` | 12000 | Token cap/batch. |
 | `CODE_EMBEDDING_MAX_RETRIES` | 4 | Retry embedding API. |
 | `ENABLE_CODE_SEMANTIC_SEARCH` | true | Bật/tắt vector code retrieval. |
-| `PROBE_RETRIEVAL_MAX_CHUNKS` | 188 | Global smart retrieval cap. |
+| `PROBE_RETRIEVAL_MAX_CHUNKS` | 256 | Global smart retrieval cap. |
 | `PROBE_DEFECT_MAX_CHUNKS` | 120 | Defect lane cap. |
 | `PROBE_COVERAGE_MAX_CHUNKS` | 24 | Coverage lane cap. |
-| `PROBE_ROADMAP_MAX_CHUNKS` | 44 | Roadmap lane cap. |
+| `PROBE_ROADMAP_MAX_CHUNKS` | 120 | Roadmap lane cap. |
 | `PROBE_SEMANTIC_QUERY_BATCH_SIZE` | 16 | Query vector/batch. |
 | `PROBE_SEMANTIC_MAX_QUERY_TOKENS` | 64 | Giới hạn semantic query. |
 | `MONGODB_CHUNK_BATCH_SIZE` | 500 | Mongo insert batch. |
+
+### 15.4 Fix executor
+
+| Biến | Mặc định | Ý nghĩa |
+|---|---|---|
+| `FIX_EXECUTOR_DOCKER_EXECUTABLE` | `docker` | Docker CLI cố định mà worker được phép gọi. |
+| `FIX_EXECUTOR_IMAGE` | `repoguard-fix-executor:latest` | Image chứa Python/Node và tool verification. |
+| `FIX_EXECUTOR_WORKSPACE_VOLUME` | rỗng/native; Compose tự gán | Docker volume backing `SANDBOX_ROOT`. |
+| `FIX_EXECUTOR_NETWORK` | `none` | Network của disposable container; chỉ đổi sang `bridge` khi thật sự cần tải dependency đã khóa. |
+| `FIX_EXECUTOR_MEMORY_MB` | 1024 | Memory limit mỗi command. |
+| `FIX_EXECUTOR_CPU_LIMIT` | 1.0 | CPU limit mỗi command. |
+| `FIX_EXECUTOR_PIDS_LIMIT` | 256 | Process limit mỗi command. |
 
 Các setting `CODE_EMBEDDING_MAX_CONCURRENCY`, `CODE_EMBEDDING_MAX_PENDING_BATCHES` và `CODE_CHUNK_PARSE_CONCURRENCY` hiện được validate trong `Settings` nhưng chưa được code indexing hiện tại sử dụng để tạo concurrency. Index embedding hiện chạy các batch tuần tự trong một thread worker.
 
@@ -1055,7 +1038,7 @@ Ngoài ra cần PostgreSQL, MongoDB, Redis đang chạy; `POSTGRES_URL`, `MONGOD
 
 ### Report page
 
-- Overall/security/maintainability/performance score.
+- Canonical finding/occurrence count và raw detector row count.
 - Severity mix và category distribution.
 - Executive summary.
 - Top risky files.
@@ -1141,4 +1124,45 @@ Ngoài ra cần PostgreSQL, MongoDB, Redis đang chạy; `POSTGRES_URL`, `MONGOD
 
 ## 21. Tóm tắt cơ chế bằng một câu
 
-RepoGuard AI lấy một snapshot Git cô lập, tạo static evidence và source chunks, dùng backend để lập câu hỏi và truy xuất evidence đa chiến lược, chỉ cho LLM phán xét phần evidence đã chọn, hậu kiểm mọi kết luận trước khi lưu, rồi tính điểm và phát hành báo cáo có thể truy vết qua PostgreSQL, MongoDB, ChromaDB, Redis và SSE.
+RepoGuard AI lấy một snapshot Git cô lập, tạo static evidence và source chunks, dùng backend để lập câu hỏi và truy xuất evidence đa chiến lược, chỉ cho LLM phán xét phần evidence đã chọn, hậu kiểm mọi kết luận trước khi lưu, rồi phát hành báo cáo canonical có thể truy vết qua PostgreSQL, MongoDB, ChromaDB, Redis và SSE.
+
+## 22. Fix pipeline theo executable contract
+
+Fix job không xem một diff đã thay đổi là bằng chứng lỗi đã được sửa. Mỗi selected
+issue đi qua các bước sau:
+
+1. Planner kiểm tra lại evidence và tạo `FixIssuePlan` gồm root cause, safety
+   property, affected contracts, editable/context files, exploit scenarios và
+   preserved-behavior scenarios.
+2. Context collector theo tối đa hai hop import/symbol trên Python và JS/TS, gồm
+   API, schema, service, repository, frontend consumer và related tests. Context
+   bị cắt làm plan chuyển thành `uncertain`.
+3. Dependency runner chỉ cài từ lockfile hỗ trợ, dùng frozen mode, tắt Node install
+   scripts và không truyền application secrets vào command.
+4. Mọi command cài dependency, test, lint và verification chạy trong Docker container
+   dùng một lần (`--rm`), không qua shell, mặc định không network, root filesystem
+   read-only, drop toàn bộ Linux capability, có `no-new-privileges`, memory/CPU/PID
+   limit và `/tmp` cô lập. Worker chỉ mount sandbox volume và Docker socket.
+5. Independent test generator tạo test tạm. Exploit test phải fail trên base commit;
+   preserved-behavior test phải pass trên base. File test chỉ được materialize lúc
+   chạy và bị xóa ngay sau đó, nên không xuất hiện trong lint, Git diff hoặc PR.
+6. Generator chỉ được sửa production file trong `editable_files`; test file luôn
+   read-only. Các plan dùng chung file được generate như một component.
+7. Sau patch, cùng test bất biến được chạy lại. Exploit và positive scenarios phải
+   pass; related test chỉ chặn khi xuất hiện failure mới so với baseline.
+8. AST/static/LLM verifier là tín hiệu bổ sung. Verdict chỉ là `fixed` khi executable
+   contract pass; thiếu lockfile/framework/context hoặc required check bị skip cho
+   kết quả `uncertain`.
+9. Repair dùng failed-check evidence và chạy tối đa hai vòng. Repair không được sửa
+   test hoặc mở rộng ngoài planned files.
+10. Khi Docker/executor không sẵn sàng, generator vẫn tạo patch nhưng validation là
+   failed/uncertain và publish thường bị chặn. Owner chỉ có thể publish bằng manual
+   override reason tối thiểu 20 ký tự.
+11. Publish transition và audit log được commit cùng transaction dưới row lock trước
+   khi enqueue task. Queue failure chuyển state/audit sang failed cùng transaction;
+   manual override reason, unresolved issue IDs và check output luôn được audit, và
+   PR mang nhãn `Unverified manual override`.
+
+Benchmark `scripts/benchmark_fix_pipeline.py` đọc fix job đã persist và kiểm tra đủ
+7 probe của `mvp-inventory`, scenario matrix, preserved contracts, validation status
+và việc không dùng manual override.

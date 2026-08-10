@@ -8,7 +8,6 @@ from typing import cast
 from uuid import uuid4
 
 import pytest
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai.probe.bundle_selection import _trim_bundles
 from app.ai.probe.candidate_retrieval import (
@@ -21,7 +20,12 @@ from app.ai.probe.candidate_validation import (
     _dependency_manifest_contradicts_candidate,
     _supporting_bundle_chunk,
 )
-from app.ai.probe.contracts import ProbeDefinition, ProbeLane
+from app.ai.probe.contracts import (
+    SENSITIVE_DATA_LOGGING_PROBE_ID,
+    UNRESTRICTED_FILE_UPLOAD_PROBE_ID,
+    ProbeDefinition,
+    ProbeLane,
+)
 from app.ai.probe.judge_service import ProbeJudgeContractError, ProbeJudgeService
 from app.ai.probe.judging import (
     _judge_batches,
@@ -34,6 +38,7 @@ from app.ai.probe.models import (
     ProbeEvidenceBundle,
     ProbeJudgeIssueCandidate,
     ProbeJudgeResponse,
+    ProbeJudgeSummary,
 )
 from app.ai.probe.plan import BASELINE_PROBES, build_semantic_audit_plan
 from app.ai.probe.retrieval_service import ProbeRetrievalService
@@ -46,6 +51,7 @@ from app.ai.roadmap.knowledge import load_roadmap_requirements
 from app.ai.roadmap.selection import ROADMAP_PROFILE_ID, build_roadmap_context
 from app.db.mongodb import CHUNK_METADATA_COLLECTION
 from app.models.review_issue import IssueSource, ReviewIssue
+from app.repositories.report_repository import ReportRepository
 
 
 class _FakeCursor:
@@ -101,29 +107,28 @@ class _TraceWriter:
         )
 
 
-class _NoExistingIssueResult:
-    def scalars(self) -> _NoExistingIssueResult:
-        return self
-
-    def first(self) -> None:
-        return None
-
-
-class _FakePostgresSession:
+class _TrackingReportRepository:
     def __init__(self) -> None:
-        self.added_issues: list[ReviewIssue] = []
-        self.commit_count = 0
+        self.issues: list[ReviewIssue] = []
+        self.replace_count = 0
 
-    async def execute(self, statement: object) -> _NoExistingIssueResult:
-        _ = statement
-        return _NoExistingIssueResult()
+    async def list_all_issues(self, job_id: object) -> list[ReviewIssue]:
+        return [issue for issue in self.issues if issue.job_id == job_id]
 
-    def add(self, issue: object) -> None:
-        assert isinstance(issue, ReviewIssue)
-        self.added_issues.append(issue)
-
-    async def commit(self) -> None:
-        self.commit_count += 1
+    async def replace_ai_issues(
+        self,
+        *,
+        job_id: object,
+        issues: list[ReviewIssue],
+    ) -> None:
+        self.replace_count += 1
+        self.issues = [
+            issue
+            for issue in self.issues
+            if issue.job_id != job_id
+            or issue.source not in {IssueSource.AI_REVIEW, IssueSource.KB}
+        ]
+        self.issues.extend(issues)
 
 
 class _JudgeLlm:
@@ -252,6 +257,16 @@ class _FakeSemanticRetriever:
             "async def load():\n"
             "    engine = create_async_engine(settings.database_url)",
         ),
+        (
+            SENSITIVE_DATA_LOGGING_PROBE_ID,
+            "logger.info(f'Login password={user_in.password}')",
+        ),
+        (
+            UNRESTRICTED_FILE_UPLOAD_PROBE_ID,
+            "async def upload(file: UploadFile):\n"
+            "    with open('/tmp/upload', 'wb') as destination:\n"
+            "        destination.write(await file.read())",
+        ),
     ],
 )
 def test_python_structural_candidates_cover_high_value_patterns(
@@ -317,6 +332,10 @@ def test_python_structural_candidates_cover_high_value_patterns(
             "    raise ValueError('insufficient stock')\n"
             "item.quantity = new_quantity",
         ),
+        (
+            SENSITIVE_DATA_LOGGING_PROBE_ID,
+            "logger.warning('Invalid password supplied')",
+        ),
     ],
 )
 def test_python_structural_candidates_reject_safe_patterns(
@@ -339,6 +358,35 @@ def test_python_structural_candidates_reject_safe_patterns(
     assert candidates == []
 
 
+def test_upload_structural_matcher_retrieves_validated_flow_for_ai_judging() -> None:
+    probe = next(
+        probe
+        for probe in BASELINE_PROBES
+        if probe.probe_id == UNRESTRICTED_FILE_UPLOAD_PROBE_ID
+    )
+    content = (
+        "async def upload(file: UploadFile):\n"
+        "    if file.content_type not in ALLOWED_MIME_TYPES:\n"
+        "        raise ValueError('unsupported file')\n"
+        "    with open(safe_destination(file.filename), 'wb') as destination:\n"
+        "        destination.write(await file.read(MAX_UPLOAD_BYTES))"
+    )
+
+    candidates = _structural_candidates(
+        chunk_documents=[
+            _chunk(
+                job_id=uuid4(),
+                file_path="backend/app/api/files.py",
+                content=content,
+            )
+        ],
+        probe=probe,
+    )
+
+    assert len(candidates) == 1
+    assert candidates[0].strategies == ("structural",)
+
+
 def test_real_roadmap_catalog_rules_are_in_unified_probe_plan() -> None:
     roadmap_context = build_roadmap_context(
         {"rule_profile": {"id": ROADMAP_PROFILE_ID}},
@@ -359,7 +407,7 @@ def test_real_roadmap_catalog_rules_are_in_unified_probe_plan() -> None:
 
     assert len(catalog_rule_ids) == 79
     assert planned_rule_ids == catalog_rule_ids
-    assert len([item for item in plan if item.lane is ProbeLane.ROADMAP]) == 28
+    assert len([item for item in plan if item.lane is ProbeLane.ROADMAP]) == 79
 
 
 def test_probe_judge_response_accepts_llm_text_and_null_evidence() -> None:
@@ -463,6 +511,58 @@ def test_probe_judge_response_keeps_valid_candidates_from_mixed_batch() -> None:
     assert response.schema_rejected_count == 1
 
 
+def test_probe_judge_response_accepts_multiple_issues_for_one_probe() -> None:
+    response = ProbeJudgeResponse.model_validate(
+        {
+            "results": [
+                {
+                    "probe_id": "coverage.files",
+                    "verdict": "issue",
+                    "issues": [
+                        {
+                            "claim_type": "path_traversal",
+                            "title": "Upload path can escape its directory",
+                        },
+                        {
+                            "claim_type": "unrestricted_file_upload",
+                            "title": "Uploaded content is not validated",
+                        },
+                    ],
+                }
+            ]
+        }
+    )
+
+    assert len(response.results) == 1
+    assert len(response.results[0].issues) == 2
+    assert len(response.candidates) == 2
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"probe_id": "security.upload", "verdict": "issue", "issues": []},
+        {
+            "probe_id": "security.upload",
+            "verdict": "no_issue",
+            "issues": [{"title": "Unexpected issue"}],
+        },
+        {
+            "probe_id": "security.upload",
+            "verdict": "uncertain",
+            "issues": [{"title": "Unexpected issue"}],
+        },
+    ],
+)
+def test_probe_judge_response_rejects_invalid_issue_cardinality(
+    payload: dict[str, object],
+) -> None:
+    response = _probe_judge_response_from_payload({"results": [payload]})
+
+    assert response.results == []
+    assert response.schema_rejected_count == 1
+
+
 @pytest.mark.asyncio
 async def test_probe_judge_persists_only_high_confidence_candidates() -> None:
     job_id = uuid4()
@@ -496,7 +596,7 @@ async def test_probe_judge_persists_only_high_confidence_candidates() -> None:
             }
         ],
     }
-    session = _FakePostgresSession()
+    repository = _TrackingReportRepository()
     trace_writer = _TraceWriter()
     progress_updates: list[tuple[int, int]] = []
 
@@ -516,10 +616,10 @@ async def test_probe_judge_persists_only_high_confidence_candidates() -> None:
                 ]
             }
         ),
-        postgres_session=cast(AsyncSession, session),
+        report_repository=cast(ReportRepository, repository),
     )
 
-    judged_batches, created_count, rejected_count = await service.judge_and_persist(
+    summary = await service.judge_and_persist(
         job_id=job_id,
         bundles=[
             bundle,
@@ -535,15 +635,20 @@ async def test_probe_judge_persists_only_high_confidence_candidates() -> None:
         on_batch_completed=record_progress,
     )
 
-    assert (judged_batches, created_count, rejected_count) == (1, 1, 1)
-    assert session.commit_count == 1
-    assert len(session.added_issues) == 1
+    assert summary == ProbeJudgeSummary(
+        judged_batches=1,
+        reported_issues=2,
+        created_issues=1,
+        rejected_issues=1,
+    )
+    assert len(repository.issues) == 1
+    assert repository.replace_count == 1
     assert progress_updates == [(1, 1)]
-    assert session.added_issues[0].source is IssueSource.AI_REVIEW
+    assert repository.issues[0].source is IssueSource.AI_REVIEW
     trace_output = trace_writer.logs[0]["output"]
     assert isinstance(trace_output, dict)
     assert trace_output["created_count"] == 1
-    assert trace_output["rejected_count"] == 1
+    assert trace_output["rejected_issue_count"] == 1
 
 
 @pytest.mark.asyncio
@@ -567,9 +672,10 @@ async def test_probe_judge_retries_only_missing_probe_verdicts() -> None:
         ]
     )
     trace_writer = _TraceWriter()
+    repository = _TrackingReportRepository()
     service = ProbeJudgeService(
         llm=llm,
-        postgres_session=cast(AsyncSession, _FakePostgresSession()),
+        report_repository=cast(ReportRepository, repository),
     )
 
     result = await service.judge_and_persist(
@@ -578,7 +684,10 @@ async def test_probe_judge_retries_only_missing_probe_verdicts() -> None:
         trace_writer=trace_writer,
     )
 
-    assert result == (1, 0, 2)
+    assert result == ProbeJudgeSummary(
+        judged_batches=1,
+        no_issue_results=2,
+    )
     assert llm.call_count == 2
     trace_output = cast(dict[str, object], trace_writer.logs[0]["output"])
     assert trace_output["retry_count"] == 1
@@ -606,9 +715,10 @@ async def test_probe_judge_retries_duplicate_probe_verdict() -> None:
         ]
     )
     trace_writer = _TraceWriter()
+    repository = _TrackingReportRepository()
     service = ProbeJudgeService(
         llm=llm,
-        postgres_session=cast(AsyncSession, _FakePostgresSession()),
+        report_repository=cast(ReportRepository, repository),
     )
 
     result = await service.judge_and_persist(
@@ -617,7 +727,10 @@ async def test_probe_judge_retries_duplicate_probe_verdict() -> None:
         trace_writer=trace_writer,
     )
 
-    assert result == (1, 0, 1)
+    assert result == ProbeJudgeSummary(
+        judged_batches=1,
+        no_issue_results=1,
+    )
     attempts = cast(
         list[dict[str, object]],
         cast(dict[str, object], trace_writer.logs[0]["output"])["contract_attempts"],
@@ -637,6 +750,7 @@ async def test_probe_judge_fails_after_contract_retries_are_exhausted() -> None:
         ],
     )
     trace_writer = _TraceWriter()
+    repository = _TrackingReportRepository()
     service = ProbeJudgeService(
         llm=_SequenceJudgeLlm(
             [
@@ -645,7 +759,7 @@ async def test_probe_judge_fails_after_contract_retries_are_exhausted() -> None:
                 {"candidates": []},
             ]
         ),
-        postgres_session=cast(AsyncSession, _FakePostgresSession()),
+        report_repository=cast(ReportRepository, repository),
     )
 
     with pytest.raises(ProbeJudgeContractError):
@@ -654,6 +768,8 @@ async def test_probe_judge_fails_after_contract_retries_are_exhausted() -> None:
             bundles=[bundle],
             trace_writer=trace_writer,
         )
+
+    assert repository.replace_count == 0
 
     trace_output = cast(dict[str, object], trace_writer.logs[0]["output"])
     assert trace_output["status"] == "contract_error"
@@ -765,7 +881,7 @@ def test_probe_judge_prompt_requires_evidence_arrays() -> None:
 
     assert "supporting_evidence and contradicting_evidence must be arrays" in prompt
     assert "never use null or a string" in prompt
-    assert "Return exactly one candidate for every probe" in prompt
+    assert "Return exactly one result for every probe" in prompt
     assert "does not prevent over-posting" in prompt
     assert '"severity_policy": "critical"' in prompt
     assert '"output_schema"' in prompt

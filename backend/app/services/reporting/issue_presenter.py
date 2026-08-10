@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-import re
 from collections.abc import Sequence
+from dataclasses import dataclass
 
 from app.models.review_issue import IssueSeverity, ReviewIssue
 from app.schemas.normalized_issue import NormalizedIssue
 from app.schemas.report import IssueOccurrenceResponse, IssueResponse
+from app.services.reporting.finding_identity import review_issue_finding_key
 
-ISSUE_RULE_ID_FIELDS = ("code", "test_id", "ruleId")
 SEVERITY_SORT_ORDER = {
     IssueSeverity.CRITICAL: 0,
     IssueSeverity.HIGH: 1,
@@ -17,6 +17,14 @@ SEVERITY_SORT_ORDER = {
     IssueSeverity.LOW: 3,
     IssueSeverity.INFO: 4,
 }
+
+
+@dataclass(slots=True, frozen=True)
+class _CanonicalOccurrence:
+    """One source location after merging overlapping detector rows."""
+
+    representative: ReviewIssue
+    issues: tuple[ReviewIssue, ...]
 
 
 def _has_source_context(raw_output: dict[str, object] | None) -> bool:
@@ -82,34 +90,43 @@ def _issue_group_response(
         ]
     )
     response = IssueResponse.model_validate(representative)
-    sorted_issues = sorted(
-        issues,
-        key=lambda issue: (
-            issue.file_path,
-            issue.line_start,
-            issue.line_end,
-            issue.created_at,
-        ),
-    )
+    review_issues = [
+        _review_issue_from_response(issue)
+        if isinstance(issue, IssueResponse)
+        else issue
+        for issue in issues
+    ]
+    occurrences = _canonical_occurrences(review_issues)
     response.group_key = group_key
-    response.occurrence_count = len(issues)
-    response.affected_files = sorted({issue.file_path for issue in issues})
+    response.occurrence_count = len(occurrences)
+    response.raw_issue_count = len(review_issues)
+    response.affected_files = sorted(
+        {occurrence.representative.file_path for occurrence in occurrences}
+    )
     response.primary_issue_id = representative.id
+    response.fix_issue_ids = [
+        occurrence.representative.id for occurrence in occurrences
+    ]
     if include_occurrences:
         response.occurrences = [
             IssueOccurrenceResponse(
-                issue_id=issue.id,
-                file_path=issue.file_path,
-                line_start=issue.line_start,
-                line_end=issue.line_end,
-                title=issue.title,
-                description=issue.description,
-                suggestion=issue.suggestion,
-                confidence=issue.confidence,
-                raw_output=issue.raw_output,
-                created_at=issue.created_at,
+                issue_id=occurrence.representative.id,
+                raw_issue_ids=[issue.id for issue in occurrence.issues],
+                sources=sorted(
+                    {issue.source for issue in occurrence.issues},
+                    key=lambda source: source.value,
+                ),
+                file_path=occurrence.representative.file_path,
+                line_start=min(issue.line_start for issue in occurrence.issues),
+                line_end=max(issue.line_end for issue in occurrence.issues),
+                title=occurrence.representative.title,
+                description=occurrence.representative.description,
+                suggestion=occurrence.representative.suggestion,
+                confidence=occurrence.representative.confidence,
+                raw_output=occurrence.representative.raw_output,
+                created_at=occurrence.representative.created_at,
             )
-            for issue in sorted_issues
+            for occurrence in occurrences
         ]
     return response
 
@@ -134,39 +151,56 @@ def _review_issue_from_response(issue: IssueResponse) -> ReviewIssue:
 
 
 def _issue_group_key(issue: ReviewIssue) -> str:
-    rule_id = _issue_rule_id(issue.raw_output)
-    if rule_id is not None:
-        return "|".join(
-            [
-                issue.source.value,
-                issue.category.value,
-                issue.severity.value,
-                _normalize_group_text(rule_id),
-            ]
+    return review_issue_finding_key(issue)
+
+
+def _canonical_occurrences(
+    issues: list[ReviewIssue],
+) -> list[_CanonicalOccurrence]:
+    occurrences: list[list[ReviewIssue]] = []
+    for issue in sorted(
+        issues,
+        key=lambda item: (
+            item.file_path,
+            item.line_start,
+            item.line_end,
+            item.created_at,
+        ),
+    ):
+        overlapping = next(
+            (
+                occurrence
+                for occurrence in occurrences
+                if occurrence[0].file_path == issue.file_path
+                and min(item.line_start for item in occurrence) <= issue.line_end
+                and max(item.line_end for item in occurrence) >= issue.line_start
+            ),
+            None,
         )
+        if overlapping is None:
+            occurrences.append([issue])
+        else:
+            overlapping.append(issue)
 
-    return "|".join(
-        [
-            issue.source.value,
-            issue.category.value,
-            issue.severity.value,
-            _normalize_group_text(issue.title),
-        ]
-    )
-
-
-def _issue_rule_id(raw_output: dict[str, object] | None) -> str | None:
-    if raw_output is None:
-        return None
-    for field in ISSUE_RULE_ID_FIELDS:
-        value = raw_output.get(field)
-        if value is not None and str(value).strip():
-            return str(value)
-    return None
+    return [
+        _CanonicalOccurrence(
+            representative=_representative_issue(occurrence),
+            issues=tuple(occurrence),
+        )
+        for occurrence in occurrences
+    ]
 
 
-def _normalize_group_text(value: str) -> str:
-    return re.sub(r"\s+", " ", value.strip().lower())
+def _canonical_representative_issues(
+    issues: list[ReviewIssue],
+) -> list[ReviewIssue]:
+    """Return one representative raw row for every canonical occurrence."""
+
+    return [
+        occurrence.representative
+        for grouped_issues in _group_issues(issues).values()
+        for occurrence in _canonical_occurrences(grouped_issues)
+    ]
 
 
 def _to_normalized_issue(review_issue: ReviewIssue) -> NormalizedIssue:

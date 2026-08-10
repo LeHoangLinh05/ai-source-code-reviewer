@@ -10,7 +10,6 @@ from sqlalchemy import delete, select
 
 from app.ai.reporting.draft import (
     FinalReportDraft,
-    TechStackInput,
     build_final_report_draft,
     parse_final_report_draft_text,
 )
@@ -19,11 +18,8 @@ from app.db.mongodb import FILE_ANALYSIS_RESULTS_COLLECTION
 from app.models.review_issue import IssueCategory, IssueSeverity, ReviewIssue
 from app.models.review_report import ReviewReport
 from app.schemas.normalized_issue import NormalizedIssue
-from app.services.reporting.generation import (
-    AI_REPORT_MODEL,
-    build_top_risky_files,
-    calculate_report_scores,
-)
+from app.services.reporting.generation import AI_REPORT_MODEL, build_top_risky_files
+from app.services.reporting.issue_presenter import _canonical_representative_issues
 
 FINAL_REPORT_SYNTHESIS_TRACE_NAME = "final_report_synthesis"
 TOP_RISKY_FILE_LIMIT = 5
@@ -125,9 +121,9 @@ async def persist_final_report(
     runtime = get_ai_tool_runtime()
     existing_report = await _load_existing_report(job_id)
     issues = await _load_issues(job_id)
-    normalized_issues = [_to_normalized_issue(issue) for issue in issues]
+    canonical_issues = _canonical_representative_issues(issues)
+    normalized_issues = [_to_normalized_issue(issue) for issue in canonical_issues]
     total_files_analyzed = await _total_files_analyzed(job_id, existing_report)
-    deterministic_scores = calculate_report_scores(normalized_issues)
     executive_summary = draft.executive_summary
     if _is_placeholder_summary(executive_summary):
         executive_summary = _fallback_executive_summary(
@@ -145,13 +141,11 @@ async def persist_final_report(
         medium_count=severity_counts[IssueSeverity.MEDIUM],
         low_count=severity_counts[IssueSeverity.LOW],
         info_count=severity_counts[IssueSeverity.INFO],
-        security_score=_clamp_score(deterministic_scores["security_score"]),
-        maintainability_score=_clamp_score(
-            deterministic_scores["maintainability_score"],
-        ),
-        performance_score=_clamp_score(deterministic_scores["performance_score"]),
-        overall_score=_clamp_score(deterministic_scores["overall_score"]),
-        tech_stack=_normalize_tech_stack(draft.tech_stack),
+        security_score=None,
+        maintainability_score=None,
+        performance_score=None,
+        overall_score=None,
+        tech_stack=(existing_report.tech_stack if existing_report else {}),
         top_risky_files=_prioritized_files(normalized_issues, draft.top_priorities),
         executive_summary=executive_summary,
         ai_model_used=AI_REPORT_MODEL,
@@ -238,10 +232,6 @@ def _to_normalized_issue(issue: ReviewIssue) -> NormalizedIssue:
     )
 
 
-def _clamp_score(score: float) -> float:
-    return max(0.0, min(10.0, round(float(score), 1)))
-
-
 def _is_placeholder_summary(executive_summary: str | None) -> bool:
     if executive_summary is None or not executive_summary.strip():
         return True
@@ -287,12 +277,3 @@ def _fallback_executive_summary(
         f"maintainability={category_counts[IssueCategory.MAINTAINABILITY]}, "
         f"style={category_counts[IssueCategory.STYLE]}."
     )
-
-
-def _normalize_tech_stack(value: TechStackInput | None) -> dict[str, object]:
-    if value is None:
-        return {}
-    if isinstance(value, dict):
-        return value
-
-    return {"technologies": value}

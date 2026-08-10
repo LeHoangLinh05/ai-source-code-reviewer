@@ -11,7 +11,11 @@ from app.ai.probe.candidate_retrieval import (
     _candidate_from_document,
     _exact_score,
 )
-from app.ai.probe.contracts import ProbeDefinition
+from app.ai.probe.contracts import (
+    SENSITIVE_DATA_LOGGING_PROBE_ID,
+    UNRESTRICTED_FILE_UPLOAD_PROBE_ID,
+    ProbeDefinition,
+)
 from app.ai.probe.models import ProbeCandidateChunk
 
 
@@ -270,6 +274,140 @@ def _unsafe_jwt_algorithms(algorithms: ast.expr) -> bool:
     )
 
 
+def _matches_sensitive_data_logging(content: str) -> bool:
+    try:
+        tree = ast.parse(content)
+    except SyntaxError:
+        return bool(
+            re.search(
+                r"(?:logger|logging)\.(?:debug|info|warning|error|exception|critical)"
+                r"\s*\([^\n]*(?:password|passwd|token|secret|api_key|cookie|"
+                r"authorization|credential)",
+                content,
+            )
+        )
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not _is_logging_call(node):
+            continue
+        values = [*node.args, *(keyword.value for keyword in node.keywords)]
+        if any(_contains_sensitive_runtime_value(value) for value in values):
+            return True
+    return False
+
+
+def _is_logging_call(call: ast.Call) -> bool:
+    if not isinstance(call.func, ast.Attribute):
+        return False
+    if call.func.attr.lower() not in {
+        "critical",
+        "debug",
+        "error",
+        "exception",
+        "info",
+        "log",
+        "warning",
+    }:
+        return False
+    try:
+        owner = ast.unparse(call.func.value).lower()
+    except ValueError:
+        return False
+    return "log" in owner
+
+
+def _contains_sensitive_runtime_value(expression: ast.expr) -> bool:
+    if isinstance(expression, ast.Constant):
+        return False
+
+    sensitive_terms = {
+        "api_key",
+        "authorization",
+        "cookie",
+        "credential",
+        "passwd",
+        "password",
+        "secret",
+        "token",
+    }
+    for node in ast.walk(expression):
+        if isinstance(node, ast.Name) and _identifier_has_term(
+            node.id,
+            sensitive_terms,
+        ):
+            return True
+        if isinstance(node, ast.Attribute) and _identifier_has_term(
+            node.attr,
+            sensitive_terms,
+        ):
+            return True
+        if (
+            isinstance(node, ast.Subscript)
+            and isinstance(node.slice, ast.Constant)
+            and isinstance(node.slice.value, str)
+            and _identifier_has_term(
+                node.slice.value,
+                sensitive_terms,
+            )
+        ):
+            return True
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "get"
+            and node.args
+        ):
+            key = node.args[0]
+            if (
+                isinstance(key, ast.Constant)
+                and isinstance(key.value, str)
+                and _identifier_has_term(key.value, sensitive_terms)
+            ):
+                return True
+    return False
+
+
+def _identifier_has_term(identifier: str, terms: set[str]) -> bool:
+    normalized = identifier.lower()
+    return any(term in normalized for term in terms)
+
+
+def _matches_file_upload_flow(content: str) -> bool:
+    try:
+        tree = ast.parse(content)
+    except SyntaxError:
+        has_upload = _contains_any(content, "uploadfile", "multipart", "filename")
+        has_sink = _contains_any(
+            content,
+            ".write(",
+            "copyfileobj(",
+            "shutil.copy(",
+            "shutil.copy2(",
+        )
+        return has_upload and has_sink
+
+    has_upload = any(
+        isinstance(node, ast.Name) and node.id.lower() == "uploadfile"
+        for node in ast.walk(tree)
+    )
+    if not has_upload:
+        return False
+    return any(
+        isinstance(node, ast.Call) and _is_file_write_sink(node)
+        for node in ast.walk(tree)
+    )
+
+
+def _is_file_write_sink(call: ast.Call) -> bool:
+    try:
+        call_name = ast.unparse(call.func).lower()
+    except ValueError:
+        return False
+    return call_name.endswith(".write") or call_name.endswith(
+        ("copyfileobj", "shutil.copy", "shutil.copy2")
+    )
+
+
 def _matches_sensitive_response(content: str) -> bool:
     has_sensitive_field = _contains_any(
         content,
@@ -440,6 +578,38 @@ def _matches_resource_lifecycle(content: str) -> bool:
     )
 
 
+def _matches_otp_flow(content: str) -> bool:
+    return _contains_any(content, "otp", "verification_code", "one_time") and (
+        _contains_any(content, "verify", "response", "logger", "attempt")
+    )
+
+
+def _matches_insecure_default_credentials(content: str) -> bool:
+    has_credential = _contains_any(content, "password", "secret", "api_key", "token")
+    has_fallback = _contains_any(content, "getenv(", "field(default=", ' or "')
+    return has_credential and has_fallback
+
+
+def _matches_task_reliability(content: str) -> bool:
+    has_task = _contains_any(content, "@shared_task", "@celery_app.task", "@app.task")
+    has_reliability_policy = _contains_any(
+        content,
+        "autoretry_for",
+        "time_limit",
+        "soft_time_limit",
+        "self.retry(",
+    )
+    return has_task and not has_reliability_policy
+
+
+def _matches_idempotency_race(content: str) -> bool:
+    has_idempotency_flow = _contains_any(content, "idempotency", "webhook")
+    has_check = _contains_any(content, "exists(", "get_by_")
+    has_write = _contains_any(content, "create(", "insert(", "add(")
+    has_check_then_write = has_check and has_write
+    return has_idempotency_flow and has_check_then_write
+
+
 _STRUCTURAL_MATCHERS: dict[str, Any] = {
     "security.sql_nosql_injection": _matches_sql_injection,
     "security.command_injection": _matches_command_injection,
@@ -450,14 +620,20 @@ _STRUCTURAL_MATCHERS: dict[str, Any] = {
     "security.jwt_algorithm_allowlist": _matches_jwt_algorithm_allowlist,
     "security.insecure_randomness": _matches_insecure_randomness,
     "security.open_redirect": _matches_open_redirect,
+    SENSITIVE_DATA_LOGGING_PROBE_ID: _matches_sensitive_data_logging,
     "security.sensitive_response_exposure": _matches_sensitive_response,
+    UNRESTRICTED_FILE_UPLOAD_PROBE_ID: _matches_file_upload_flow,
     "security.weak_password_hash": _matches_weak_hash,
     "security.reset_token_lifecycle": _matches_reset_token,
     "security.refresh_token_validation": _matches_refresh_validation,
     "security.logout_revocation": _matches_logout,
+    "security.otp_exposure_rate_limit": _matches_otp_flow,
+    "security.insecure_default_credentials": _matches_insecure_default_credentials,
     "bug.async_concurrency": _matches_race,
     "bug.inventory_invariant": _matches_inventory_invariant,
     "bug.state_transaction_consistency": _matches_transaction,
+    "bug.task_retry_timeout": _matches_task_reliability,
+    "bug.idempotency_race": _matches_idempotency_race,
     "performance.n_plus_one": _matches_n_plus_one,
     "performance.pagination_bounds": _matches_pagination,
     "maintainability.resource_lifecycle": _matches_resource_lifecycle,

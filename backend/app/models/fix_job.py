@@ -105,6 +105,18 @@ class FixJob(Base):
     sandbox_path: Mapped[str | None] = mapped_column(Text)
     diff: Mapped[str | None] = mapped_column(Text)
     changed_files: Mapped[list[str] | None] = mapped_column(JSONB)
+    issue_plan: Mapped[list[dict[str, object]]] = mapped_column(
+        JSONB,
+        default=list,
+        server_default="[]",
+        nullable=False,
+    )
+    issue_results: Mapped[list[dict[str, object]]] = mapped_column(
+        JSONB,
+        default=list,
+        server_default="[]",
+        nullable=False,
+    )
     validation_output: Mapped[dict[str, object] | None] = mapped_column(JSONB)
     pr_url: Mapped[str | None] = mapped_column(Text)
     publish_status: Mapped[FixPublishStatus] = mapped_column(
@@ -130,6 +142,7 @@ class FixJob(Base):
         server_default="false",
         nullable=False,
     )
+    publish_override_reason: Mapped[str | None] = mapped_column(Text)
     published_branch: Mapped[str | None] = mapped_column(String(150))
     published_commit_sha: Mapped[str | None] = mapped_column(String(40))
     provider: Mapped[RepositoryPlatform | None] = mapped_column(

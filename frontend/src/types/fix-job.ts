@@ -20,10 +20,71 @@ export type FixPublishStatus =
 export type PublishStrategy = "fork";
 
 export type FixValidationCheckStatus = "passed" | "failed" | "skipped";
+export type FixValidationCheckKind = "command" | "lint" | "test" | "semantic";
+export type FixIssuePlanStatus = "planned" | "not_fixable" | "uncertain";
+export type FixIssueVerdict = "fixed" | "unresolved" | "uncertain";
+export type FixScenarioKind =
+  | "exploit"
+  | "preserved_behavior"
+  | "related_test";
+export type FixScenarioStatus = "passed" | "failed" | "skipped" | "not_run";
+
+export type FixVerificationScenario = {
+  scenario_id: string;
+  kind: FixScenarioKind;
+  description: string;
+  related_files: string[];
+};
+
+export type FixScenarioResult = {
+  scenario_id: string;
+  kind: FixScenarioKind;
+  framework: string | null;
+  baseline_status: FixScenarioStatus;
+  patched_status: FixScenarioStatus;
+  output: string;
+};
+
+export type FixEvidenceReference = {
+  file_path: string;
+  line_start: number | null;
+  line_end: number | null;
+  rationale: string;
+};
+
+export type FixIssuePlan = {
+  issue_id: string;
+  probe_id: string | null;
+  root_cause: string;
+  safety_property: string;
+  editable_files: string[];
+  context_files: string[];
+  affected_contracts: string[];
+  exploit_scenarios: FixVerificationScenario[];
+  preserved_behavior_scenarios: FixVerificationScenario[];
+  acceptance_checks: string[];
+  forbidden_shortcuts: string[];
+  status: FixIssuePlanStatus;
+  reason: string | null;
+};
+
+export type FixIssueResult = {
+  issue_id: string;
+  probe_id: string | null;
+  verdict: FixIssueVerdict;
+  summary: string;
+  planned_files: string[];
+  changed_files: string[];
+  verification_attempts: number;
+  evidence: FixEvidenceReference[];
+  scenario_results: FixScenarioResult[];
+};
 
 export type FixValidationCheck = {
   name: string;
   command: string;
+  kind: FixValidationCheckKind;
+  required: boolean;
   status: FixValidationCheckStatus;
   exit_code: number | null;
   stdout: string;
@@ -63,6 +124,7 @@ export type CreateFixPayload = {
 export type PublishFixPayload = {
   strategy: PublishStrategy;
   allow_failed_validation: boolean;
+  override_reason?: string | null;
 };
 
 export type FixJob = {
@@ -78,6 +140,8 @@ export type FixJob = {
   error_message: string | null;
   failure_reason: string | null;
   changed_files: string[] | null;
+  issue_plan: FixIssuePlan[];
+  issue_results: FixIssueResult[];
   validation_output:
     | FixValidationResult
     | Array<Record<string, unknown>>
@@ -85,6 +149,7 @@ export type FixJob = {
   validation_summary: FixValidationResult | null;
   publish_status: FixPublishStatus;
   publish_error: string | null;
+  publish_override_reason: string | null;
   published_branch: string | null;
   published_commit_sha: string | null;
   provider: "github" | "gitlab" | "other" | null;

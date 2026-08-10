@@ -25,6 +25,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { TechnicalDetails } from "@/components/ui/technical-details";
+import { Input } from "@/components/ui/input";
 import { useFixJobProgress } from "@/hooks/use-fix-job-progress";
 import { getApiErrorMessage } from "@/lib/api-error";
 import {
@@ -39,7 +40,9 @@ import {
   getFixFailureReason,
   getFixProgressMessage,
   getFixProgressPercent,
+  getUnresolvedFixResults,
   isFixLive,
+  requiresFailedValidationOverride,
   splitUnifiedDiffByFile,
 } from "@/lib/fix-job-view";
 import {
@@ -64,6 +67,7 @@ import type {
   FixJob,
   FixJobProgressEvent,
   FixJobStatus,
+  FixIssueResult,
   FixValidationCheck,
   FixValidationCheckStatus,
   FixValidationResult,
@@ -89,6 +93,9 @@ export default function ReviewFixesPage() {
     "publish" | "fork" | "retry" | "cancel" | "connect" | null
   >(null);
   const [selectedFixId, setSelectedFixId] = useState<string | null>(null);
+  const [isOverrideOpen, setIsOverrideOpen] = useState(false);
+  const [isOverrideConfirmed, setIsOverrideConfirmed] = useState(false);
+  const [overrideReason, setOverrideReason] = useState("");
 
   const selectedFix = useMemo(
     () => fixes.find((fix) => fix.id === selectedFixId) ?? fixes[0] ?? null,
@@ -237,16 +244,31 @@ export default function ReviewFixesPage() {
       return;
     }
 
-    const allowFailedValidation = shouldAllowFailedValidation(selectedFix);
-    if (allowFailedValidation === null) {
+    if (requiresFailedValidationOverride(selectedFix)) {
+      setIsOverrideConfirmed(false);
+      setOverrideReason("");
+      setIsOverrideOpen(true);
+      return;
+    }
+
+    await performPublish(false, null);
+  }
+
+  async function performPublish(
+    allowFailedValidation: boolean,
+    reason: string | null,
+  ) {
+    if (!selectedFix || !canPublishFix(selectedFix)) {
       return;
     }
 
     setPendingAction("fork");
+    setIsOverrideOpen(false);
 
     try {
       const updatedFix = await publishFixJob(selectedFix.id, {
         allow_failed_validation: allowFailedValidation,
+        override_reason: allowFailedValidation ? reason : null,
         strategy: "fork",
       });
       setFixes((currentFixes) =>
@@ -359,6 +381,18 @@ export default function ReviewFixesPage() {
       </div>
 
       <ReviewWorkspaceTabs activeTab="fixes" jobId={jobId} />
+
+      {isOverrideOpen && selectedFix ? (
+        <FailedValidationOverrideDialog
+          fix={selectedFix}
+          isConfirmed={isOverrideConfirmed}
+          overrideReason={overrideReason}
+          onCancel={() => setIsOverrideOpen(false)}
+          onConfirm={() => void performPublish(true, overrideReason.trim())}
+          onConfirmationChange={setIsOverrideConfirmed}
+          onReasonChange={setOverrideReason}
+        />
+      ) : null}
 
       {!isLoading && error ? (
         <Card>
@@ -564,6 +598,171 @@ function FixDetails({
       <TechnicalDetails title="Validation details">
         <ValidationResults result={fix.validation_summary} />
       </TechnicalDetails>
+
+      <TechnicalDetails title="Issue verification">
+        <IssueVerificationResults results={fix.issue_results} />
+      </TechnicalDetails>
+    </div>
+  );
+}
+
+function FailedValidationOverrideDialog({
+  fix,
+  isConfirmed,
+  overrideReason,
+  onCancel,
+  onConfirm,
+  onConfirmationChange,
+  onReasonChange,
+}: {
+  fix: FixJob;
+  isConfirmed: boolean;
+  overrideReason: string;
+  onCancel: () => void;
+  onConfirm: () => void;
+  onConfirmationChange: (value: boolean) => void;
+  onReasonChange: (value: string) => void;
+}) {
+  const unresolvedResults = getUnresolvedFixResults(fix);
+  const failedChecks =
+    fix.validation_summary?.checks.filter((check) => check.status === "failed") ?? [];
+
+  return (
+    <div
+      aria-labelledby="failed-validation-title"
+      aria-modal="true"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+      role="dialog"
+    >
+      <div className="grid max-h-[85dvh] w-full max-w-xl gap-4 overflow-y-auto rounded-md border border-border bg-card p-5 shadow-xl">
+        <div>
+          <h2 className="text-lg font-semibold" id="failed-validation-title">
+            Publish with failed verification
+          </h2>
+          <p className="mt-1 text-sm text-muted-foreground">
+            This patch has unresolved checks. Publishing it may leave selected
+            issues unfixed.
+          </p>
+        </div>
+
+        {unresolvedResults.length ? (
+          <div className="grid gap-2">
+            <p className="text-sm font-semibold">Unresolved issues</p>
+            {unresolvedResults.map((result) => (
+              <div className="rounded-md border border-border p-3" key={result.issue_id}>
+                <p className="break-all font-mono text-xs">{result.issue_id}</p>
+                <p className="mt-1 text-sm text-muted-foreground">{result.summary}</p>
+              </div>
+            ))}
+          </div>
+        ) : null}
+
+        {failedChecks.length ? (
+          <div className="grid gap-1 text-sm">
+            <p className="font-semibold">Failed checks</p>
+            {failedChecks.map((check) => (
+              <p className="font-mono text-xs text-muted-foreground" key={`${check.name}:${check.command}`}>
+                {check.name}
+              </p>
+            ))}
+          </div>
+        ) : null}
+
+        <label className="grid gap-2 text-sm font-medium">
+          Override reason
+          <Input
+            maxLength={500}
+            onChange={(event) => onReasonChange(event.target.value)}
+            placeholder="Explain why publishing this unverified patch is necessary"
+            value={overrideReason}
+          />
+          <span className="text-xs font-normal text-muted-foreground">
+            Minimum 20 characters. This reason is recorded in the audit log and PR.
+          </span>
+        </label>
+
+        <label className="flex items-start gap-3 rounded-md border border-destructive/30 p-3 text-sm">
+          <input
+            checked={isConfirmed}
+            className="mt-0.5 size-4"
+            onChange={(event) => onConfirmationChange(event.target.checked)}
+            type="checkbox"
+          />
+          I understand that this pull request contains unresolved verification
+          results.
+        </label>
+
+        <div className="flex justify-end gap-2">
+          <Button onClick={onCancel} variant="secondary">
+            Cancel
+          </Button>
+          <Button
+            disabled={!isConfirmed || overrideReason.trim().length < 20}
+            onClick={onConfirm}
+            variant="destructive"
+          >
+            Publish anyway
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function IssueVerificationResults({ results }: { results: FixIssueResult[] }) {
+  if (results.length === 0) {
+    return (
+      <p className="text-sm text-muted-foreground">
+        Issue verification has not produced a result yet.
+      </p>
+    );
+  }
+
+  return (
+    <div className="grid gap-3">
+      {results.map((result) => (
+        <div className="rounded-md border border-border bg-background p-4" key={result.issue_id}>
+          <div className="flex flex-wrap items-start justify-between gap-2">
+            <div className="min-w-0">
+              <p className="text-sm font-semibold">
+                {result.probe_id ?? "Selected finding"}
+              </p>
+              <p className="mt-1 break-all font-mono text-xs text-muted-foreground">
+                {result.issue_id}
+              </p>
+            </div>
+            <span className={`rounded-md border px-2 py-1 text-xs font-semibold ${getIssueVerdictTone(result.verdict)}`}>
+              {result.verdict}
+            </span>
+          </div>
+          <p className="mt-3 text-sm text-muted-foreground">{result.summary}</p>
+          {result.scenario_results.length ? (
+            <div className="mt-3 grid gap-2 border-t border-border pt-3">
+              {result.scenario_results.map((scenario) => (
+                <div
+                  className="grid gap-1 text-xs sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center"
+                  key={scenario.scenario_id}
+                >
+                  <div className="min-w-0">
+                    <p className="truncate font-mono">{scenario.scenario_id}</p>
+                    <p className="text-muted-foreground">
+                      {scenario.kind.replaceAll("_", " ")}
+                      {scenario.framework ? ` | ${scenario.framework}` : ""}
+                    </p>
+                  </div>
+                  <p className="font-mono text-muted-foreground">
+                    {scenario.baseline_status} -&gt; {scenario.patched_status}
+                  </p>
+                </div>
+              ))}
+            </div>
+          ) : null}
+          <div className="mt-3 flex flex-wrap gap-3 text-xs text-muted-foreground">
+            <span>{result.changed_files.length} changed files</span>
+            <span>{result.verification_attempts} verification attempts</span>
+          </div>
+        </div>
+      ))}
     </div>
   );
 }
@@ -901,16 +1100,15 @@ function getValidationCheckTone(status: FixValidationCheckStatus) {
   return "border-border bg-muted text-muted-foreground";
 }
 
-function shouldAllowFailedValidation(fix: FixJob): boolean | null {
-  if (fix.validation_status !== "FAILED") {
-    return false;
+function getIssueVerdictTone(verdict: FixIssueResult["verdict"]) {
+  if (verdict === "fixed") {
+    return "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-200";
+  }
+  if (verdict === "unresolved") {
+    return "border-destructive/40 bg-destructive/10 text-destructive";
   }
 
-  return window.confirm(
-    "Validation failed for this patch. Publish the pull request anyway?",
-  )
-    ? true
-    : null;
+  return "border-amber-400/40 bg-amber-400/10 text-amber-800 dark:text-amber-100";
 }
 
 function shouldShowGitHubConnect(

@@ -38,7 +38,6 @@ export type RiskPosture = {
   tone: PostureTone;
   title: string;
   message: string;
-  score: number | null;
   criticalCount: number;
   highCount: number;
   totalIssues: number;
@@ -82,7 +81,6 @@ export type RecentReview = {
   repositoryName: string;
   status: ReviewJobStatus;
   branch: string;
-  score: number | null;
   totalIssues: number | null;
   date: string;
   href: string;
@@ -102,10 +100,6 @@ export type LatestReportSummary = {
   jobId: string;
   repositoryName: string;
   createdAt: string;
-  overallScore: number | null;
-  securityScore: number | null;
-  maintainabilityScore: number | null;
-  performanceScore: number | null;
   severity: Array<{ key: SeverityKey; value: number }>;
   totalIssues: number;
   executiveSummary: string | null;
@@ -132,24 +126,9 @@ export function sumReports(
     | "info_count"
     | "low_count"
     | "medium_count"
-    | "total_issues",
+    | "total_findings",
 ) {
   return reports.reduce((total, report) => total + report[field], 0);
-}
-
-export function getAverageScore(
-  reports: ReviewReport[],
-  field: "overall_score" | "security_score",
-) {
-  const scores = reports
-    .map((report) => report[field])
-    .filter((score): score is number => score !== null);
-
-  if (scores.length === 0) {
-    return null;
-  }
-
-  return scores.reduce((total, score) => total + score, 0) / scores.length;
 }
 
 function getReviewJobTimestamp(job: ReviewJob) {
@@ -194,11 +173,10 @@ export function buildRiskPosture(data: DashboardData): RiskPosture {
   const completedCount = jobs.filter((job) => job.status === "COMPLETED").length;
   const criticalCount = sumReports(reports, "critical_count");
   const highCount = sumReports(reports, "high_count");
-  const totalIssues = sumReports(reports, "total_issues");
+  const totalIssues = sumReports(reports, "total_findings");
   const reposReviewed = repositories.filter(
     (repository) => repository.last_reviewed_at !== null,
   ).length;
-  const score = getAverageScore(reports, "overall_score");
   const reportCount = reports.length;
   const isReportDataIncomplete = hasIncompleteReportData(data);
   const expectedReportCount =
@@ -210,7 +188,6 @@ export function buildRiskPosture(data: DashboardData): RiskPosture {
     : "";
 
   const base = {
-    score,
     criticalCount,
     highCount,
     totalIssues,
@@ -336,7 +313,7 @@ export function buildPrimaryAction(data: DashboardData): PrimaryAction {
 
   const latestReportWithFindings = getLatestReportContext(
     data,
-    (report) => report.total_issues > 0,
+    (report) => report.total_findings > 0,
   );
   if (latestReportWithFindings) {
     return {
@@ -495,8 +472,7 @@ export function buildRecentReviews(
         repositoryName: job.repository_name ?? job.repository_id,
         status: job.status,
         branch: job.branch ?? "main",
-        score: report?.overall_score ?? null,
-        totalIssues: report?.total_issues ?? null,
+        totalIssues: report?.total_findings ?? null,
         date: job.completed_at ?? job.created_at,
         href: hasReport ? `/reviews/${job.id}/report` : `/reviews/${job.id}`,
       };
@@ -574,15 +550,11 @@ export function buildLatestReportSummary(
     jobId: report.job_id,
     repositoryName: job.repository_name ?? job.repository_id,
     createdAt: report.created_at,
-    overallScore: report.overall_score,
-    securityScore: report.security_score,
-    maintainabilityScore: report.maintainability_score,
-    performanceScore: report.performance_score,
     severity: SEVERITY_FIELDS.map(({ key, field }) => ({
       key,
       value: report[field] as number,
     })),
-    totalIssues: report.total_issues,
+    totalIssues: report.total_findings,
     executiveSummary: report.executive_summary,
     href: `/reviews/${report.job_id}/report`,
   };

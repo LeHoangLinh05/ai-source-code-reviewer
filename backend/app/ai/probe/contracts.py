@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 MAX_RETRIEVAL_QUERY_WORDS = 64
+SENSITIVE_DATA_LOGGING_PROBE_ID = "security.sensitive_data_logging"
+UNRESTRICTED_FILE_UPLOAD_PROBE_ID = "security.unrestricted_file_upload"
 
 
 class ProbeLane(StrEnum):

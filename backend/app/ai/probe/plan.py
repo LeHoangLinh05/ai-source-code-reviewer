@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable, Sequence
+from collections.abc import Sequence
 
-from app.ai.probe.contracts import ProbeDefinition, ProbeLane
+from app.ai.probe.contracts import (
+    SENSITIVE_DATA_LOGGING_PROBE_ID,
+    UNRESTRICTED_FILE_UPLOAD_PROBE_ID,
+    ProbeDefinition,
+    ProbeLane,
+)
 
-MAX_ROADMAP_RULES_PER_PROBE = 3
 MAX_FILE_AUDIT_ITEMS = 4
 MAX_RETRIEVAL_QUERY_TOKENS = 64
 MIN_ROADMAP_TERM_LENGTH = 4
@@ -122,6 +126,53 @@ BASELINE_PROBES: tuple[ProbeDefinition, ...] = (
         lexical_terms=("password", "secret", "api_key", "token", "private_key"),
         question=(
             "Does production source contain a usable hardcoded credential or secret?"
+        ),
+    ),
+    _baseline(
+        probe_id=SENSITIVE_DATA_LOGGING_PROBE_ID,
+        category="security",
+        priority="high",
+        queries=(
+            "logger runtime password token secret cookie authorization value",
+            "logging sensitive credential f-string request payload",
+        ),
+        lexical_terms=(
+            "logger",
+            "logging",
+            "password",
+            "token",
+            "secret",
+            "cookie",
+            "authorization",
+        ),
+        question=(
+            "Is a runtime password, token, secret, cookie, authorization value, or "
+            "other credential passed to a logger? A fixed diagnostic message such "
+            "as 'invalid password' is not sensitive-data logging unless it includes "
+            "the runtime value."
+        ),
+    ),
+    _baseline(
+        probe_id=UNRESTRICTED_FILE_UPLOAD_PROBE_ID,
+        category="security",
+        priority="high",
+        queries=(
+            "UploadFile multipart write copy destination validation size MIME",
+            "file upload extension content type allowlist storage path",
+        ),
+        lexical_terms=(
+            "uploadfile",
+            "multipart",
+            "content_type",
+            "filename",
+            "write",
+            "copyfileobj",
+        ),
+        question=(
+            "Can an uploaded file be persisted without appropriate size, content, "
+            "MIME or extension validation and a controlled destination? Distinguish "
+            "validation that is actually enforced from checks that only inspect a "
+            "client-controlled filename or header."
         ),
     ),
     _baseline(
@@ -291,6 +342,34 @@ BASELINE_PROBES: tuple[ProbeDefinition, ...] = (
         question="Does an external boundary accept unsafe or overly broad input?",
     ),
     _baseline(
+        probe_id="security.otp_exposure_rate_limit",
+        category="security",
+        priority="high",
+        queries=(
+            "OTP verification code response logging exposure rate limit",
+            "one time password verify attempts throttle expiry reuse",
+        ),
+        lexical_terms=("otp", "verification_code", "attempt", "rate_limit", "expire"),
+        question=(
+            "Can an OTP be disclosed, reused, brute-forced without throttling, or "
+            "remain valid without a short expiration and one-time invalidation?"
+        ),
+    ),
+    _baseline(
+        probe_id="security.insecure_default_credentials",
+        category="security",
+        priority="high",
+        queries=(
+            "default admin password secret fallback credential production",
+            "environment variable credential insecure literal fallback",
+        ),
+        lexical_terms=("default", "admin", "password", "secret", "getenv"),
+        question=(
+            "Can production start with a usable default credential or predictable "
+            "fallback secret when configuration is absent?"
+        ),
+    ),
+    _baseline(
         probe_id="bug.error_none_edges",
         category="bug",
         priority="medium",
@@ -375,6 +454,48 @@ BASELINE_PROBES: tuple[ProbeDefinition, ...] = (
         ),
     ),
     _baseline(
+        probe_id="bug.task_retry_timeout",
+        category="bug",
+        priority="high",
+        queries=(
+            "Celery background task retry timeout acknowledgement failure",
+            "worker external call task time_limit autoretry idempotent",
+        ),
+        lexical_terms=("celery", "task", "retry", "time_limit", "autoretry_for"),
+        question=(
+            "Can a background task hang, lose a transient failure, or duplicate "
+            "side effects because retry, timeout, or acknowledgement policy is unsafe?"
+        ),
+    ),
+    _baseline(
+        probe_id="bug.idempotency_race",
+        category="bug",
+        priority="high",
+        queries=(
+            "idempotency key check then create race duplicate request",
+            "webhook payment duplicate insert unique constraint transaction",
+        ),
+        lexical_terms=("idempotency", "webhook", "exists", "create", "unique"),
+        question=(
+            "Can concurrent retries bypass a check-then-create idempotency guard and "
+            "produce duplicate durable side effects?"
+        ),
+    ),
+    _baseline(
+        probe_id="bug.frontend_registration_contract",
+        category="bug",
+        priority="high",
+        queries=(
+            "frontend register signup API response token navigation error contract",
+            "registration form fetch axios backend schema field mismatch",
+        ),
+        lexical_terms=("register", "signup", "fetch", "axios", "access_token"),
+        question=(
+            "Does the frontend registration flow disagree with the backend request or "
+            "response contract in a way that breaks successful registration?"
+        ),
+    ),
+    _baseline(
         probe_id="performance.n_plus_one",
         category="performance",
         priority="high",
@@ -456,6 +577,20 @@ BASELINE_PROBES: tuple[ProbeDefinition, ...] = (
         queries=("API service repository layering infrastructure dependency",),
         lexical_terms=("repository", "service", "engine", "session"),
         question="Does code violate a meaningful application-layer ownership boundary?",
+    ),
+    _baseline(
+        probe_id="maintainability.missing_tests",
+        category="maintainability",
+        priority="medium",
+        queries=(
+            "critical authentication payment registration behavior tests",
+            "production service route without unit integration regression coverage",
+        ),
+        lexical_terms=("test", "pytest", "describe", "authentication", "payment"),
+        question=(
+            "Is critical behavior left without meaningful automated regression tests "
+            "despite source evidence showing a high-risk workflow?"
+        ),
     ),
     _baseline(
         probe_id="style.boundary_contracts",
@@ -547,40 +682,29 @@ def _roadmap_probes(
     grouped = _roadmap_rules_by_group(roadmap_context)
     probes: list[ProbeDefinition] = []
     for category, rules in sorted(grouped.items()):
-        for batch_index, batch in enumerate(
-            _batched(_sorted_rules(rules), MAX_ROADMAP_RULES_PER_PROBE),
-            start=1,
-        ):
-            rule_ids = tuple(_string(rule.get("rule_id")) for rule in batch)
-            skill_groups = " ".join(_string(rule.get("skill_group")) for rule in batch)
-            check_types = " ".join(_string(rule.get("check_type")) for rule in batch)
-            intent = " ".join(
-                _string(rule.get("verification_hint"))
-                or _string(rule.get("requirement"))
-                for rule in batch
-            )
-            requirement = " | ".join(_string(rule.get("requirement")) for rule in batch)
+        for rule in _sorted_rules(rules):
+            rule_id = _string(rule.get("rule_id"))
+            skill_group = _string(rule.get("skill_group"))
+            check_type = _string(rule.get("check_type"))
+            requirement = _string(rule.get("requirement"))
+            intent = _string(rule.get("verification_hint")) or requirement
             probes.append(
                 ProbeDefinition(
-                    probe_id=(f"roadmap.{_slug(category)}.{batch_index}"),
+                    probe_id=f"roadmap.{_slug(rule_id)}",
                     lane=ProbeLane.ROADMAP,
                     category=category,
-                    priority=_highest_priority(
-                        [_string(rule.get("priority")) for rule in batch]
-                    ),
+                    priority=_string(rule.get("priority")) or "medium",
                     risk_area=_category_for_risk(category),
                     retrieval_queries=(_bounded_query(intent or requirement),),
                     lexical_terms=tuple(
-                        _unique_terms(f"{skill_groups} {check_types} {requirement}")[
-                            :12
-                        ]
+                        _unique_terms(f"{skill_group} {check_type} {requirement}")[:12]
                     ),
                     judge_question=(
-                        "Does the source evidence satisfy or contradict these roadmap "
-                        f"requirements: {requirement}?"
+                        "Does the source evidence satisfy or contradict this roadmap "
+                        f"requirement: {requirement}?"
                     ),
-                    top_k=1,
-                    related_rule_ids=rule_ids,
+                    top_k=2,
+                    related_rule_ids=(rule_id,),
                     source_kinds=("roadmap",),
                     probe_kind="roadmap",
                 )
@@ -652,14 +776,6 @@ def _sorted_rules(rules: list[dict[str, object]]) -> list[dict[str, object]]:
     )
 
 
-def _batched(
-    items: list[dict[str, object]],
-    batch_size: int,
-) -> Iterable[list[dict[str, object]]]:
-    for index in range(0, len(items), batch_size):
-        yield items[index : index + batch_size]
-
-
 def _priority(value: str) -> str:
     normalized = value.strip().lower()
     if normalized in HIGH_PRIORITY_VALUES:
@@ -671,10 +787,6 @@ def _priority(value: str) -> str:
 
 def _priority_rank(value: str) -> int:
     return {"high": 0, "medium": 1, "low": 2}.get(_priority(value), 3)
-
-
-def _highest_priority(priorities: list[str]) -> str:
-    return min((_priority(value) for value in priorities), key=_priority_rank)
 
 
 def _category_for_risk(value: str) -> str:

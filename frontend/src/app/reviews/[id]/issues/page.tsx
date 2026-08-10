@@ -651,6 +651,8 @@ function getSourceContext(occurrence: IssueOccurrence): SourceContext | null {
 function issueToOccurrence(issue: ReviewIssue): IssueOccurrence {
   return {
     issue_id: issue.id,
+    raw_issue_ids: [issue.id],
+    sources: [issue.source],
     file_path: issue.file_path,
     line_start: issue.line_start,
     line_end: issue.line_end,
@@ -672,8 +674,8 @@ function getIssueOccurrences(issue: ReviewIssue) {
 }
 
 function getIssueFixIds(issue: ReviewIssue) {
-  if (issue.occurrences.length > 0) {
-    return issue.occurrences.map((occurrence) => occurrence.issue_id);
+  if (issue.fix_issue_ids.length > 0) {
+    return issue.fix_issue_ids;
   }
 
   return [issue.id];

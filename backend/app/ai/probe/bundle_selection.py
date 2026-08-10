@@ -113,10 +113,13 @@ def _full_audit_bundles(
     chunk_documents: list[dict[str, Any]],
     existing_bundles: list[ProbeEvidenceBundle],
 ) -> list[ProbeEvidenceBundle]:
-    """Return direct evidence bundles for every chunk not already scheduled."""
+    """Return broad-audit bundles for chunks not already audited broadly."""
 
     existing_keys = {
-        chunk.key for bundle in existing_bundles for chunk in bundle.candidate_chunks
+        chunk.key
+        for bundle in existing_bundles
+        if bundle.probe.lane is ProbeLane.COVERAGE
+        for chunk in bundle.candidate_chunks
     }
     candidates_by_file: dict[str, list[ProbeCandidateChunk]] = {}
     for document in chunk_documents:

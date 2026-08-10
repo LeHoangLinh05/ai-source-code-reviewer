@@ -57,6 +57,7 @@ ignore = [
 # Subprocess calls are constrained to internal analyzer commands or resolved Git.
 "app/analyzers/file_filter.py" = ["S603"]
 "app/analyzers/static_analysis/base.py" = ["S603"]
+"app/services/fix_pipeline/dependencies.py" = ["S603"]
 "app/services/fix_pipeline/workspace.py" = ["S603"]
 "app/services/review_pipeline/workspace.py" = ["S603"]
 # Probe/review plan branchy returns model domain decision tables.
@@ -64,6 +65,7 @@ ignore = [
 "app/ai/review/plan.py" = ["PLR0911"]
 
 [tool.pytest.ini_options]
+pythonpath = [".."]
 markers = [
     "performance: opt-in smoke tests for local integration performance checks",
     "integration: tests that require live infrastructure such as Redis",

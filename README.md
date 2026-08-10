@@ -92,7 +92,7 @@ stack is restarted.
 # Start the external PostgreSQL and Redis used by the root stack.
 docker compose -f docker/docker-compose.yml up -d postgres redis
 
-# Start MongoDB, FastAPI, Celery, Next.js, and Nginx.
+# Build the disposable fix executor and start the application services.
 docker compose up --build -d
 
 # Apply all migrations inside the backend container.
@@ -105,7 +105,10 @@ docker compose run --rm -v "${PWD}:/workspace" -w /workspace backend `
 
 Open `http://localhost` (or the configured `NGINX_HOST_PORT`). Direct service
 ports are controlled by `BACKEND_HOST_PORT`, `FRONTEND_HOST_PORT`, and the
-Compose files. To stop the application stack without removing data:
+Compose files. The worker mounts the Docker socket only to launch the restricted,
+one-command fix executor against the shared sandbox volume. Keep
+`FIX_EXECUTOR_NETWORK=none` unless locked dependency installation explicitly needs
+network access. To stop the application stack without removing data:
 
 ```powershell
 docker compose down

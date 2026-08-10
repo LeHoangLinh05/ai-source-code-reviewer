@@ -46,6 +46,8 @@ class FixJobRepository:
             target_branch=target_branch,
             base_commit_sha=base_commit_sha,
             fix_branch=fix_branch,
+            issue_plan=[],
+            issue_results=[],
         )
         self.session.add(fix_job)
         await self.session.commit()
@@ -56,6 +58,13 @@ class FixJobRepository:
         """Return a fix job with its source review and repository."""
 
         statement = self._base_statement().where(FixJob.id == fix_job_id)
+        result = await self.session.execute(statement)
+        return result.scalar_one_or_none()
+
+    async def get_by_id_for_update(self, fix_job_id: UUID) -> FixJob | None:
+        """Lock one fix job while an approval transition is validated."""
+
+        statement = select(FixJob).where(FixJob.id == fix_job_id).with_for_update()
         result = await self.session.execute(statement)
         return result.scalar_one_or_none()
 
@@ -118,6 +127,7 @@ class FixJobRepository:
         *,
         strategy: str,
         allow_failed_validation: bool,
+        override_reason: str | None,
     ) -> FixJob:
         """Store user approval and move publish workflow to queued/running."""
 
@@ -125,6 +135,44 @@ class FixJobRepository:
         fix_job.publish_error = None
         fix_job.publish_strategy = strategy
         fix_job.publish_allow_failed_validation = allow_failed_validation
+        fix_job.publish_override_reason = override_reason
+        await self.session.commit()
+        await self.session.refresh(fix_job)
+        return fix_job
+
+    async def stage_publish_requested(
+        self,
+        fix_job: FixJob,
+        *,
+        strategy: str,
+        allow_failed_validation: bool,
+        override_reason: str | None,
+    ) -> None:
+        """Stage an approval transition for a shared transaction."""
+
+        fix_job.publish_status = FixPublishStatus.PUBLISHING
+        fix_job.publish_error = None
+        fix_job.publish_strategy = strategy
+        fix_job.publish_allow_failed_validation = allow_failed_validation
+        fix_job.publish_override_reason = override_reason
+        await self.session.flush()
+
+    async def stage_publish_failed(
+        self,
+        fix_job: FixJob,
+        *,
+        error_message: str,
+    ) -> None:
+        """Stage a publish failure for a shared transaction."""
+
+        fix_job.publish_status = FixPublishStatus.FAILED
+        fix_job.publish_error = error_message
+        fix_job.publish_completed_at = datetime.now(UTC)
+        await self.session.flush()
+
+    async def commit_staged(self, fix_job: FixJob) -> FixJob:
+        """Commit a staged job transition and refresh its state."""
+
         await self.session.commit()
         await self.session.refresh(fix_job)
         return fix_job
@@ -233,6 +281,32 @@ class FixJobRepository:
 
         fix_job.diff = diff
         fix_job.changed_files = changed_files
+        await self.session.commit()
+        await self.session.refresh(fix_job)
+        return fix_job
+
+    async def save_issue_plan(
+        self,
+        fix_job: FixJob,
+        *,
+        issue_plan: list[dict[str, object]],
+    ) -> FixJob:
+        """Persist the cross-file plan for selected issues."""
+
+        fix_job.issue_plan = issue_plan
+        await self.session.commit()
+        await self.session.refresh(fix_job)
+        return fix_job
+
+    async def save_issue_results(
+        self,
+        fix_job: FixJob,
+        *,
+        issue_results: list[dict[str, object]],
+    ) -> FixJob:
+        """Persist one verification result per selected issue."""
+
+        fix_job.issue_results = issue_results
         await self.session.commit()
         await self.session.refresh(fix_job)
         return fix_job

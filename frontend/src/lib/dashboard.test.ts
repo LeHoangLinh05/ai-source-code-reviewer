@@ -61,15 +61,18 @@ function makeReport(
     job_id: jobId,
     total_files_analyzed: 10,
     total_issues: 0,
+    total_findings: 0,
+    total_occurrences: 0,
+    total_raw_issues: 0,
     critical_count: 0,
     high_count: 0,
     medium_count: 0,
     low_count: 0,
     info_count: 0,
-    security_score: 10,
-    maintainability_score: 10,
-    performance_score: 10,
-    overall_score: 10,
+    security_score: null,
+    maintainability_score: null,
+    performance_score: null,
+    overall_score: null,
     tech_stack: null,
     top_risky_files: null,
     executive_summary: null,
@@ -113,7 +116,7 @@ describe("dashboard state derivation", () => {
         jobs: [loadedJob, failedJob],
         reports: [
           makeReport(loadedJob.id, {
-            total_issues: 2,
+            total_findings: 2,
             critical_count: 2,
           }),
         ],
@@ -139,7 +142,7 @@ describe("dashboard state derivation", () => {
         reports: [
           makeReport(latestClearJob.id),
           makeReport(olderRiskyJob.id, {
-            total_issues: 1,
+            total_findings: 1,
             high_count: 1,
           }),
         ],
@@ -163,7 +166,7 @@ describe("dashboard state derivation", () => {
         jobs: [criticalJob, ...failedJobs],
         reports: [
           makeReport(criticalJob.id, {
-            total_issues: 1,
+            total_findings: 1,
             critical_count: 1,
           }),
         ],

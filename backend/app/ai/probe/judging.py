@@ -7,12 +7,18 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from app.ai.probe.contracts import ProbeLane
+from app.ai.probe.contracts import (
+    SENSITIVE_DATA_LOGGING_PROBE_ID,
+    UNRESTRICTED_FILE_UPLOAD_PROBE_ID,
+    ProbeLane,
+)
 from app.ai.probe.models import (
     ProbeCandidateChunk,
     ProbeEvidenceBundle,
+    ProbeJudgeIssue,
     ProbeJudgeIssueCandidate,
     ProbeJudgeResponse,
+    ProbeJudgeResult,
 )
 from app.models.review_issue import IssueCategory, IssueSeverity
 
@@ -24,7 +30,9 @@ PROBE_SEVERITY_POLICY = {
     "security.mass_assignment": IssueSeverity.HIGH,
     "security.open_redirect": IssueSeverity.MEDIUM,
     "security.role_authorization": IssueSeverity.HIGH,
+    SENSITIVE_DATA_LOGGING_PROBE_ID: IssueSeverity.HIGH,
     "security.sensitive_response_exposure": IssueSeverity.MEDIUM,
+    UNRESTRICTED_FILE_UPLOAD_PROBE_ID: IssueSeverity.HIGH,
 }
 
 
@@ -65,9 +73,12 @@ def _judge_prompt(batch: list[ProbeEvidenceBundle]) -> str:
         "instruction": (
             "For each probe, decide whether the evidence proves a real issue. "
             "Do not invent files, rules, or missing behavior outside the chunks. "
-            "Return exactly one candidate for every probe; use no_issue or "
-            "uncertain when evidence does not prove an issue. Preserve probe_id "
-            "exactly and never return an unknown or duplicate probe_id. "
+            "Return exactly one result for every probe. An issue result may contain "
+            "multiple independent issues proved by the same evidence bundle. Use "
+            "no_issue or uncertain with an empty issues array when evidence does "
+            "not prove an issue. Preserve probe_id exactly and never return an "
+            "unknown or duplicate probe_id. Use a stable snake_case claim_type for "
+            "each issue. "
             "Return exactly one JSON object and no markdown. Persistable issues "
             "require confidence >= 0.7. A Pydantic request model only blocks "
             "unknown fields; it does not prevent over-posting when a sensitive "
@@ -75,12 +86,15 @@ def _judge_prompt(batch: list[ProbeEvidenceBundle]) -> str:
             "use that exact severity for an issue verdict."
         ),
         "format_rules": [
-            "candidates must be an array.",
+            "results must be an array with exactly one item per requested probe.",
+            "issues must be an array and may contain multiple issue objects.",
+            "issue verdict requires at least one issue object.",
+            "no_issue and uncertain verdicts require an empty issues array.",
             "supporting_evidence and contradicting_evidence must be arrays.",
             "Use [] for empty evidence arrays; never use null or a string.",
             "Every evidence item must include file_path, chunk_index, line_start, "
             "and line_end.",
-            "The candidate file_path and line range must be covered by retrieved "
+            "Each issue file_path and line range must be covered by retrieved "
             "source chunks and overlap at least one supporting evidence range.",
             "Use verdict values only: issue, no_issue, uncertain.",
         ],
@@ -98,27 +112,32 @@ def _judge_output_schema() -> dict[str, object]:
         "line_end": "integer >= 1",
         "rationale": "string | null",
     }
+    issue_schema = {
+        "claim_type": "string | null",
+        "title": "string | null",
+        "description": "string | null",
+        "suggestion": "string | null",
+        "severity": "critical | high | medium | low | info | null",
+        "category": (
+            "security | bug | performance | maintainability | style | "
+            "requirement | null"
+        ),
+        "confidence": "number between 0 and 1 | null",
+        "file_path": "string | null",
+        "line_start": "integer >= 1 | null",
+        "line_end": "integer >= 1 | null",
+        "supporting_evidence": [evidence_reference_schema],
+        "contradicting_evidence": [evidence_reference_schema],
+        "rule_id": "string | null",
+    }
     return {
-        "candidates": [
+        "results": [
             {
-                "verdict": "issue | no_issue | uncertain",
-                "claim_type": "string | null",
-                "title": "string | null",
-                "description": "string | null",
-                "suggestion": "string | null",
-                "severity": "critical | high | medium | low | info | null",
-                "category": (
-                    "security | bug | performance | maintainability | style | "
-                    "requirement | null"
-                ),
-                "confidence": "number between 0 and 1 | null",
-                "file_path": "string | null",
-                "line_start": "integer >= 1 | null",
-                "line_end": "integer >= 1 | null",
-                "supporting_evidence": [evidence_reference_schema],
-                "contradicting_evidence": [evidence_reference_schema],
-                "rule_id": "string | null",
                 "probe_id": "non-empty string",
+                "verdict": "issue | no_issue | uncertain",
+                "rationale": "string | null",
+                "confidence": "number between 0 and 1 | null",
+                "issues": [issue_schema],
             }
         ]
     }
@@ -166,37 +185,118 @@ def _numbered_content(chunk: ProbeCandidateChunk) -> str:
 def _probe_judge_response_from_payload(
     payload: dict[str, object],
 ) -> ProbeJudgeResponse:
-    try:
-        return ProbeJudgeResponse.model_validate(payload)
-    except ValidationError as error:
-        logger.warning("Probe judge returned invalid JSON schema: %s", error)
-
-    candidates = payload.get("candidates")
-    if not isinstance(candidates, list):
-        return ProbeJudgeResponse(schema_rejected_count=1)
-
-    valid_candidates: list[ProbeJudgeIssueCandidate] = []
-    schema_rejected_count = 0
-    for candidate in candidates:
-        if not isinstance(candidate, dict):
-            schema_rejected_count += 1
-            continue
-        try:
-            valid_candidates.append(ProbeJudgeIssueCandidate.model_validate(candidate))
-        except ValidationError:
-            schema_rejected_count += 1
-
-    if schema_rejected_count:
+    if "results" in payload:
+        response = _response_from_results(payload.get("results"))
+    elif "candidates" in payload:
+        response = _response_from_legacy_candidates(payload.get("candidates"))
+    else:
+        response = ProbeJudgeResponse(
+            schema_rejected_count=1,
+            has_unscoped_schema_error=True,
+        )
+    if response.schema_rejected_count:
         logger.warning(
-            "Probe judge kept %s schema-valid candidates and rejected %s malformed "
-            "candidates.",
-            len(valid_candidates),
-            schema_rejected_count,
+            "Probe judge kept %s schema-valid results and rejected %s malformed "
+            "result or issue objects.",
+            len(response.results),
+            response.schema_rejected_count,
+        )
+    return response
+
+
+def _response_from_results(value: object) -> ProbeJudgeResponse:
+    if not isinstance(value, list):
+        return ProbeJudgeResponse(
+            schema_rejected_count=1,
+            has_unscoped_schema_error=True,
         )
 
+    results: list[ProbeJudgeResult] = []
+    schema_rejected_count = 0
+    has_unscoped_schema_error = False
+    for result_payload in value:
+        if not isinstance(result_payload, dict):
+            schema_rejected_count += 1
+            has_unscoped_schema_error = True
+            continue
+        parsed_result, rejected_count = _result_from_payload(result_payload)
+        schema_rejected_count += rejected_count
+        if parsed_result is not None:
+            results.append(parsed_result)
+        else:
+            has_unscoped_schema_error = True
     return ProbeJudgeResponse(
-        candidates=valid_candidates,
+        results=results,
         schema_rejected_count=schema_rejected_count,
+        has_unscoped_schema_error=has_unscoped_schema_error,
+    )
+
+
+def _result_from_payload(
+    payload: dict[str, object],
+) -> tuple[ProbeJudgeResult | None, int]:
+    raw_issues = payload.get("issues", [])
+    if not isinstance(raw_issues, list):
+        return None, 1
+
+    issues: list[ProbeJudgeIssue] = []
+    rejected_count = 0
+    for issue_payload in raw_issues:
+        if not isinstance(issue_payload, dict):
+            rejected_count += 1
+            continue
+        try:
+            issues.append(ProbeJudgeIssue.model_validate(issue_payload))
+        except ValidationError:
+            rejected_count += 1
+
+    normalized_payload = dict(payload)
+    normalized_payload["issues"] = issues
+    try:
+        return ProbeJudgeResult.model_validate(normalized_payload), rejected_count
+    except ValidationError:
+        return None, rejected_count + 1
+
+
+def _response_from_legacy_candidates(value: object) -> ProbeJudgeResponse:
+    if not isinstance(value, list):
+        return ProbeJudgeResponse(
+            schema_rejected_count=1,
+            has_unscoped_schema_error=True,
+        )
+
+    results: list[ProbeJudgeResult] = []
+    schema_rejected_count = 0
+    has_unscoped_schema_error = False
+    for candidate_payload in value:
+        if not isinstance(candidate_payload, dict):
+            schema_rejected_count += 1
+            has_unscoped_schema_error = True
+            continue
+        try:
+            candidate = ProbeJudgeIssueCandidate.model_validate(candidate_payload)
+            results.append(_result_from_legacy_candidate(candidate))
+        except ValidationError:
+            schema_rejected_count += 1
+            has_unscoped_schema_error = True
+    return ProbeJudgeResponse(
+        results=results,
+        schema_rejected_count=schema_rejected_count,
+        has_unscoped_schema_error=has_unscoped_schema_error,
+    )
+
+
+def _result_from_legacy_candidate(
+    candidate: ProbeJudgeIssueCandidate,
+) -> ProbeJudgeResult:
+    issue = ProbeJudgeIssue.model_validate(
+        candidate.model_dump(exclude={"probe_id", "verdict"})
+    )
+    return ProbeJudgeResult(
+        probe_id=candidate.probe_id,
+        verdict=candidate.verdict,
+        confidence=candidate.confidence,
+        issues=[issue] if candidate.verdict == "issue" else [],
     )
 
 

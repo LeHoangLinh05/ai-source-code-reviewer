@@ -1,7 +1,6 @@
 """Deterministic static-analysis report generation."""
 
 from collections import Counter
-from math import exp
 from uuid import UUID
 
 from app.models.review_issue import IssueCategory, IssueSeverity
@@ -10,15 +9,6 @@ from app.schemas.normalized_issue import NormalizedIssue
 
 STATIC_REPORT_MODEL = "static-pipeline-v1"
 AI_REPORT_MODEL = "langchain-structured-report-v1"
-
-SEVERITY_SCORE_WEIGHTS = {
-    IssueSeverity.CRITICAL: 3.0,
-    IssueSeverity.HIGH: 2.0,
-    IssueSeverity.MEDIUM: 1.0,
-    IssueSeverity.LOW: 0.3,
-    IssueSeverity.INFO: 0.1,
-}
-SCORE_DECAY_FACTOR = 10.0
 
 SEVERITY_RANK = {
     IssueSeverity.CRITICAL: 5,
@@ -48,45 +38,15 @@ def build_static_report(
         medium_count=severity_counts[IssueSeverity.MEDIUM],
         low_count=severity_counts[IssueSeverity.LOW],
         info_count=severity_counts[IssueSeverity.INFO],
-        **calculate_report_scores(issues),
+        security_score=None,
+        maintainability_score=None,
+        performance_score=None,
+        overall_score=None,
         tech_stack=tech_stack,
         top_risky_files=build_top_risky_files(issues),
         executive_summary=build_executive_summary(issues, total_files_analyzed),
         ai_model_used=STATIC_REPORT_MODEL,
     )
-
-
-def calculate_report_scores(issues: list[NormalizedIssue]) -> dict[str, float]:
-    """Return deterministic report scores from persisted issue categories."""
-
-    return {
-        "security_score": calculate_score(
-            [issue for issue in issues if issue.category == IssueCategory.SECURITY]
-        ),
-        "maintainability_score": calculate_score(
-            [
-                issue
-                for issue in issues
-                if issue.category
-                in {
-                    IssueCategory.BUG,
-                    IssueCategory.MAINTAINABILITY,
-                    IssueCategory.STYLE,
-                }
-            ]
-        ),
-        "performance_score": calculate_score(
-            [issue for issue in issues if issue.category == IssueCategory.PERFORMANCE]
-        ),
-        "overall_score": calculate_score(issues),
-    }
-
-
-def calculate_score(issues: list[NormalizedIssue]) -> float:
-    """Return the 0-10 score based on weighted issue severity."""
-
-    penalty = sum(SEVERITY_SCORE_WEIGHTS[issue.severity] for issue in issues)
-    return round(10.0 * exp(-penalty / SCORE_DECAY_FACTOR), 1)
 
 
 def build_top_risky_files(

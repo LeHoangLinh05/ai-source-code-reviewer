@@ -18,14 +18,13 @@ from app.schemas.report import (
     IssueFilters,
     IssueListResponse,
     IssueResponse,
+    ReportResponse,
     ReportScores,
     ReportSummaryResponse,
 )
-from app.services.reporting.generation import (
-    build_top_risky_files,
-    calculate_report_scores,
-)
+from app.services.reporting.generation import build_top_risky_files
 from app.services.reporting.issue_presenter import (
+    _canonical_representative_issues,
     _group_issues,
     _has_source_context,
     _issue_group_key,
@@ -53,24 +52,28 @@ class ReportService:
         self.report_repository = report_repository
         self.chunk_metadata_repository = chunk_metadata_repository
 
-    async def get_report(self, job_id: UUID, current_user: User) -> ReviewReport:
+    async def get_report(self, job_id: UUID, current_user: User) -> ReportResponse:
         """Return the full report for an authorized review job."""
 
         review_job = await self._ensure_job_access(job_id, current_user)
         report = await self._get_existing_report(job_id, review_job.status)
-        await self._refresh_report_aggregates(report)
-        return report
+        counts = await self._refresh_report_aggregates(report)
+        response = ReportResponse.model_validate(report)
+        response.total_findings = counts[0]
+        response.total_occurrences = counts[1]
+        response.total_raw_issues = counts[2]
+        return response
 
     async def get_summary(
         self,
         job_id: UUID,
         current_user: User,
     ) -> ReportSummaryResponse:
-        """Return executive summary and scores for an authorized report."""
+        """Return the executive summary and deprecated nullable score fields."""
 
         review_job = await self._ensure_job_access(job_id, current_user)
         report = await self._get_existing_report(job_id, review_job.status)
-        await self._refresh_report_aggregates(report)
+        counts = await self._refresh_report_aggregates(report)
         return ReportSummaryResponse(
             job_id=report.job_id,
             executive_summary=report.executive_summary,
@@ -80,6 +83,9 @@ class ReportService:
                 performance_score=report.performance_score,
                 overall_score=report.overall_score,
             ),
+            total_findings=counts[0],
+            total_occurrences=counts[1],
+            total_raw_issues=counts[2],
         )
 
     async def list_issues(
@@ -212,14 +218,18 @@ class ReportService:
 
         return report
 
-    async def _refresh_report_aggregates(self, report: ReviewReport) -> None:
-        """Refresh score/count fields from current persisted issues for display."""
+    async def _refresh_report_aggregates(
+        self,
+        report: ReviewReport,
+    ) -> tuple[int, int, int]:
+        """Refresh legacy fields and return canonical report counters."""
 
         issues = await self.report_repository.list_all_issues(report.job_id)
-        normalized_issues = [_to_normalized_issue(issue) for issue in issues]
-        scores = calculate_report_scores(normalized_issues)
+        groups = _group_issues(issues)
+        canonical_issues = _canonical_representative_issues(issues)
+        normalized_issues = [_to_normalized_issue(issue) for issue in canonical_issues]
         severity_counts = {
-            severity: sum(1 for issue in issues if issue.severity == severity)
+            severity: sum(1 for issue in canonical_issues if issue.severity == severity)
             for severity in IssueSeverity
         }
         refreshed_values = {
@@ -229,10 +239,10 @@ class ReportService:
             "medium_count": severity_counts[IssueSeverity.MEDIUM],
             "low_count": severity_counts[IssueSeverity.LOW],
             "info_count": severity_counts[IssueSeverity.INFO],
-            "security_score": scores["security_score"],
-            "maintainability_score": scores["maintainability_score"],
-            "performance_score": scores["performance_score"],
-            "overall_score": scores["overall_score"],
+            "security_score": None,
+            "maintainability_score": None,
+            "performance_score": None,
+            "overall_score": None,
             "top_risky_files": build_top_risky_files(normalized_issues),
         }
         has_changes = any(
@@ -243,6 +253,7 @@ class ReportService:
             setattr(report, field_name, field_value)
         if has_changes:
             await self.report_repository.save_report(report)
+        return len(groups), len(canonical_issues), len(issues)
 
     def _parse_sort(self, sort: str) -> tuple[str, bool]:
         is_descending = sort.startswith("-")

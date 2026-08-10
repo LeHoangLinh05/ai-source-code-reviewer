@@ -37,6 +37,28 @@ class FixAuditLogRepository:
         await self.session.refresh(audit_log)
         return audit_log
 
+    async def stage_append(
+        self,
+        *,
+        fix_job_id: UUID,
+        action: FixAuditAction,
+        user_id: UUID | None = None,
+        message: str | None = None,
+        event_metadata: dict[str, object] | None = None,
+    ) -> FixAuditLog:
+        """Stage one audit event in the caller's transaction."""
+
+        audit_log = FixAuditLog(
+            fix_job_id=fix_job_id,
+            user_id=user_id,
+            action=action,
+            message=message,
+            event_metadata=event_metadata,
+        )
+        self.session.add(audit_log)
+        await self.session.flush()
+        return audit_log
+
     async def list_for_fix_job(self, fix_job_id: UUID) -> list[FixAuditLog]:
         """Return audit events for one fix job, oldest first."""
 

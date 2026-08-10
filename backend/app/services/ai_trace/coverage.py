@@ -57,6 +57,28 @@ def _probe_slot_counts(documents: list[dict[str, Any]]) -> tuple[int, int]:
     return retrieved_count, judged_count
 
 
+def _broad_audited_chunk_count(documents: list[dict[str, Any]]) -> int:
+    audited_keys: set[tuple[str, int]] = set()
+    for document in documents:
+        if document.get("tool_name") != "probe_retrieval":
+            continue
+        tool_input = document.get("input")
+        if not isinstance(tool_input, dict) or tool_input.get("lane") != "coverage":
+            continue
+        output = document.get("output")
+        results = output.get("results") if isinstance(output, dict) else None
+        if not isinstance(results, list):
+            continue
+        for result in results:
+            if not isinstance(result, dict):
+                continue
+            file_path = result.get("file_path")
+            chunk_index = result.get("chunk_index")
+            if isinstance(file_path, str) and isinstance(chunk_index, int):
+                audited_keys.add((file_path, chunk_index))
+    return len(audited_keys)
+
+
 def _percent(current: int, total: int) -> float:
     if total <= 0:
         return 0.0

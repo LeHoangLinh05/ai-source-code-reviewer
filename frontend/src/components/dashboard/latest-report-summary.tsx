@@ -2,7 +2,6 @@ import { ArrowRight } from "lucide-react";
 import Link from "next/link";
 
 import { SeverityBreakdownChart } from "@/components/dashboard/severity-breakdown-chart";
-import { ScoreTrack } from "@/components/reviews/score-track";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -36,16 +35,10 @@ export function LatestReportSummaryCard({
         </Button>
       </CardHeader>
       <CardContent className="grid gap-5">
-        <ScoreTrack
-          label="Overall score"
-          showNoFindings={summary.totalIssues === 0}
-          value={summary.overallScore}
-        />
-
         <div className="grid grid-cols-3 gap-3 border-t border-border pt-4">
-          <MiniScore label="Security" value={summary.securityScore} />
-          <MiniScore label="Maintainability" value={summary.maintainabilityScore} />
-          <MiniScore label="Performance" value={summary.performanceScore} />
+          <MiniFinding label="Total" value={summary.totalIssues} />
+          <MiniFinding label="Critical" value={severityCount(summary, "critical")} />
+          <MiniFinding label="High" value={severityCount(summary, "high")} />
         </div>
 
         <div className="border-t border-border pt-4">
@@ -76,15 +69,19 @@ export function LatestReportSummaryCard({
   );
 }
 
-function MiniScore({ label, value }: { label: string; value: number | null }) {
+function MiniFinding({ label, value }: { label: string; value: number }) {
   return (
     <div className="min-w-0">
       <p className="truncate text-xs font-medium uppercase text-muted-foreground">
         {label}
       </p>
       <p className="mt-1 text-xl font-extrabold tabular-nums text-foreground">
-        {value === null ? "--" : value.toFixed(1)}
+        {value}
       </p>
     </div>
   );
+}
+
+function severityCount(summary: LatestReportSummary, key: "critical" | "high") {
+  return summary.severity.find((item) => item.key === key)?.value ?? 0;
 }

@@ -51,6 +51,14 @@ export function canCancelPublish(fix: FixJob) {
   return fix.publish_status === "PUBLISHING";
 }
 
+export function requiresFailedValidationOverride(fix: FixJob) {
+  return fix.validation_status === "FAILED";
+}
+
+export function getUnresolvedFixResults(fix: FixJob) {
+  return fix.issue_results.filter((result) => result.verdict !== "fixed");
+}
+
 export function canShowFixDiff(fix: FixJob) {
   return ["WAITING_APPROVAL", "APPROVED", "FAILED"].includes(fix.status);
 }
@@ -77,6 +85,13 @@ export function getFixProgressMessage(fixOrStatus: FixJob | FixJobStatus): strin
     const publishMessage = getFixPublishMessage(fixOrStatus);
     if (publishMessage) {
       return publishMessage;
+    }
+
+    if (
+      fixOrStatus.status === "WAITING_APPROVAL" &&
+      fixOrStatus.validation_status === "FAILED"
+    ) {
+      return "Patch generated; verification failed.";
     }
 
     return getFixProgressMessage(fixOrStatus.status);

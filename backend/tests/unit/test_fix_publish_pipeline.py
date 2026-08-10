@@ -23,7 +23,9 @@ from app.repositories.provider_installation_repository import (
     ProviderInstallationRepository,
 )
 from app.repositories.report_repository import ReportRepository
+from app.schemas.fix_job import FixIssueResult, FixIssueVerdict
 from app.services import fix_publish_pipeline
+from app.services.fix_pipeline.errors import FixPipelineError
 from app.services.fix_publish_pipeline import FixPublishPipelineService
 from app.services.git_provider.base import (
     ForkResult,
@@ -140,6 +142,86 @@ async def test_publish_pipeline_publishes_directly_for_same_owner(
     ]
 
 
+@pytest.mark.asyncio
+async def test_pull_request_body_labels_unverified_override() -> None:
+    fix_job = build_fix_job()
+    issue_id = UUID(fix_job.issue_ids[0])
+    fix_job.validation_status = FixValidationStatus.FAILED
+    fix_job.validation_output = {
+        "status": FixValidationStatus.FAILED.value,
+        "summary": "Validation failed.",
+        "checks": [
+            {
+                "name": "ruff check",
+                "command": "ruff check src/app.py",
+                "kind": "lint",
+                "required": True,
+                "status": "failed",
+                "exit_code": 1,
+                "stdout": "",
+                "stderr": "F821 undefined name",
+                "duration_ms": 1,
+            }
+        ],
+    }
+    fix_job.publish_allow_failed_validation = True
+    fix_job.publish_override_reason = (
+        "Release owner accepted the remaining manual verification risk."
+    )
+    fix_job.issue_results = [
+        FixIssueResult(
+            issue_id=issue_id,
+            verdict=FixIssueVerdict.UNCERTAIN,
+            summary="Dependency lockfile was unavailable.",
+        ).model_dump(mode="json")
+    ]
+    service = build_pipeline_service(
+        RecordingFixJobRepository(fix_job),
+        RecordingAuditLogRepository(),
+        FakeGitProvider(branch_head_sha=fix_job.base_commit_sha),
+    )
+
+    body = await service._build_pull_request_body(fix_job)
+
+    assert "Unverified manual override" in body
+    assert fix_job.publish_override_reason in body
+    assert str(issue_id) in body
+    assert "ruff check" in body
+    assert "F821 undefined name" in body
+
+
+def test_publish_worker_rejects_override_without_persisted_reason() -> None:
+    fix_job = build_fix_job()
+    fix_job.validation_status = FixValidationStatus.FAILED
+    fix_job.publish_allow_failed_validation = True
+    service = build_pipeline_service(
+        RecordingFixJobRepository(fix_job),
+        RecordingAuditLogRepository(),
+        FakeGitProvider(branch_head_sha=fix_job.base_commit_sha),
+    )
+
+    with pytest.raises(FixPipelineError, match="reason was not persisted"):
+        service._ensure_worker_preconditions(
+            fix_job,
+            allow_failed_validation=True,
+        )
+
+
+def test_publish_worker_rejects_queue_override_mismatch() -> None:
+    fix_job = build_fix_job()
+    service = build_pipeline_service(
+        RecordingFixJobRepository(fix_job),
+        RecordingAuditLogRepository(),
+        FakeGitProvider(branch_head_sha=fix_job.base_commit_sha),
+    )
+
+    with pytest.raises(FixPipelineError, match="persisted user approval"):
+        service._ensure_worker_preconditions(
+            fix_job,
+            allow_failed_validation=True,
+        )
+
+
 def build_pipeline_service(
     repository: "RecordingFixJobRepository",
     audit_repository: "RecordingAuditLogRepository",
@@ -207,6 +289,7 @@ def build_fix_job() -> FixJob:
         publish_status=FixPublishStatus.PUBLISHING,
         publish_strategy="fork",
         publish_allow_failed_validation=False,
+        publish_override_reason=None,
         created_at=datetime.now(UTC),
     )
 

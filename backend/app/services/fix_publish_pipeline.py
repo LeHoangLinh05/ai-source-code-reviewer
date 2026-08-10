@@ -23,7 +23,13 @@ from app.repositories.provider_installation_repository import (
     ProviderInstallationRepository,
 )
 from app.repositories.report_repository import ReportRepository
-from app.schemas.fix_job import normalize_fix_validation_result
+from app.schemas.fix_job import (
+    FixIssueResult,
+    FixIssueVerdict,
+    FixValidationCheckStatus,
+    FixValidationResult,
+    normalize_fix_validation_result,
+)
 from app.services.fix_notification_service import publish_fix_job_progress
 from app.services.fix_pipeline.errors import FixPipelineError
 from app.services.fix_pipeline.workspace import (
@@ -57,6 +63,7 @@ STALE_BASE_MESSAGE_TEMPLATE = (
     "Base branch changed: reviewed {base_sha} but {target_branch} is now {head_sha}."
 )
 PUBLISH_COMMIT_MESSAGE_TEMPLATE = "RepoGuard fix {fix_job_id}"
+MAX_PR_CHECK_DETAIL_LENGTH = 300
 
 
 class FixPublishCanceledError(RuntimeError):
@@ -418,6 +425,34 @@ class FixPublishPipelineService:
             if validation_summary is not None
             else "Validation output was unavailable."
         )
+        unresolved_results = [
+            result
+            for payload in (fix_job.issue_results or [])
+            if (result := _parse_issue_result(payload)) is not None
+            and result.verdict != FixIssueVerdict.FIXED
+        ]
+        override_text = ""
+        if fix_job.publish_allow_failed_validation:
+            unresolved_lines = (
+                "\n".join(
+                    f"- `{result.issue_id}`: {result.verdict.value} - {result.summary}"
+                    for result in unresolved_results
+                )
+                or "- Validation failed without a parsed per-issue result."
+            )
+            override_reason = (
+                fix_job.publish_override_reason or "No override reason was recorded."
+            )
+            incomplete_check_lines = _build_incomplete_check_lines(validation_summary)
+            override_text = (
+                "\n\n### Unverified manual override\n"
+                "This PR was explicitly published without complete verification.\n\n"
+                f"Reason: {override_reason}\n\n"
+                "Unresolved verification results:\n"
+                f"{unresolved_lines}\n\n"
+                "Checks not passed:\n"
+                f"{incomplete_check_lines}"
+            )
         issue_text = "\n".join(issue_lines)
         return (
             "## RepoGuard AI Fix\n\n"
@@ -429,7 +464,7 @@ class FixPublishPipelineService:
             f"- Target branch: `{fix_job.target_branch}`\n"
             f"- Review report: {report_link}\n\n"
             "### Validation\n"
-            f"{validation_text}\n"
+            f"{validation_text}{override_text}\n"
         )
 
     async def _ensure_not_canceled(self, fix_job_id: UUID) -> None:
@@ -449,11 +484,23 @@ class FixPublishPipelineService:
             raise FixPipelineError("Fix job does not have a generated diff")
         if fix_job.validation_output is None:
             raise FixPipelineError("Fix job does not have validation results")
+        if allow_failed_validation != fix_job.publish_allow_failed_validation:
+            raise FixPipelineError(
+                "Publish override does not match the persisted user approval"
+            )
         if (
-            fix_job.validation_status == FixValidationStatus.FAILED
-            and not allow_failed_validation
+            allow_failed_validation
+            and fix_job.validation_status != FixValidationStatus.FAILED
+        ):
+            raise FixPipelineError(
+                "Validation override is only valid for failed validation"
+            )
+        if fix_job.validation_status == FixValidationStatus.FAILED and not (
+            allow_failed_validation and fix_job.publish_allow_failed_validation
         ):
             raise FixPipelineError("Validation failed and publish override was not set")
+        if allow_failed_validation and not fix_job.publish_override_reason:
+            raise FixPipelineError("Validation override reason was not persisted")
 
     async def _handle_failure(self, fix_job_id: UUID, error: Exception) -> None:
         error_message = _build_publish_error_message(error)
@@ -511,3 +558,28 @@ def _build_review_report_link(
 
 def _get_repository_owner(repository_full_name: str) -> str:
     return repository_full_name.split("/", maxsplit=1)[0]
+
+
+def _parse_issue_result(payload: object) -> FixIssueResult | None:
+    try:
+        return FixIssueResult.model_validate(payload)
+    except ValueError:
+        return None
+
+
+def _build_incomplete_check_lines(
+    validation_summary: FixValidationResult | None,
+) -> str:
+    if validation_summary is None:
+        return "- Validation failed without a parsed check result."
+
+    lines: list[str] = []
+    for check in validation_summary.checks:
+        if check.status == FixValidationCheckStatus.PASSED:
+            continue
+        detail = (check.stderr or check.stdout).strip().replace("\n", " ")
+        if len(detail) > MAX_PR_CHECK_DETAIL_LENGTH:
+            detail = detail[-MAX_PR_CHECK_DETAIL_LENGTH:]
+        suffix = f" - {detail}" if detail else ""
+        lines.append(f"- `{check.name}` ({check.status.value}){suffix}")
+    return "\n".join(lines) or "- Validation failed without a parsed check result."

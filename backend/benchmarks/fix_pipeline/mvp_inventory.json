@@ -1,0 +1,31 @@
+{
+  "name": "mvp_inventory_fix_contract",
+  "repository_url": "https://github.com/LeHoangLinh05/mvp-inventory.git",
+  "base_commit_sha": "e2d47f2cf77d2e17c98a8d74f3981bb6b85c0caa",
+  "required_probes": {
+    "security.jwt_algorithm_allowlist": [
+      ["valid", "token"]
+    ],
+    "security.mass_assignment": [
+      ["admin", "create"],
+      ["cost_price"]
+    ],
+    "bug.inventory_invariant": [
+      ["normal", "stock"],
+      ["not found", "404"]
+    ],
+    "security.sensitive_response_exposure": [
+      ["public", "cost_price"],
+      ["frontend", "render"]
+    ],
+    "security.insecure_randomness": [
+      ["reset", "token"]
+    ],
+    "security.open_redirect": [
+      ["local", "redirect"]
+    ],
+    "security.role_authorization": [
+      ["admin", "report"]
+    ]
+  }
+}

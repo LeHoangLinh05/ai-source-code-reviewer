@@ -80,6 +80,13 @@ class Settings(BaseSettings):
     max_repo_size_mb: int = 500
     max_source_file_size_bytes: int = 1_048_576
     analysis_subprocess_timeout_seconds: int = 60
+    fix_executor_docker_executable: str | None = "docker"
+    fix_executor_image: str = "repoguard-fix-executor:latest"
+    fix_executor_workspace_volume: str | None = None
+    fix_executor_network: Literal["none", "bridge"] = "none"
+    fix_executor_memory_mb: int = Field(default=1024, ge=256, le=8192)
+    fix_executor_cpu_limit: float = Field(default=1.0, ge=0.25, le=8.0)
+    fix_executor_pids_limit: int = Field(default=256, ge=32, le=2048)
 
     github_app_id: str | None = None
     github_app_private_key: SecretStr | None = None
@@ -120,10 +127,10 @@ class Settings(BaseSettings):
     )
     llm_job_call_budget: int = Field(default=96, ge=1, le=200)
     llm_rate_limit_failure_budget: int = Field(default=1, ge=1, le=5)
-    probe_retrieval_max_chunks: int = Field(default=188, ge=1, le=500)
+    probe_retrieval_max_chunks: int = Field(default=256, ge=1, le=500)
     probe_defect_max_chunks: int = Field(default=120, ge=1, le=300)
     probe_coverage_max_chunks: int = Field(default=24, ge=1, le=200)
-    probe_roadmap_max_chunks: int = Field(default=44, ge=1, le=200)
+    probe_roadmap_max_chunks: int = Field(default=120, ge=1, le=200)
     probe_semantic_query_batch_size: int = Field(default=16, ge=1, le=64)
     probe_semantic_max_query_tokens: int = Field(default=64, ge=1, le=2048)
     probe_judge_max_concurrency: int = Field(default=1, ge=1, le=8)
@@ -191,6 +198,8 @@ class Settings(BaseSettings):
         "frontend_base_url",
         "github_app_id",
         "github_app_install_url",
+        "fix_executor_docker_executable",
+        "fix_executor_workspace_volume",
         mode="before",
     )
     @classmethod

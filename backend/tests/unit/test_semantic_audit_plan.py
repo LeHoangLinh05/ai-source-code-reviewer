@@ -22,7 +22,7 @@ def test_baseline_probes_use_short_focused_queries_and_dynamic_top_k() -> None:
     assert probes_by_id["style.boundary_contracts"].top_k == 3
 
 
-def test_roadmap_rules_are_grouped_into_typed_roadmap_probes() -> None:
+def test_each_roadmap_rule_has_one_typed_roadmap_probe() -> None:
     plan = build_semantic_audit_plan(
         roadmap_context={
             "review_rules": [
@@ -51,11 +51,14 @@ def test_roadmap_rules_are_grouped_into_typed_roadmap_probes() -> None:
     )
 
     roadmap = [probe for probe in plan if probe.lane is ProbeLane.ROADMAP]
-    assert len(roadmap) == 1
-    assert roadmap[0].related_rule_ids == ("RC-AUTH-01", "RC-AUTH-02")
-    assert roadmap[0].top_k == 1
-    assert roadmap[0].category == "security"
-    assert "roadmap requirements" in roadmap[0].judge_question
+    assert len(roadmap) == 2
+    assert {probe.related_rule_ids for probe in roadmap} == {
+        ("RC-AUTH-01",),
+        ("RC-AUTH-02",),
+    }
+    assert all(probe.top_k == 2 for probe in roadmap)
+    assert all(probe.category == "security" for probe in roadmap)
+    assert all("roadmap requirement" in probe.judge_question for probe in roadmap)
 
 
 def test_large_roadmap_catalog_does_not_drop_rules() -> None:
@@ -87,8 +90,8 @@ def test_large_roadmap_catalog_does_not_drop_rules() -> None:
     }
     assert planned_rule_ids == {str(rule["rule_id"]) for rule in rules}
     roadmap_probes = [probe for probe in plan if probe.lane is ProbeLane.ROADMAP]
-    assert len(roadmap_probes) <= 32
-    assert all(len(probe.related_rule_ids) <= 3 for probe in roadmap_probes)
+    assert len(roadmap_probes) == len(rules)
+    assert all(len(probe.related_rule_ids) == 1 for probe in roadmap_probes)
 
 
 def test_high_risk_files_create_hard_scoped_coverage_probes() -> None:

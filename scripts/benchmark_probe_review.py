@@ -707,8 +707,12 @@ def _judge_contract_metrics(
         tool_input = _mapping(document.get("input"))
         output = _mapping(document.get("output"))
         requested = _string_list(tool_input.get("probe_ids"))
-        candidates = output.get("candidates")
-        candidate_items = candidates if isinstance(candidates, list) else []
+        results = output.get("results")
+        if isinstance(results, list):
+            candidate_items = results
+        else:
+            candidates = output.get("candidates")
+            candidate_items = candidates if isinstance(candidates, list) else []
         received = [
             str(candidate.get("probe_id"))
             for candidate in candidate_items
@@ -867,7 +871,29 @@ def _trace_results(document: dict[str, Any]) -> list[dict[str, object]]:
 
 
 def _judge_candidates(document: dict[str, Any]) -> list[dict[str, object]]:
-    candidates = _mapping(document.get("output")).get("candidates")
+    output = _mapping(document.get("output"))
+    results = output.get("results")
+    if isinstance(results, list):
+        flattened: list[dict[str, object]] = []
+        for result in results:
+            if not isinstance(result, dict) or result.get("verdict") != "issue":
+                continue
+            issues = result.get("issues")
+            if not isinstance(issues, list):
+                continue
+            for issue in issues:
+                if not isinstance(issue, dict):
+                    continue
+                flattened.append(
+                    {
+                        **issue,
+                        "probe_id": result.get("probe_id"),
+                        "verdict": result.get("verdict"),
+                    }
+                )
+        return flattened
+
+    candidates = output.get("candidates")
     if not isinstance(candidates, list):
         return []
     return [item for item in candidates if isinstance(item, dict)]
