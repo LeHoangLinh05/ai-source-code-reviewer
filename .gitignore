@@ -8,6 +8,7 @@ backend/.env.*
 *.md
 !/AGENTS.md
 !/README.md
+*.docx
 
 __pycache__/
 *.py[cod]
