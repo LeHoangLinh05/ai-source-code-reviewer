@@ -18,6 +18,8 @@ export type IssueSource =
 
 export type IssueOccurrence = {
   issue_id: string;
+  raw_issue_ids: string[];
+  sources: IssueSource[];
   file_path: string;
   line_start: number;
   line_end: number;
@@ -46,7 +48,9 @@ export type ReviewIssue = {
   created_at: string;
   group_key: string | null;
   occurrence_count: number;
+  raw_issue_count: number;
   affected_files: string[];
+  fix_issue_ids: string[];
   primary_issue_id: string | null;
   occurrences: IssueOccurrence[];
 };

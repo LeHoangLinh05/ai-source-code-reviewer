@@ -12,7 +12,7 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.ai.probe.models import ProbeReviewConfig
+from app.ai.probe.models import ProbeBatchProgressCallback, ProbeReviewConfig
 from app.ai.probe.review import run_backend_directed_probe_review
 from app.ai.reporting.final_report import synthesize_final_report
 from app.ai.roadmap.catalog_service import _ensure_roadmap_catalog_loaded
@@ -23,6 +23,7 @@ from app.ai.tools.runtime import (
 )
 from app.models.review_issue import ReviewIssue
 from app.repositories.mongodb_repository import ToolCallLogRepository
+from app.services.reporting.aggregation import build_report_aggregate
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +37,7 @@ async def run_ai_review(
     postgres_session: AsyncSession,
     mongodb_database: AsyncIOMotorDatabase,
     code_embedding_store: Any | None = None,
+    on_batch_completed: ProbeBatchProgressCallback | None = None,
 ) -> dict[str, Any]:
     """Run the AI review agent for one job using OpenAI."""
 
@@ -84,7 +86,9 @@ async def run_ai_review(
                     roadmap_max_chunks=settings.probe_roadmap_max_chunks,
                     max_probes_per_batch=(settings.probe_judge_max_probes_per_batch),
                     max_chunks_per_batch=settings.probe_judge_max_chunks_per_batch,
+                    max_concurrency=settings.probe_judge_max_concurrency,
                 ),
+                on_batch_completed=on_batch_completed,
             )
             review_result = {"output": probe_result.handoff}
             (
@@ -132,7 +136,9 @@ async def _build_report_context(
     result = await postgres_session.execute(
         select(ReviewIssue).where(ReviewIssue.job_id == job_id)
     )
-    issues = list(result.scalars().all())
+    raw_issues = list(result.scalars().all())
+    aggregate = build_report_aggregate(raw_issues)
+    issues = aggregate.finding_representatives
     issues.sort(key=_persisted_issue_priority)
     severity_counts: dict[str, int] = {}
     category_counts: dict[str, int] = {}
@@ -159,7 +165,9 @@ async def _build_report_context(
     ]
     return json.dumps(
         {
-            "total_issues": len(issues),
+            "total_issues": aggregate.total_findings,
+            "total_occurrences": aggregate.total_occurrences,
+            "total_raw_issues": aggregate.raw_issue_count,
             "severity_counts": severity_counts,
             "category_counts": category_counts,
             "source_counts": source_counts,

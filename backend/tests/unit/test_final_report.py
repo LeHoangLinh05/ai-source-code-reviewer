@@ -1,16 +1,16 @@
-"""Tests for structured final-report synthesis helpers."""
+"""Tests for final-report synthesis helpers."""
 
+import pytest
+
+from app.ai.reporting import draft as report_draft
 from app.ai.reporting.final_report import (
     FinalReportDraft,
     _is_placeholder_summary,
     parse_final_report_draft_text,
 )
-from app.models.review_issue import IssueCategory, IssueSeverity, IssueSource
-from app.schemas.normalized_issue import NormalizedIssue
-from app.services.reporting.generation import calculate_report_scores
 
 
-def test_final_report_schema_parses_markdown_json_output() -> None:
+def test_final_report_schema_ignores_legacy_scores_in_markdown_json() -> None:
     payload = parse_final_report_draft_text(
         "```json\n"
         "{\n"
@@ -23,11 +23,8 @@ def test_final_report_schema_parses_markdown_json_output() -> None:
         "```"
     )
 
-    assert payload.executive_summary == "Done"
-    assert payload.security_score == 7
-    assert payload.maintainability_score == 6
-    assert payload.performance_score == 8
-    assert payload.overall_score == 7
+    assert payload.analysis_overview == "Done"
+    assert "overall_score" not in payload.model_dump()
 
 
 def test_final_report_schema_parses_model_wrapper_text() -> None:
@@ -46,15 +43,14 @@ def test_final_report_schema_parses_model_wrapper_text() -> None:
         "Final Answer: Final report generated successfully."
     )
 
-    assert payload.executive_summary == "AI review found critical auth issues."
-    assert payload.overall_score == 4
+    assert payload.analysis_overview == "AI review found critical auth issues."
     assert payload.top_priorities == ["Fix plaintext password logging"]
 
 
 def test_final_report_schema_accepts_structured_top_priorities() -> None:
     payload = FinalReportDraft.model_validate(
         {
-            "executive_summary": "Done",
+            "analysis_overview": "Authentication boundaries need immediate review.",
             "security_score": 7,
             "maintainability_score": 6,
             "performance_score": 8,
@@ -85,50 +81,49 @@ def test_final_report_schema_accepts_structured_top_priorities() -> None:
     ]
 
 
+def test_final_report_discards_quantitative_ai_overview() -> None:
+    payload = FinalReportDraft.model_validate(
+        {
+            "analysis_overview": "The review found 12 security issues.",
+            "top_priorities": [],
+        }
+    )
+
+    assert payload.analysis_overview is None
+
+
+@pytest.mark.asyncio
+async def test_final_report_uses_one_raw_json_call_for_cline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    async def invoke_raw_json(report_input: str) -> FinalReportDraft:
+        calls.append(report_input)
+        return FinalReportDraft(
+            analysis_overview="Authentication controls need immediate attention.",
+        )
+
+    monkeypatch.setattr(
+        report_draft,
+        "_invoke_raw_json_final_report",
+        invoke_raw_json,
+    )
+
+    result, source = await report_draft.build_final_report_draft(
+        report_input="report input",
+        report_context="{}",
+    )
+
+    assert result.analysis_overview == (
+        "Authentication controls need immediate attention."
+    )
+    assert source == "raw_json_output"
+    assert calls == ["report input"]
+
+
 def test_final_report_detects_placeholder_summary() -> None:
     assert _is_placeholder_summary("(as above)\n### Final Answer")
     assert _is_placeholder_summary("(the JSON input above)")
     assert _is_placeholder_summary("The final report has been successfully generated.")
     assert not _is_placeholder_summary("AI review found two high security issues.")
-
-
-def test_final_report_scores_from_persisted_issues() -> None:
-    scores = calculate_report_scores(
-        [
-            _normalized_issue(
-                severity=IssueSeverity.HIGH,
-                category=IssueCategory.SECURITY,
-            ),
-            _normalized_issue(
-                severity=IssueSeverity.MEDIUM,
-                category=IssueCategory.PERFORMANCE,
-            ),
-            _normalized_issue(
-                severity=IssueSeverity.LOW,
-                category=IssueCategory.MAINTAINABILITY,
-            ),
-        ]
-    )
-
-    assert scores["security_score"] == 8.2
-    assert scores["performance_score"] == 9.0
-    assert scores["maintainability_score"] == 9.7
-    assert scores["overall_score"] == 7.2
-
-
-def _normalized_issue(
-    *,
-    severity: IssueSeverity,
-    category: IssueCategory,
-) -> NormalizedIssue:
-    return NormalizedIssue(
-        file_path="app.py",
-        line_start=1,
-        line_end=1,
-        severity=severity,
-        category=category,
-        title="Issue",
-        description="Description",
-        source=IssueSource.AI_REVIEW,
-        confidence=0.8,
-    )

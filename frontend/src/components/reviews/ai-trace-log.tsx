@@ -1,6 +1,6 @@
 "use client";
 
-import { Activity } from "lucide-react";
+import { Activity, ChevronDown } from "lucide-react";
 
 import type { AITrace, AIToolCallTrace } from "@/types/review-job";
 
@@ -56,18 +56,37 @@ function TraceEventRow({
   isCompact: boolean;
 }) {
   return (
-    <li className="rounded-md border border-border bg-background p-4">
-      <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
-        <div className="min-w-0">
-          <p className="flex flex-wrap items-center gap-2 text-sm font-semibold text-foreground">
-            <Activity aria-hidden="true" className="size-4 text-muted-foreground" />
-            <span className="uppercase text-muted-foreground">
-              {event.event_type}
+    <li className="overflow-hidden rounded-md border border-border bg-background">
+      <details className="group/event">
+        <summary className="flex cursor-pointer list-none items-center gap-3 p-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
+          <Activity
+            aria-hidden="true"
+            className="size-4 shrink-0 text-muted-foreground"
+          />
+          <span className="min-w-0 flex-1">
+            <span className="flex flex-wrap items-center gap-2 text-sm font-semibold text-foreground">
+              <span className="uppercase text-muted-foreground">
+                {event.event_type}
+              </span>
+              <span className="text-xs font-normal text-muted-foreground">
+                #{event.sequence}
+              </span>
             </span>
-            <span>#{event.sequence}</span>
-            <span>{event.tool_name}</span>
-          </p>
-          <p className="mt-1 text-xs text-muted-foreground">
+            <span className="mt-1 block truncate font-mono text-xs text-muted-foreground">
+              {event.tool_name}
+            </span>
+          </span>
+          <span className="inline-flex h-8 shrink-0 items-center rounded-md border border-border px-2 text-xs font-semibold capitalize">
+            {event.status}
+          </span>
+          <ChevronDown
+            aria-hidden="true"
+            className="size-4 shrink-0 text-muted-foreground transition-transform duration-150 group-open/event:rotate-180"
+          />
+        </summary>
+
+        <div className="border-t border-border p-4">
+          <p className="text-xs text-muted-foreground">
             {formatDate(event.called_at)} · {event.duration_ms}ms
             {event.provider ? ` · ${event.provider}` : ""}
             {event.model ? ` · ${event.model}` : ""}
@@ -75,39 +94,39 @@ function TraceEventRow({
           {event.phase ? (
             <p className="mt-1 text-xs text-muted-foreground">{event.phase}</p>
           ) : null}
-        </div>
-        <span className="inline-flex h-8 items-center rounded-md border border-border px-2 text-xs font-semibold">
-          {event.status}
-        </span>
-      </div>
 
-      {event.token_usage ? (
-        <div className="mt-3 flex flex-wrap gap-2 text-xs text-muted-foreground">
-          {Object.entries(event.token_usage).map(([key, value]) => (
-            <span className="rounded-md border border-border px-2 py-1" key={key}>
-              {key.replaceAll("_", " ")}: {value}
-            </span>
-          ))}
-        </div>
-      ) : null}
+          {event.token_usage ? (
+            <div className="mt-3 flex flex-wrap gap-2 text-xs text-muted-foreground">
+              {Object.entries(event.token_usage).map(([key, value]) => (
+                <span
+                  className="rounded-md border border-border px-2 py-1"
+                  key={key}
+                >
+                  {key.replaceAll("_", " ")}: {value}
+                </span>
+              ))}
+            </div>
+          ) : null}
 
-      <TraceEventSummary event={event} />
+          <TraceEventSummary event={event} />
 
-      {!isCompact ? (
-        <div className="mt-3 grid gap-3 lg:grid-cols-3">
-          <TraceJsonBlock
-            emptyMessage={emptyTraceMessage(event, "input")}
-            label="Input"
-            value={event.input}
-          />
-          <TraceJsonBlock
-            emptyMessage={emptyTraceMessage(event, "output")}
-            label="Output"
-            value={event.output}
-          />
-          <TraceJsonBlock label="Metadata" value={event.metadata} />
+          {!isCompact ? (
+            <div className="mt-3 grid gap-3 lg:grid-cols-3">
+              <TraceJsonBlock
+                emptyMessage={emptyTraceMessage(event, "input")}
+                label="Input"
+                value={event.input}
+              />
+              <TraceJsonBlock
+                emptyMessage={emptyTraceMessage(event, "output")}
+                label="Output"
+                value={event.output}
+              />
+              <TraceJsonBlock label="Metadata" value={event.metadata} />
+            </div>
+          ) : null}
         </div>
-      ) : null}
+      </details>
     </li>
   );
 }

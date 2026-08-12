@@ -49,7 +49,7 @@ async def list_repositories(
     current_user: CurrentUserDep,
     repository_service: RepositoryServiceDep,
 ) -> list[RepositoryResponse]:
-    """List repositories owned by the user, or all repositories for admins."""
+    """List repositories owned by the current user."""
 
     repositories = await repository_service.list_repositories(current_user)
     return [
@@ -83,7 +83,7 @@ async def get_repository(
     current_user: CurrentUserDep,
     repository_service: RepositoryServiceDep,
 ) -> RepositoryResponse:
-    """Return one repository after owner/admin authorization."""
+    """Return one repository after ownership authorization."""
 
     source_repository = await repository_service.get_repository(
         repository_id,
@@ -102,7 +102,7 @@ async def delete_repository(
     current_user: CurrentUserDep,
     repository_service: RepositoryServiceDep,
 ) -> DeleteResponse:
-    """Delete one repository after owner/admin authorization."""
+    """Delete one repository after ownership authorization."""
 
     await repository_service.delete_repository(repository_id, current_user)
     return DeleteResponse(message=REPOSITORY_DELETED_MESSAGE)

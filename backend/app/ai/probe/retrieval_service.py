@@ -52,10 +52,10 @@ class ProbeRetrievalService:
         database: AsyncIOMotorDatabase,
         code_retriever: CodeSemanticRetriever | None = None,
         enable_semantic_search: bool = True,
-        max_chunks: int = 188,
+        max_chunks: int = 256,
         defect_max_chunks: int = 120,
         coverage_max_chunks: int = 24,
-        roadmap_max_chunks: int = 44,
+        roadmap_max_chunks: int = 120,
         max_probes_per_batch: int = 8,
         max_chunks_per_batch: int = 24,
         full_audit: bool = False,
@@ -134,7 +134,9 @@ class ProbeRetrievalService:
         has_roadmap = any(probe.lane is ProbeLane.ROADMAP for probe in probes)
         for lane in ProbeLane:
             excluded_keys = (
-                set(defect_evidence_keys) if lane is ProbeLane.COVERAGE else set()
+                set(defect_evidence_keys)
+                if lane is ProbeLane.COVERAGE and not self.full_audit
+                else set()
             )
             lane_bundles, lane_durations = await self._retrieve_lane(
                 job_id=job_id,
@@ -234,9 +236,15 @@ class ProbeRetrievalService:
             lane=lane,
             has_roadmap=has_roadmap,
         )
+        minimum_probe_slots = sum(
+            bool(bundle.candidate_chunks) for bundle in capped_bundles
+        )
         trimmed_bundles = _trim_bundles(
             capped_bundles,
-            max_chunks=self._lane_chunk_cap(lane=lane, has_roadmap=has_roadmap),
+            max_chunks=max(
+                self._lane_chunk_cap(lane=lane, has_roadmap=has_roadmap),
+                minimum_probe_slots,
+            ),
         )
         self._warn_if_lane_exceeds_judge_budget(
             bundles=trimmed_bundles,
@@ -277,7 +285,11 @@ class ProbeRetrievalService:
                     existing_bundles=bundles,
                 ),
             ]
-        return _trim_bundles(bundles, max_chunks=self.max_chunks)
+        minimum_probe_slots = sum(bool(bundle.candidate_chunks) for bundle in bundles)
+        return _trim_bundles(
+            bundles,
+            max_chunks=max(self.max_chunks, minimum_probe_slots),
+        )
 
     @staticmethod
     async def _write_retrieval_traces(

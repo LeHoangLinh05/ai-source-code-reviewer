@@ -10,6 +10,23 @@ export type ReviewJobStatus =
   | "COMPLETED"
   | "FAILED";
 
+export type JobProgressEventType =
+  | "status_change"
+  | "progress_update"
+  | "log"
+  | "completed"
+  | "failed";
+
+export type JobProgressEvent = {
+  job_id: string;
+  event: JobProgressEventType;
+  status: ReviewJobStatus;
+  progress: number;
+  message: string;
+  timestamp: string;
+  data: Record<string, unknown>;
+};
+
 export type ReviewJob = {
   id: string;
   repository_id: string;
@@ -54,6 +71,8 @@ export type AITraceCoverage = {
   ai_read_chunks: number;
   ai_retrieved_chunks: number;
   ai_judged_chunks: number;
+  broad_audited_chunks: number;
+  broad_audit_chunk_percent: number;
   ai_read_target_chunks: number;
   ai_read_file_percent: number;
   ai_read_chunk_percent: number;
@@ -96,14 +115,22 @@ export type AITrace = {
   };
 };
 
+export type ReviewMode = "smart" | "full_audit";
+
+export type ReviewJobOptions = {
+  review_mode?: ReviewMode;
+  rule_profile?: {
+    id: "roadmap_bootcamp_v1";
+    weeks_included?: number[] | null;
+  } | null;
+  [key: string]: unknown;
+};
+
 export type CreateReviewJobPayload = {
   repository_id: string;
   branch: string;
-  options: {
-    rule_profile: {
-      id: string;
-    };
-  };
+  commit_sha?: string | null;
+  options?: ReviewJobOptions;
 };
 
 export type CreateReviewJobResponse = {
@@ -118,7 +145,7 @@ export type ReviewJobFilters = {
   status?: ReviewJobStatus;
 };
 
-export type CancelReviewJobResponse = {
+export type DeleteReviewJobResponse = {
   message: string;
 };
 

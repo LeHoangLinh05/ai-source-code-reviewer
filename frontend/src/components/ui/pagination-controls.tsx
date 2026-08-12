@@ -4,6 +4,9 @@ import { ChevronLeft, ChevronRight } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 
+const MAX_VISIBLE_PAGE_BUTTONS = 7;
+const ELLIPSIS = "ellipsis";
+
 type PaginationControlsProps = {
   currentPage: number;
   pageSize: number;
@@ -27,7 +30,7 @@ export function PaginationControls({
       <p className="text-sm text-muted-foreground">
         Showing {firstItem}-{lastItem} of {totalItems}
       </p>
-      <div className="flex items-center gap-2">
+      <nav aria-label="Pagination" className="flex items-center gap-2">
         <Button
           aria-label="Previous page"
           disabled={safePage === 1}
@@ -37,9 +40,31 @@ export function PaginationControls({
         >
           <ChevronLeft aria-hidden="true" />
         </Button>
-        <span className="min-w-16 text-center text-sm text-muted-foreground">
-          {safePage}/{totalPages}
-        </span>
+        <div className="flex items-center gap-1">
+          {getPageItems(safePage, totalPages).map((item, index) =>
+            item === ELLIPSIS ? (
+              <span
+                aria-hidden="true"
+                className="flex size-9 items-center justify-center text-sm text-muted-foreground"
+                key={`${item}-${index}`}
+              >
+                …
+              </span>
+            ) : (
+              <Button
+                aria-current={item === safePage ? "page" : undefined}
+                aria-label={`Go to page ${item}`}
+                className="min-w-10 px-2"
+                key={item}
+                onClick={() => onPageChange(item)}
+                size="sm"
+                variant={item === safePage ? "default" : "secondary"}
+              >
+                {item}
+              </Button>
+            ),
+          )}
+        </div>
         <Button
           aria-label="Next page"
           disabled={safePage === totalPages}
@@ -49,7 +74,36 @@ export function PaginationControls({
         >
           <ChevronRight aria-hidden="true" />
         </Button>
-      </div>
+      </nav>
     </div>
   );
+}
+
+function getPageItems(
+  currentPage: number,
+  totalPages: number,
+): Array<number | typeof ELLIPSIS> {
+  if (totalPages <= MAX_VISIBLE_PAGE_BUTTONS) {
+    return Array.from({ length: totalPages }, (_, index) => index + 1);
+  }
+
+  const visiblePages = new Set([1, totalPages, currentPage]);
+  for (const offset of [-1, 1]) {
+    const page = currentPage + offset;
+    if (page > 1 && page < totalPages) {
+      visiblePages.add(page);
+    }
+  }
+
+  const sortedPages = Array.from(visiblePages).sort((left, right) => left - right);
+  const pageItems: Array<number | typeof ELLIPSIS> = [];
+
+  sortedPages.forEach((page, index) => {
+    if (index > 0 && page - sortedPages[index - 1] > 1) {
+      pageItems.push(ELLIPSIS);
+    }
+    pageItems.push(page);
+  });
+
+  return pageItems;
 }

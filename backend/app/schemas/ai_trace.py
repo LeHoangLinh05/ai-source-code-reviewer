@@ -47,6 +47,8 @@ class AITraceCoverage(BaseModel):
     ai_read_chunks: int = Field(ge=0)
     ai_retrieved_chunks: int = Field(default=0, ge=0)
     ai_judged_chunks: int = Field(default=0, ge=0)
+    broad_audited_chunks: int = Field(default=0, ge=0)
+    broad_audit_chunk_percent: float = Field(default=0.0, ge=0.0, le=100.0)
     ai_read_target_chunks: int = Field(ge=0)
     ai_read_file_percent: float = Field(ge=0.0, le=100.0)
     ai_read_chunk_percent: float = Field(ge=0.0, le=100.0)

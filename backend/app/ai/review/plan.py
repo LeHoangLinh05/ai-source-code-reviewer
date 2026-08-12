@@ -7,6 +7,8 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 
+from app.core.review_targets import is_review_target_path
+
 REVIEW_MODE_SMART = "smart"
 REVIEW_MODE_FULL_AUDIT = "full_audit"
 VALID_REVIEW_MODES = {REVIEW_MODE_SMART, REVIEW_MODE_FULL_AUDIT}
@@ -75,12 +77,12 @@ class ChunkInfo:
 
 
 def get_review_mode(options: dict[str, object] | None) -> str:
-    """Return the AI review mode, defaulting to targeted smart review."""
+    """Return the AI review mode, defaulting to full source audit."""
 
     if not options:
-        return REVIEW_MODE_SMART
+        return REVIEW_MODE_FULL_AUDIT
 
-    value = options.get("review_mode", REVIEW_MODE_SMART)
+    value = options.get("review_mode", REVIEW_MODE_FULL_AUDIT)
     if not isinstance(value, str):
         raise ValueError("review_mode must be a string")
 
@@ -162,6 +164,8 @@ def _chunk_infos(chunk_documents: Sequence[object]) -> list[ChunkInfo]:
         chunk_index = document.get("chunk_index")
         total_chunks = document.get("total_chunks")
         if not isinstance(file_path, str) or not isinstance(chunk_index, int):
+            continue
+        if not is_review_target_path(file_path):
             continue
 
         raw_token_count = document.get("token_count")

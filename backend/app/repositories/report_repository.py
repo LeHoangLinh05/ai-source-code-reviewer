@@ -125,6 +125,28 @@ class ReportRepository:
         result = await self.session.execute(statement)
         return list(result.scalars().all())
 
+    async def replace_ai_issues(
+        self,
+        *,
+        job_id: UUID,
+        issues: list[ReviewIssue],
+    ) -> None:
+        """Atomically replace AI-produced findings for one review job."""
+
+        await self.session.execute(
+            select(ReviewJob.id).where(ReviewJob.id == job_id).with_for_update()
+        )
+        await self.session.execute(
+            delete(ReviewIssue).where(
+                ReviewIssue.job_id == job_id,
+                ReviewIssue.source.in_(
+                    (IssueSource.AI_REVIEW, IssueSource.KB),
+                ),
+            )
+        )
+        self.session.add_all(issues)
+        await self.session.commit()
+
     async def get_issue_by_id(
         self,
         *,
@@ -139,6 +161,21 @@ class ReportRepository:
         )
         result = await self.session.execute(statement)
         return result.scalar_one_or_none()
+
+    async def list_issues_by_ids(
+        self,
+        *,
+        job_id: UUID,
+        issue_ids: list[UUID],
+    ) -> list[ReviewIssue]:
+        """Return selected issues that belong to one review job."""
+
+        statement = select(ReviewIssue).where(
+            ReviewIssue.job_id == job_id,
+            ReviewIssue.id.in_(issue_ids),
+        )
+        result = await self.session.execute(statement)
+        return list(result.scalars().all())
 
     async def replace_analysis_results(
         self,

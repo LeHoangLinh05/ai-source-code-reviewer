@@ -21,6 +21,7 @@ from app.analyzers.structure_analyzer import (
     analyze_structure,
 )
 from app.core.config import Settings
+from app.core.review_targets import is_review_target_path
 from app.models.review_job import ReviewJob, ReviewJobStatus
 from app.repositories.mongodb_repository import (
     FileAnalysisResultRepository,
@@ -58,6 +59,9 @@ from app.services.review_pipeline.workspace import (
 )
 
 logger = logging.getLogger(__name__)
+
+AI_REVIEW_PROGRESS_START = 88
+AI_REVIEW_PROGRESS_END = 94
 
 __all__ = [
     "ReviewJobCanceled",
@@ -146,6 +150,11 @@ class ReviewPipelineService:
         sandbox_path: Path,
         filtered_files: list[Path],
     ) -> None:
+        review_target_files = [
+            file_path
+            for file_path in filtered_files
+            if is_review_target_path(file_path)
+        ]
         await self._ensure_job_active(review_job.id)
         structure = await self._analyze_structure(
             review_job,
@@ -160,14 +169,14 @@ class ReviewPipelineService:
         issues = await self._collect_static_issues(
             review_job,
             sandbox_path,
-            filtered_files,
+            review_target_files,
         )
 
         await self._ensure_job_active(review_job.id)
         await self._chunk_code(
             review_job,
             sandbox_path,
-            filtered_files,
+            review_target_files,
             issues,
         )
 
@@ -175,7 +184,7 @@ class ReviewPipelineService:
         await self._persist_pre_agent_report(
             review_job,
             structure,
-            filtered_files,
+            review_target_files,
             issues,
         )
 
@@ -422,7 +431,7 @@ class ReviewPipelineService:
         await self._transition(
             review_job,
             ReviewJobStatus.AI_REVIEWING,
-            88,
+            AI_REVIEW_PROGRESS_START,
             "Running AI review agent",
         )
         database = cast(
@@ -435,6 +444,32 @@ class ReviewPipelineService:
             postgres_session=self.postgres_session,
             mongodb_database=database,
             code_embedding_store=self.code_embedding_store,
+            on_batch_completed=lambda completed, total: self._publish_ai_batch_progress(
+                review_job.id, completed, total
+            ),
+        )
+
+    async def _publish_ai_batch_progress(
+        self,
+        job_id: UUID,
+        completed_batches: int,
+        total_batches: int,
+    ) -> None:
+        progress = calculate_ai_review_progress(completed_batches, total_batches)
+        await publish_job_progress(
+            job_id,
+            "progress_update",
+            {
+                "status": ReviewJobStatus.AI_REVIEWING.value,
+                "progress": progress,
+                "message": (
+                    f"AI review batch {completed_batches} of {total_batches} completed"
+                ),
+                "data": {
+                    "completed_batches": completed_batches,
+                    "total_batches": total_batches,
+                },
+            },
         )
 
     async def _require_ai_generated_report(self, job_id: UUID) -> None:
@@ -523,3 +558,18 @@ class ReviewPipelineService:
                 "message": message,
             },
         )
+
+
+def calculate_ai_review_progress(
+    completed_batches: int,
+    total_batches: int,
+) -> int:
+    """Map completed AI judge batches into the reserved 88-94% range."""
+
+    if total_batches <= 0 or completed_batches <= 0:
+        return AI_REVIEW_PROGRESS_START
+
+    bounded_completed = min(completed_batches, total_batches)
+    progress_span = AI_REVIEW_PROGRESS_END - AI_REVIEW_PROGRESS_START
+    completed_span = max(1, bounded_completed * progress_span // total_batches)
+    return min(AI_REVIEW_PROGRESS_END, AI_REVIEW_PROGRESS_START + completed_span)

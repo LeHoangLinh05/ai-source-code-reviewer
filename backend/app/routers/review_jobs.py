@@ -14,15 +14,15 @@ from app.core.dependencies import (
 from app.models.review_job import ReviewJobStatus
 from app.schemas.ai_trace import AITraceResponse
 from app.schemas.review_job import (
-    ReviewJobCancelResponse,
     ReviewJobCreate,
     ReviewJobCreateResponse,
+    ReviewJobDeleteResponse,
     ReviewJobResponse,
     ReviewJobStatusUpdate,
 )
 
 router = APIRouter(prefix="/review-jobs", tags=["review-jobs"])
-REVIEW_JOB_CANCELED_MESSAGE = "Review job canceled"
+REVIEW_JOB_DELETED_MESSAGE = "Review job deleted"
 ReviewJobStatusFilter = Annotated[ReviewJobStatus | None, Query(alias="status")]
 RepositoryIdFilter = Annotated[UUID | None, Query()]
 
@@ -55,7 +55,7 @@ async def list_review_jobs(
     job_status: ReviewJobStatusFilter = None,
     repository_id: RepositoryIdFilter = None,
 ) -> list[ReviewJobResponse]:
-    """List jobs created by the user, or all jobs for admins."""
+    """List jobs created by the current user."""
 
     return await review_job_service.list_jobs(
         current_user,
@@ -74,7 +74,7 @@ async def get_review_job(
     current_user: CurrentUserDep,
     review_job_service: ReviewJobServiceDep,
 ) -> ReviewJobResponse:
-    """Return one review job after owner/admin authorization."""
+    """Return one review job after ownership authorization."""
 
     return await review_job_service.get_job(job_id, current_user)
 
@@ -98,18 +98,18 @@ async def get_review_job_ai_trace(
 
 @router.delete(
     "/{job_id}",
-    response_model=ReviewJobCancelResponse,
-    summary="Cancel a review job",
+    response_model=ReviewJobDeleteResponse,
+    summary="Delete a review job",
 )
-async def cancel_review_job(
+async def delete_review_job(
     job_id: UUID,
     current_user: CurrentUserDep,
     review_job_service: ReviewJobServiceDep,
-) -> ReviewJobCancelResponse:
-    """Cancel a non-completed review job."""
+) -> ReviewJobDeleteResponse:
+    """Delete a review job after ownership authorization."""
 
-    await review_job_service.cancel_job(job_id, current_user)
-    return ReviewJobCancelResponse(message=REVIEW_JOB_CANCELED_MESSAGE)
+    await review_job_service.delete_job(job_id, current_user)
+    return ReviewJobDeleteResponse(message=REVIEW_JOB_DELETED_MESSAGE)
 
 
 @router.patch(

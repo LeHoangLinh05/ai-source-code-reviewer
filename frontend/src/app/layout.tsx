@@ -7,8 +7,12 @@ import { ReduxProvider } from "@/components/providers/redux-provider";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "RepoGuard AI",
+  title: "RepoReview",
   description: "AI source code review dashboard",
+  icons: {
+    icon: [{ url: "/repo-review-icon.svg", type: "image/svg+xml" }],
+    shortcut: "/repo-review-icon.svg",
+  },
 };
 
 type RootLayoutProps = {

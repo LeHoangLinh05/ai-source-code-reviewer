@@ -7,6 +7,8 @@ backend/.env.*
 
 *.md
 !/AGENTS.md
+!/README.md
+!/AI_PIPELINE_FLOW.md
 !/docs/auth/overview.md
 !/docs/design/style-guide.md
 

@@ -3,16 +3,15 @@
 import {
   AlertTriangle,
   ArrowLeft,
-  ChevronLeft,
-  ChevronRight,
   Copy,
-  RefreshCw,
+  Wrench,
   X,
 } from "lucide-react";
 import Link from "next/link";
-import { useParams, useSearchParams } from "next/navigation";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
+import { toast } from "sonner";
 
 import { SeverityBadge } from "@/components/reviews/review-badges";
 import { ReviewWorkspaceTabs } from "@/components/reviews/review-workspace-tabs";
@@ -25,7 +24,23 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { PaginationControls } from "@/components/ui/pagination-controls";
 import { getApiErrorMessage } from "@/lib/api-error";
+import {
+  buildFixSelectionItem,
+  clearFixSelections,
+  getFixIssueIds,
+  loadFixSelections,
+  mergeFixSelections,
+  removeFixSelections,
+  saveFixSelections,
+  type FixSelectionItem,
+} from "@/lib/fix-selection";
+import { createFixJob } from "@/lib/fix-jobs";
+import {
+  formatIssueSource,
+  ISSUE_SOURCE_FILTERS,
+} from "@/lib/issue-source";
 import { getReportIssue, getReportIssues } from "@/lib/reports";
 import { useAppDispatch, useAppSelector } from "@/store/hooks";
 import {
@@ -62,36 +77,31 @@ const CATEGORIES: IssueCategory[] = [
   "bug",
   "requirement",
 ];
-const SOURCES: IssueSource[] = [
-  "ai_review",
-  "ruff",
-  "bandit",
-  "eslint",
-  "KB",
-  "secret_scanner",
-];
 const SORT_OPTIONS: IssueSort[] = ["-created_at", "created_at", "severity", "file_path"];
 
 export default function ReviewIssuesPage() {
   const params = useParams<{ id: string }>();
+  const router = useRouter();
   const searchParams = useSearchParams();
   const appliedFilePathRef = useRef<string | null>(null);
   const jobId = params.id;
   const dispatch = useAppDispatch();
   const filters = useAppSelector((state) => state.filters.issues);
   const [error, setError] = useState<string | null>(null);
+  const [isCreatingFix, setIsCreatingFix] = useState(false);
   const [isIssueLoading, setIsIssueLoading] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [issueList, setIssueList] = useState<IssueListResponse | null>(null);
   const [selectedIssue, setSelectedIssue] = useState<ReviewIssue | null>(null);
+  const [fixSelections, setFixSelections] = useState<FixSelectionItem[]>([]);
 
-  const totalPages = useMemo(() => {
-    if (!issueList) {
-      return 1;
-    }
+  useEffect(() => {
+    setFixSelections(loadFixSelections(jobId, window.sessionStorage));
+  }, [jobId]);
 
-    return Math.max(1, Math.ceil(issueList.total / issueList.per_page));
-  }, [issueList]);
+  useEffect(() => {
+    router.prefetch(`/reviews/${jobId}/fixes`);
+  }, [jobId, router]);
 
   useEffect(() => {
     const filePath = searchParams.get("file_path") ?? "";
@@ -154,6 +164,65 @@ export default function ReviewIssuesPage() {
     }
   }
 
+  async function createFixForSelections(
+    selections: FixSelectionItem[],
+  ): Promise<boolean> {
+    const issueIds = getFixIssueIds(selections);
+    if (issueIds.length === 0) {
+      return false;
+    }
+
+    setIsCreatingFix(true);
+
+    try {
+      await createFixJob(jobId, { issue_ids: issueIds });
+      toast.success("Fix job created.");
+      router.push(`/reviews/${jobId}/fixes`);
+      return true;
+    } catch (requestError) {
+      toast.error(getApiErrorMessage(requestError, "Unable to create fix job."));
+      return false;
+    } finally {
+      setIsCreatingFix(false);
+    }
+  }
+
+  function updateFixSelections(
+    update: (currentItems: FixSelectionItem[]) => FixSelectionItem[],
+  ) {
+    setFixSelections((currentItems) => {
+      const updatedItems = update(currentItems);
+      saveFixSelections(jobId, updatedItems, window.sessionStorage);
+      return updatedItems;
+    });
+  }
+
+  function toggleIssueSelection(issue: ReviewIssue) {
+    updateFixSelections((currentItems) => {
+      const isSelected = currentItems.some((item) => item.groupId === issue.id);
+      if (isSelected) {
+        return removeFixSelections(currentItems, [issue.id]);
+      }
+
+      return mergeFixSelections(currentItems, [buildIssueFixSelection(issue)]);
+    });
+  }
+
+  function clearSelection() {
+    clearFixSelections(jobId, window.sessionStorage);
+    setFixSelections([]);
+  }
+
+  async function createSelectedFix() {
+    if (await createFixForSelections(fixSelections)) {
+      clearSelection();
+    }
+  }
+
+  const selectedIssueIds = new Set(
+    fixSelections.map((selection) => selection.groupId),
+  );
+
   return (
     <>
       <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
@@ -163,12 +232,6 @@ export default function ReviewIssuesPage() {
             Review Job
           </Link>
         </Button>
-        <div className="flex flex-wrap gap-2">
-          <Button disabled={isLoading} onClick={() => void loadIssues()}>
-            <RefreshCw aria-hidden="true" />
-            Refresh
-          </Button>
-        </div>
       </div>
 
       <ReviewWorkspaceTabs activeTab="issues" jobId={jobId} />
@@ -202,7 +265,8 @@ export default function ReviewIssuesPage() {
             onChange={(value) =>
               dispatch(setIssueSource((value as IssueSource) || null))
             }
-            options={SOURCES}
+            formatOption={(option) => formatIssueSource(option as IssueSource)}
+            options={ISSUE_SOURCE_FILTERS}
             value={filters.source ?? ""}
           />
           <SelectFilter
@@ -234,13 +298,26 @@ export default function ReviewIssuesPage() {
       </Card>
 
       <Card className="overflow-hidden">
-        <CardHeader>
-          <CardTitle>Issue List</CardTitle>
-          <CardDescription>
-            {issueList
-              ? `${issueList.total} issue groups found`
-              : "Issue groups will appear here after analysis."}
-          </CardDescription>
+        <CardHeader className="gap-3 md:flex-row md:items-start md:justify-between md:space-y-0">
+          <div className="space-y-1.5">
+            <CardTitle>Issue List</CardTitle>
+            <CardDescription>
+              {issueList
+                ? `${issueList.total} issue groups found`
+                : "Issue groups will appear here after analysis."}
+            </CardDescription>
+          </div>
+          <Button
+            disabled={fixSelections.length === 0 || isCreatingFix}
+            onClick={() => void createSelectedFix()}
+            type="button"
+          >
+            <Wrench aria-hidden="true" />
+            {isCreatingFix ? "Creating fix..." : "Generate fix"}
+            {!isCreatingFix && fixSelections.length > 0
+              ? ` (${fixSelections.length})`
+              : ""}
+          </Button>
         </CardHeader>
         <CardContent className="p-0">
           {isLoading ? <IssueTableSkeleton /> : null}
@@ -259,11 +336,14 @@ export default function ReviewIssuesPage() {
               <IssueTable
                 issues={issueList.issues}
                 onSelectIssue={openIssueDrawer}
+                onToggleIssue={toggleIssueSelection}
+                selectedIssueIds={selectedIssueIds}
               />
-              <Pagination
+              <PaginationControls
                 currentPage={filters.page}
                 onPageChange={(page) => dispatch(setIssuePage(page))}
-                totalPages={totalPages}
+                pageSize={issueList.per_page}
+                totalItems={issueList.total}
               />
             </>
           ) : null}
@@ -272,8 +352,12 @@ export default function ReviewIssuesPage() {
 
       {selectedIssue ? (
         <IssueDrawer
+          isCreatingFix={isCreatingFix}
           isLoading={isIssueLoading}
           issue={selectedIssue}
+          onCreateFix={(issue) =>
+            void createFixForSelections([buildIssueFixSelection(issue)])
+          }
           onClose={() => setSelectedIssue(null)}
         />
       ) : null}
@@ -285,8 +369,10 @@ function SelectFilter({
   label,
   onChange,
   options,
+  formatOption = (option) => option.replaceAll("_", " "),
   value,
 }: {
+  formatOption?: (option: string) => string;
   label: string;
   onChange: (value: string) => void;
   options: string[];
@@ -303,7 +389,7 @@ function SelectFilter({
         <option value="">All</option>
         {options.map((option) => (
           <option key={option} value={option}>
-            {option.replaceAll("_", " ")}
+            {formatOption(option)}
           </option>
         ))}
       </select>
@@ -314,15 +400,20 @@ function SelectFilter({
 function IssueTable({
   issues,
   onSelectIssue,
+  onToggleIssue,
+  selectedIssueIds,
 }: {
   issues: ReviewIssue[];
   onSelectIssue: (issue: ReviewIssue) => Promise<void>;
+  onToggleIssue: (issue: ReviewIssue) => void;
+  selectedIssueIds: ReadonlySet<string>;
 }) {
   return (
     <div className="overflow-x-auto border-t border-border">
-      <table className="w-full min-w-[900px] text-left text-[15px]">
+      <table className="w-full min-w-[940px] text-left text-[15px]">
         <thead className="bg-muted/50 text-xs uppercase text-muted-foreground">
           <tr>
+            <th className="px-6 py-3 font-medium">Select</th>
             <th className="px-6 py-3 font-medium">Severity</th>
             <th className="px-6 py-3 font-medium">Category</th>
             <th className="px-6 py-3 font-medium">Source</th>
@@ -333,88 +424,73 @@ function IssueTable({
           </tr>
         </thead>
         <tbody>
-          {issues.map((issue) => (
-            <tr
-              className="cursor-pointer border-t border-border transition-colors hover:bg-muted/35"
-              key={issue.id}
-              onClick={() => void onSelectIssue(issue)}
-            >
-              <td className="px-6 py-4">
-                <SeverityBadge severity={issue.severity} />
-              </td>
-              <td className="px-6 py-4 capitalize text-muted-foreground">
-                {issue.category}
-              </td>
-              <td className="px-6 py-4 text-muted-foreground">
-                {issue.source}
-              </td>
-              <td className="max-w-[260px] truncate px-6 py-4">
-                {formatIssueTableLocation(issue)}
-              </td>
-              <td className="px-6 py-4 font-medium">{issue.title}</td>
-              <td className="px-6 py-4 text-muted-foreground">
-                {issue.occurrence_count}
-              </td>
-              <td className="px-6 py-4 text-muted-foreground">
-                {issue.affected_files.length}
-              </td>
-            </tr>
-          ))}
+          {issues.map((issue) => {
+            const displayTitle = getIssueDisplayTitle(
+              issue,
+              getIssueOccurrences(issue),
+            );
+
+            return (
+              <tr
+                className="cursor-pointer border-t border-border transition-colors hover:bg-muted/35"
+                key={issue.id}
+                onClick={() => void onSelectIssue(issue)}
+              >
+                <td className="px-6 py-4">
+                  <input
+                    aria-label={`Select ${displayTitle}`}
+                    checked={selectedIssueIds.has(issue.id)}
+                    className="size-4 rounded border-border"
+                    onChange={() => onToggleIssue(issue)}
+                    onClick={(event) => event.stopPropagation()}
+                    type="checkbox"
+                  />
+                </td>
+                <td className="px-6 py-4">
+                  <SeverityBadge severity={issue.severity} />
+                </td>
+                <td className="px-6 py-4 capitalize text-muted-foreground">
+                  {issue.category}
+                </td>
+                <td className="px-6 py-4 text-muted-foreground">
+                  {formatIssueSource(issue.source)}
+                </td>
+                <td className="max-w-[260px] truncate px-6 py-4">
+                  {formatIssueTableLocation(issue)}
+                </td>
+                <td className="px-6 py-4 font-medium">{displayTitle}</td>
+                <td className="px-6 py-4 text-muted-foreground">
+                  {issue.occurrence_count}
+                </td>
+                <td className="px-6 py-4 text-muted-foreground">
+                  {issue.affected_files.length}
+                </td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
     </div>
   );
 }
 
-function Pagination({
-  currentPage,
-  onPageChange,
-  totalPages,
-}: {
-  currentPage: number;
-  onPageChange: (page: number) => void;
-  totalPages: number;
-}) {
-  return (
-    <div className="flex items-center justify-between border-t border-border px-6 py-4">
-      <p className="text-sm text-muted-foreground">
-        Page {currentPage} of {totalPages}
-      </p>
-      <div className="flex gap-2">
-        <Button
-          disabled={currentPage <= 1}
-          onClick={() => onPageChange(currentPage - 1)}
-          size="sm"
-          variant="secondary"
-        >
-          <ChevronLeft aria-hidden="true" />
-          Previous
-        </Button>
-        <Button
-          disabled={currentPage >= totalPages}
-          onClick={() => onPageChange(currentPage + 1)}
-          size="sm"
-          variant="secondary"
-        >
-          Next
-          <ChevronRight aria-hidden="true" />
-        </Button>
-      </div>
-    </div>
-  );
-}
-
 function IssueDrawer({
+  isCreatingFix,
   isLoading,
   issue,
+  onCreateFix,
   onClose,
 }: {
+  isCreatingFix: boolean;
   isLoading: boolean;
   issue: ReviewIssue;
+  onCreateFix: (issue: ReviewIssue) => void;
   onClose: () => void;
 }) {
   const locationSummary = getIssueLocationSummary(issue);
   const occurrences = getIssueOccurrences(issue);
+  const displayTitle = getIssueDisplayTitle(issue, occurrences);
+  const descriptionLines = getIssueDescriptionLines(issue, occurrences);
   const suggestionText = getIssueSuggestionText(issue, occurrences);
 
   return (
@@ -431,7 +507,7 @@ function IssueDrawer({
           <div>
             <SeverityBadge severity={issue.severity} />
             <h2 className="mt-4 text-xl font-semibold tracking-normal">
-              {issue.title}
+              {displayTitle}
             </h2>
             <p className="mt-2 break-all text-sm text-muted-foreground">
               {locationSummary.primary}
@@ -458,20 +534,37 @@ function IssueDrawer({
           ) : null}
           <div className="grid gap-3 rounded-md border border-border bg-background p-4 sm:grid-cols-3">
             <DrawerMetric label="Category" value={issue.category} />
-            <DrawerMetric label="Source" value={issue.source} />
+            <DrawerMetric
+              label="Source"
+              value={formatIssueSource(issue.source)}
+            />
             <DrawerMetric
               label="Confidence"
               value={formatConfidence(issue.confidence)}
             />
           </div>
           <DetailSection title="Description">
-            {getIssueDescriptionText(issue, occurrences)}
+            <div className="grid gap-2">
+              {descriptionLines.map((line, index) => (
+                <p key={`${index}-${line}`}>{line}</p>
+              ))}
+            </div>
           </DetailSection>
           {suggestionText ? (
             <DetailSection title="Suggestion">
               {suggestionText}
             </DetailSection>
           ) : null}
+          <div>
+            <Button
+              disabled={isCreatingFix}
+              onClick={() => onCreateFix(issue)}
+              type="button"
+            >
+              <Wrench aria-hidden="true" />
+              {isCreatingFix ? "Creating fix..." : "Generate fix"}
+            </Button>
+          </div>
           <DetailSection title="Code Context">
             <div className="grid gap-4">
               {occurrences.map((occurrence) => (
@@ -603,6 +696,8 @@ function getSourceContext(occurrence: IssueOccurrence): SourceContext | null {
 function issueToOccurrence(issue: ReviewIssue): IssueOccurrence {
   return {
     issue_id: issue.id,
+    raw_issue_ids: [issue.id],
+    sources: [issue.source],
     file_path: issue.file_path,
     line_start: issue.line_start,
     line_end: issue.line_end,
@@ -623,12 +718,18 @@ function getIssueOccurrences(issue: ReviewIssue) {
   return [issueToOccurrence(issue)];
 }
 
-function getIssueDescriptionText(
+function buildIssueFixSelection(issue: ReviewIssue): FixSelectionItem {
+  return buildFixSelectionItem(issue);
+}
+
+function getIssueDescriptionLines(
   issue: ReviewIssue,
   occurrences: IssueOccurrence[],
 ) {
+  const description = getPrimaryIssueDescription(issue, occurrences);
+
   if (occurrences.length <= 1) {
-    return issue.description;
+    return [description];
   }
 
   const affectedFileCount = getDisplayAffectedFiles(issue).length;
@@ -636,9 +737,54 @@ function getIssueDescriptionText(
     affectedFileCount === 1 ? "file" : "files"
   }`;
 
-  return `${getIssueDisplayName(issue)} appears in ${formatOccurrenceCount(
-    occurrences.length,
-  )} across ${fileLabel}.`;
+  return [
+    description,
+    `Found in ${formatOccurrenceCount(occurrences.length)} across ${fileLabel}.`,
+  ];
+}
+
+function getIssueDisplayTitle(
+  issue: ReviewIssue,
+  occurrences: IssueOccurrence[],
+) {
+  const title = issue.title.trim() || "Finding";
+  const ruleLabel = getIssueRuleLabel(issue);
+
+  if (ruleLabel === null || title.toLowerCase() !== ruleLabel.toLowerCase()) {
+    return title;
+  }
+
+  const description = getPrimaryIssueDescription(issue, occurrences);
+  return `${ruleLabel}: ${description}`;
+}
+
+function getPrimaryIssueDescription(
+  issue: ReviewIssue,
+  occurrences: IssueOccurrence[],
+) {
+  const descriptions = [
+    issue.description,
+    ...occurrences.map((item) => item.description),
+  ]
+    .map((description) => description.trim())
+    .filter(
+      (description) =>
+        description.length > 0 &&
+        !isGeneratedGroupDescription(issue, description),
+    );
+
+  return descriptions[0] ?? "No description was provided for this finding.";
+}
+
+function isGeneratedGroupDescription(issue: ReviewIssue, description: string) {
+  const ruleLabel = getIssueRuleLabel(issue);
+  if (ruleLabel === null) {
+    return false;
+  }
+
+  return description
+    .toLowerCase()
+    .startsWith(`${ruleLabel.toLowerCase()} appears in`);
 }
 
 function getIssueSuggestionText(
@@ -660,19 +806,16 @@ function getIssueSuggestionText(
   return "Apply the relevant fix at each highlighted occurrence.";
 }
 
-function getIssueDisplayName(issue: ReviewIssue) {
+function getIssueRuleLabel(issue: ReviewIssue) {
   const ruleId = getIssueRuleId(issue);
 
-  if (ruleId === "F401") {
-    return "Unused imports";
-  }
-
-  return ruleId ? `${formatIssueSource(issue.source)} ${ruleId}` : issue.title;
+  return ruleId ? `${formatIssueSource(issue.source)} ${ruleId}` : null;
 }
 
 function getIssueRuleId(issue: ReviewIssue) {
-  return getRawIssueRuleId(issue.raw_output) ?? getRawIssueRuleId(
-    issue.occurrences[0]?.raw_output ?? null,
+  return (
+    getRawIssueRuleId(issue.raw_output) ??
+    getRawIssueRuleId(issue.occurrences[0]?.raw_output ?? null)
   );
 }
 
@@ -744,10 +887,6 @@ function formatOccurrenceCount(count: number) {
   return `${count} ${count === 1 ? "occurrence" : "occurrences"}`;
 }
 
-function formatIssueSource(source: IssueSource) {
-  return source === "KB" ? source : source.replaceAll("_", " ");
-}
-
 function formatIssuePath(filePath: string | null) {
   if (!filePath) {
     return "Unknown file";
@@ -780,9 +919,10 @@ function IssueTableSkeleton() {
     <div className="border-t border-border">
       {Array.from({ length: 5 }).map((_, index) => (
         <div
-          className="grid grid-cols-1 gap-3 border-b border-border px-6 py-4 md:grid-cols-[0.6fr_0.8fr_0.6fr_1fr_1.2fr_0.5fr_0.5fr]"
+          className="grid grid-cols-1 gap-3 border-b border-border px-6 py-4 md:grid-cols-[0.35fr_0.6fr_0.8fr_0.6fr_1fr_1.2fr_0.5fr_0.5fr]"
           key={index}
         >
+          <div className="h-5 w-5 animate-pulse rounded bg-muted" />
           <div className="h-5 w-20 animate-pulse rounded bg-muted" />
           <div className="h-5 w-24 animate-pulse rounded bg-muted" />
           <div className="h-5 w-20 animate-pulse rounded bg-muted" />

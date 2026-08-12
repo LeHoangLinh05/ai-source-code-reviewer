@@ -1,0 +1,80 @@
+{
+  "name": "mvp_blog_vulnerable_security",
+  "repository_url": "https://github.com/LeHoangLinh05/mvp-blog.git",
+  "commit_sha": "51ca3a28fe6565ef8219bad3eeda59253d4ab549",
+  "review_options": {
+    "review_mode": "full_audit",
+    "rule_profile": null
+  },
+  "require_full_recall": true,
+  "smart_baseline": {},
+  "expected_issues": [
+    {
+      "id": "BLOG-SEC-001",
+      "file_path": "backend/app/api/auth.py",
+      "line_start": 17,
+      "line_end": 18,
+      "category": "security",
+      "severity": "high",
+      "detector_expected": ["ai_review"],
+      "expected_probes": ["security.sensitive_data_logging"]
+    },
+    {
+      "id": "BLOG-SEC-002",
+      "file_path": "backend/app/api/files.py",
+      "line_start": 14,
+      "line_end": 19,
+      "category": "security",
+      "severity": "high",
+      "detector_expected": ["ai_review"],
+      "expected_probes": ["security.unrestricted_file_upload"]
+    },
+    {
+      "id": "BLOG-SEC-003",
+      "file_path": "backend/app/api/files.py",
+      "line_start": 16,
+      "line_end": 23,
+      "category": "security",
+      "severity": null,
+      "detector_expected": ["ai_review"],
+      "expected_probes": [
+        "coverage.backend_app_api_files_py",
+        "coverage.full_audit.1210ad48a3d2.0"
+      ]
+    },
+    {
+      "id": "BLOG-SEC-004",
+      "file_path": "backend/app/repositories/post_repository.py",
+      "line_start": 18,
+      "line_end": 21,
+      "category": "security",
+      "severity": null,
+      "detector_expected": ["ai_review"],
+      "expected_probes": [
+        "coverage.backend_app_repositories_post_repository_py",
+        "coverage.full_audit.764f86dc5a6d.0"
+      ]
+    },
+    {
+      "id": "BLOG-SEC-005",
+      "file_path": "backend/app/services/post_service.py",
+      "line_start": 25,
+      "line_end": 27,
+      "category": "security",
+      "severity": null,
+      "detector_expected": ["ai_review"],
+      "expected_probes": ["security.object_authorization"]
+    },
+    {
+      "id": "BLOG-SEC-006",
+      "file_path": "frontend/app/posts/[id]/page.tsx",
+      "line_start": 29,
+      "line_end": 30,
+      "category": "security",
+      "severity": null,
+      "detector_expected": ["ai_review"],
+      "expected_probes": ["security.xss_template_injection"]
+    }
+  ],
+  "false_positive_baits": []
+}

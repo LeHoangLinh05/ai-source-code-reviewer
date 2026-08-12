@@ -7,7 +7,7 @@ from hashlib import sha256
 from typing import Any
 
 from app.ai.probe.candidate_retrieval import _candidate_from_document
-from app.ai.probe.contracts import ProbeDefinition, ProbeLane
+from app.ai.probe.contracts import OTP_SECURITY_PROBE_ID, ProbeDefinition, ProbeLane
 from app.ai.probe.models import ProbeCandidateChunk, ProbeEvidenceBundle, _probe_id
 
 FULL_AUDIT_CHUNKS_PER_PROBE = 6
@@ -94,7 +94,10 @@ def _reserve_probe_candidates(
             "structural" in chunk.strategies and chunk.key in kept[probe_id]
             for chunk in bundle.candidate_chunks
         )
-        structural_slots = max(0, 2 - kept_structural_count)
+        structural_target = (
+            bundle.probe.top_k if bundle.probe.probe_id == OTP_SECURITY_PROBE_ID else 2
+        )
+        structural_slots = max(0, structural_target - kept_structural_count)
         structural_candidates = [
             chunk
             for chunk in bundle.candidate_chunks
@@ -113,10 +116,13 @@ def _full_audit_bundles(
     chunk_documents: list[dict[str, Any]],
     existing_bundles: list[ProbeEvidenceBundle],
 ) -> list[ProbeEvidenceBundle]:
-    """Return direct evidence bundles for every chunk not already scheduled."""
+    """Return broad-audit bundles for chunks not already audited broadly."""
 
     existing_keys = {
-        chunk.key for bundle in existing_bundles for chunk in bundle.candidate_chunks
+        chunk.key
+        for bundle in existing_bundles
+        if bundle.probe.lane is ProbeLane.COVERAGE
+        for chunk in bundle.candidate_chunks
     }
     candidates_by_file: dict[str, list[ProbeCandidateChunk]] = {}
     for document in chunk_documents:

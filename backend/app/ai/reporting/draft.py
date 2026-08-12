@@ -1,12 +1,13 @@
-"""Validate and generate structured final-report drafts."""
+"""Validate and generate JSON final-report drafts."""
 
 from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.ai.json_utils import parse_json_object_text
 from app.ai.prompts import FINAL_REPORT_STRUCTURED_SYSTEM_PROMPT
@@ -15,28 +16,62 @@ logger = logging.getLogger(__name__)
 
 FALLBACK_TOP_PRIORITY_LIMIT = 10
 TechStackInput = dict[str, object] | list[str]
+QUANTITATIVE_OVERVIEW_PATTERN = re.compile(
+    r"(?:\b\d+(?:\.\d+)?%?\b|"
+    r"\b(?:zero|one|two|three|four|five|six|seven|eight|nine|ten|"
+    r"eleven|twelve|total|count)\s+"
+    r"(?:critical|high|medium|low|informational|issues?|findings?|files?)\b)",
+    re.IGNORECASE,
+)
+PLACEHOLDER_OVERVIEW_MARKERS = (
+    "(as above)",
+    "(as prepared above)",
+    "(the json input above)",
+    "as above",
+    "as prepared above",
+    "json input above",
+    "successfully generated",
+    "final report has been",
+)
 
 
 class FinalReportDraft(BaseModel):
     """Structured LLM contract for the final report synthesis step."""
 
-    executive_summary: str = Field(min_length=1)
-    security_score: float = Field(ge=0.0, le=10.0)
-    maintainability_score: float = Field(ge=0.0, le=10.0)
-    performance_score: float = Field(ge=0.0, le=10.0)
-    overall_score: float = Field(ge=0.0, le=10.0)
+    analysis_overview: str | None = Field(default=None, max_length=2000)
     top_priorities: list[str] = Field(default_factory=list)
     tech_stack: TechStackInput | None = None
 
     @model_validator(mode="before")
     @classmethod
     def normalize_top_priorities(cls, data: object) -> object:
-        if isinstance(data, dict) and "top_priorities" in data:
-            top_priorities = _optional_str_list(data.get("top_priorities"))
-            if top_priorities is not None:
-                return {**data, "top_priorities": top_priorities}
+        if not isinstance(data, dict):
+            return data
 
-        return data
+        normalized = dict(data)
+        if "analysis_overview" not in normalized and "executive_summary" in normalized:
+            normalized["analysis_overview"] = normalized.get("executive_summary")
+        if "top_priorities" in normalized:
+            top_priorities = _optional_str_list(normalized.get("top_priorities"))
+            if top_priorities is not None:
+                normalized["top_priorities"] = top_priorities
+
+        return normalized
+
+    @field_validator("analysis_overview", mode="before")
+    @classmethod
+    def validate_qualitative_overview(cls, value: object) -> str | None:
+        """Discard placeholders and prose that claims authoritative counts."""
+
+        if not isinstance(value, str) or not value.strip():
+            return None
+        normalized = value.strip()
+        lowered = normalized.casefold()
+        if any(marker in lowered for marker in PLACEHOLDER_OVERVIEW_MARKERS):
+            return None
+        if QUANTITATIVE_OVERVIEW_PATTERN.search(normalized):
+            return None
+        return normalized
 
 
 async def build_final_report_draft(
@@ -44,20 +79,12 @@ async def build_final_report_draft(
     report_input: str,
     report_context: str,
 ) -> tuple[FinalReportDraft, str]:
-    """Return a valid final-report draft, falling back deterministically if needed."""
-
-    try:
-        return (
-            await _invoke_structured_final_report(report_input),
-            "langchain_structured_output",
-        )
-    except Exception as error:
-        logger.warning("Structured final report generation failed: %s", error)
+    """Return a valid draft without unsupported structured tool calls."""
 
     try:
         return await _invoke_raw_json_final_report(report_input), "raw_json_output"
     except Exception as error:
-        logger.warning("Raw JSON final report generation failed: %s", error)
+        logger.warning("Final report JSON generation failed: %s", error)
 
     return build_deterministic_final_report_draft(report_context), (
         "deterministic_fallback"
@@ -114,25 +141,6 @@ def _stringify_top_priority(value: object) -> str | None:
     return str(value).strip() or None
 
 
-async def _invoke_structured_final_report(report_input: str) -> FinalReportDraft:
-    from app.ai.llm.config import run_with_configured_llm
-
-    async def call(llm: Any) -> FinalReportDraft:
-        structured_llm = llm.with_structured_output(FinalReportDraft)
-        result = await structured_llm.ainvoke(
-            [
-                ("system", FINAL_REPORT_STRUCTURED_SYSTEM_PROMPT),
-                ("human", report_input),
-            ]
-        )
-        if isinstance(result, FinalReportDraft):
-            return result
-
-        return FinalReportDraft.model_validate(result)
-
-    return await run_with_configured_llm(call)
-
-
 async def _invoke_raw_json_final_report(report_input: str) -> FinalReportDraft:
     from app.ai.llm.config import run_with_configured_llm
 
@@ -143,8 +151,9 @@ async def _invoke_raw_json_final_report(report_input: str) -> FinalReportDraft:
                 (
                     "human",
                     report_input + "\n\nReturn only a JSON object with these keys: "
-                    "executive_summary, security_score, maintainability_score, "
-                    "performance_score, overall_score, top_priorities, tech_stack.",
+                    "analysis_overview and top_priorities. analysis_overview must be "
+                    "qualitative: do not state counts, percentages, scores, or totals. "
+                    "Do not infer the technology stack.",
                 ),
             ]
         )
@@ -184,32 +193,10 @@ def build_deterministic_final_report_draft(report_context: str) -> FinalReportDr
     """Build a valid final-report draft from persisted issue context."""
 
     context = _parse_report_context(report_context)
-    total_issues = _context_int(context.get("total_issues"))
-    severity_counts = _context_mapping(context.get("severity_counts"))
-    category_counts = _context_mapping(context.get("category_counts"))
     top_priorities = _context_top_priorities(context.get("top_issues"))
-    executive_summary = (
-        "AI semantic review completed and persisted "
-        f"{total_issues} confirmed issues. Severity mix: "
-        f"{severity_counts.get('critical', 0)} critical, "
-        f"{severity_counts.get('high', 0)} high, "
-        f"{severity_counts.get('medium', 0)} medium, "
-        f"{severity_counts.get('low', 0)} low, and "
-        f"{severity_counts.get('info', 0)} informational. Main categories: "
-        f"security={category_counts.get('security', 0)}, "
-        f"bug={category_counts.get('bug', 0)}, "
-        f"performance={category_counts.get('performance', 0)}, "
-        f"maintainability={category_counts.get('maintainability', 0)}, "
-        f"style={category_counts.get('style', 0)}."
-    )
     return FinalReportDraft(
-        executive_summary=executive_summary,
-        security_score=0.0,
-        maintainability_score=0.0,
-        performance_score=0.0,
-        overall_score=0.0,
+        analysis_overview=None,
         top_priorities=top_priorities,
-        tech_stack={},
     )
 
 
@@ -220,17 +207,6 @@ def _parse_report_context(report_context: str) -> dict[str, object]:
         return {}
 
     return parsed if isinstance(parsed, dict) else {}
-
-
-def _context_int(value: object) -> int:
-    return value if isinstance(value, int) else 0
-
-
-def _context_mapping(value: object) -> dict[str, int]:
-    if not isinstance(value, dict):
-        return {}
-
-    return {str(key): item for key, item in value.items() if isinstance(item, int)}
 
 
 def _context_top_priorities(value: object) -> list[str]:

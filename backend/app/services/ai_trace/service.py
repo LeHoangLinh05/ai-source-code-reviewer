@@ -31,6 +31,7 @@ from app.schemas.ai_trace import (
     AITraceResponse,
 )
 from app.services.ai_trace.coverage import (
+    _broad_audited_chunk_count,
     _percent,
     _probe_slot_counts,
     _read_chunk_coverage,
@@ -197,6 +198,7 @@ class AITraceService:
             target_chunk_keys=target_chunk_keys,
         )
         ai_retrieved_chunks, ai_judged_chunks = _probe_slot_counts(read_chunk_documents)
+        broad_audited_chunks = _broad_audited_chunk_count(read_chunk_documents)
         static_analyzer_issues = sum(
             len(document.get("parsed_issues", []))
             for document in static_documents
@@ -215,6 +217,8 @@ class AITraceService:
             ai_read_chunks=ai_read_chunks,
             ai_retrieved_chunks=ai_retrieved_chunks,
             ai_judged_chunks=ai_judged_chunks,
+            broad_audited_chunks=broad_audited_chunks,
+            broad_audit_chunk_percent=_percent(broad_audited_chunks, total_chunks),
             ai_read_target_chunks=ai_read_target_chunks,
             ai_read_file_percent=_percent(ai_read_files, max(target_files, 1)),
             ai_read_chunk_percent=_percent(ai_read_target_chunks, target_chunks),

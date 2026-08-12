@@ -135,6 +135,25 @@ def to_relative_posix_path(file_path: Path, sandbox_path: Path) -> str:
     return file_path.resolve().relative_to(sandbox_path.resolve()).as_posix()
 
 
+def normalize_analyzer_file_path(
+    file_path: str,
+    sandbox_path: Path | None,
+) -> str:
+    """Normalize absolute or sandbox-relative analyzer output paths."""
+
+    if sandbox_path is None or not file_path:
+        return file_path
+
+    path = Path(file_path)
+    resolved_path = (
+        path.resolve() if path.is_absolute() else (sandbox_path / path).resolve()
+    )
+    try:
+        return resolved_path.relative_to(sandbox_path.resolve()).as_posix()
+    except ValueError:
+        return path.as_posix()
+
+
 def _is_in_ignored_directory(file_path: Path, root_path: Path) -> bool:
     relative_parts = file_path.resolve().relative_to(root_path).parts
     return any(part in IGNORED_DIRECTORY_NAMES for part in relative_parts[:-1])

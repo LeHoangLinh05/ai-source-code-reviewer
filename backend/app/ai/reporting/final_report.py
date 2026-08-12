@@ -10,7 +10,6 @@ from sqlalchemy import delete, select
 
 from app.ai.reporting.draft import (
     FinalReportDraft,
-    TechStackInput,
     build_final_report_draft,
     parse_final_report_draft_text,
 )
@@ -19,11 +18,11 @@ from app.db.mongodb import FILE_ANALYSIS_RESULTS_COLLECTION
 from app.models.review_issue import IssueCategory, IssueSeverity, ReviewIssue
 from app.models.review_report import ReviewReport
 from app.schemas.normalized_issue import NormalizedIssue
-from app.services.reporting.generation import (
-    AI_REPORT_MODEL,
-    build_top_risky_files,
-    calculate_report_scores,
+from app.services.reporting.aggregation import (
+    build_report_aggregate,
+    build_verified_summary,
 )
+from app.services.reporting.generation import AI_REPORT_MODEL, build_top_risky_files
 
 FINAL_REPORT_SYNTHESIS_TRACE_NAME = "final_report_synthesis"
 TOP_RISKY_FILE_LIMIT = 5
@@ -125,35 +124,34 @@ async def persist_final_report(
     runtime = get_ai_tool_runtime()
     existing_report = await _load_existing_report(job_id)
     issues = await _load_issues(job_id)
-    normalized_issues = [_to_normalized_issue(issue) for issue in issues]
+    aggregate = build_report_aggregate(issues)
+    normalized_occurrences = [
+        _to_normalized_issue(issue) for issue in aggregate.occurrence_representatives
+    ]
     total_files_analyzed = await _total_files_analyzed(job_id, existing_report)
-    deterministic_scores = calculate_report_scores(normalized_issues)
-    executive_summary = draft.executive_summary
-    if _is_placeholder_summary(executive_summary):
-        executive_summary = _fallback_executive_summary(
-            issues=normalized_issues,
-            total_files_analyzed=total_files_analyzed,
-        )
-
-    severity_counts = Counter(issue.severity for issue in normalized_issues)
     report = ReviewReport(
         job_id=job_id,
         total_files_analyzed=total_files_analyzed,
-        total_issues=len(issues),
-        critical_count=severity_counts[IssueSeverity.CRITICAL],
-        high_count=severity_counts[IssueSeverity.HIGH],
-        medium_count=severity_counts[IssueSeverity.MEDIUM],
-        low_count=severity_counts[IssueSeverity.LOW],
-        info_count=severity_counts[IssueSeverity.INFO],
-        security_score=_clamp_score(deterministic_scores["security_score"]),
-        maintainability_score=_clamp_score(
-            deterministic_scores["maintainability_score"],
+        total_issues=aggregate.total_findings,
+        critical_count=aggregate.severity_counts[IssueSeverity.CRITICAL],
+        high_count=aggregate.severity_counts[IssueSeverity.HIGH],
+        medium_count=aggregate.severity_counts[IssueSeverity.MEDIUM],
+        low_count=aggregate.severity_counts[IssueSeverity.LOW],
+        info_count=aggregate.severity_counts[IssueSeverity.INFO],
+        security_score=None,
+        maintainability_score=None,
+        performance_score=None,
+        overall_score=None,
+        tech_stack=(existing_report.tech_stack if existing_report else {}),
+        top_risky_files=_prioritized_files(
+            normalized_occurrences,
+            draft.top_priorities,
         ),
-        performance_score=_clamp_score(deterministic_scores["performance_score"]),
-        overall_score=_clamp_score(deterministic_scores["overall_score"]),
-        tech_stack=_normalize_tech_stack(draft.tech_stack),
-        top_risky_files=_prioritized_files(normalized_issues, draft.top_priorities),
-        executive_summary=executive_summary,
+        executive_summary=build_verified_summary(
+            aggregate,
+            total_files_analyzed=total_files_analyzed,
+        ),
+        analysis_overview=draft.analysis_overview,
         ai_model_used=AI_REPORT_MODEL,
     )
     await runtime.postgres_session.execute(
@@ -238,11 +236,9 @@ def _to_normalized_issue(issue: ReviewIssue) -> NormalizedIssue:
     )
 
 
-def _clamp_score(score: float) -> float:
-    return max(0.0, min(10.0, round(float(score), 1)))
-
-
 def _is_placeholder_summary(executive_summary: str | None) -> bool:
+    """Retain the legacy helper for compatibility tests and old callers."""
+
     if executive_summary is None or not executive_summary.strip():
         return True
 
@@ -265,6 +261,8 @@ def _fallback_executive_summary(
     issues: list[NormalizedIssue],
     total_files_analyzed: int,
 ) -> str:
+    """Retain deterministic legacy formatting for compatibility callers."""
+
     if not issues:
         return (
             f"AI semantic review completed across {total_files_analyzed} "
@@ -287,12 +285,3 @@ def _fallback_executive_summary(
         f"maintainability={category_counts[IssueCategory.MAINTAINABILITY]}, "
         f"style={category_counts[IssueCategory.STYLE]}."
     )
-
-
-def _normalize_tech_stack(value: TechStackInput | None) -> dict[str, object]:
-    if value is None:
-        return {}
-    if isinstance(value, dict):
-        return value
-
-    return {"technologies": value}

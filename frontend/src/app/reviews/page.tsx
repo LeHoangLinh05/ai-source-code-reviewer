@@ -1,6 +1,6 @@
 "use client";
 
-import { CirclePlay, RefreshCw, Trash2 } from "lucide-react";
+import { CirclePlay, Trash2 } from "lucide-react";
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
@@ -10,13 +10,12 @@ import { Button } from "@/components/ui/button";
 import {
   Card,
   CardContent,
-  CardDescription,
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
 import { PaginationControls } from "@/components/ui/pagination-controls";
 import { getApiErrorMessage } from "@/lib/api-error";
-import { cancelReviewJob, getReviewJobs } from "@/lib/review-jobs";
+import { deleteReviewJob, getReviewJobs } from "@/lib/review-jobs";
 import { useAppDispatch, useAppSelector } from "@/store/hooks";
 import {
   removeJob,
@@ -27,15 +26,16 @@ import {
 } from "@/store/slices/jobSlice";
 import type { ReviewJob, ReviewJobStatus } from "@/types/review-job";
 
-const TERMINAL_STATUSES = new Set<ReviewJobStatus>(["COMPLETED", "FAILED"]);
 const JOBS_PAGE_SIZE = 10;
+const REVIEW_JOB_POLLING_INTERVAL_MS = 5_000;
+const TERMINAL_STATUSES = new Set<ReviewJobStatus>(["COMPLETED", "FAILED"]);
 
 export default function ReviewsPage() {
   const dispatch = useAppDispatch();
   const { error, isLoading, isMutating, items } = useAppSelector(
     (state) => state.jobs,
   );
-  const [cancelingJobId, setCancelingJobId] = useState<string | null>(null);
+  const [deletingJobId, setDeletingJobId] = useState<string | null>(null);
   const [currentPage, setCurrentPage] = useState(1);
   const pagedItems = useMemo(
     () =>
@@ -45,18 +45,30 @@ export default function ReviewsPage() {
       ),
     [currentPage, items],
   );
+  const hasActiveJobs = useMemo(
+    () => items.some((job) => !TERMINAL_STATUSES.has(job.status)),
+    [items],
+  );
 
-  const loadJobs = useCallback(async () => {
-    dispatch(setJobLoading(true));
+  const loadJobs = useCallback(async (isBackground = false) => {
+    if (!isBackground) {
+      dispatch(setJobLoading(true));
+    }
 
     try {
       dispatch(setJobs(await getReviewJobs()));
     } catch (requestError) {
-      dispatch(
-        setJobError(getApiErrorMessage(requestError, "Unable to load reviews.")),
-      );
+      if (!isBackground) {
+        dispatch(
+          setJobError(
+            getApiErrorMessage(requestError, "Unable to load reviews."),
+          ),
+        );
+      }
     } finally {
-      dispatch(setJobLoading(false));
+      if (!isBackground) {
+        dispatch(setJobLoading(false));
+      }
     }
   }, [dispatch]);
 
@@ -65,24 +77,38 @@ export default function ReviewsPage() {
   }, [loadJobs]);
 
   useEffect(() => {
+    if (!hasActiveJobs) {
+      return;
+    }
+
+    const intervalId = window.setInterval(() => {
+      void loadJobs(true);
+    }, REVIEW_JOB_POLLING_INTERVAL_MS);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [hasActiveJobs, loadJobs]);
+
+  useEffect(() => {
     const totalPages = Math.max(1, Math.ceil(items.length / JOBS_PAGE_SIZE));
     if (currentPage > totalPages) {
       setCurrentPage(totalPages);
     }
   }, [currentPage, items.length]);
 
-  async function handleCancelJob(job: ReviewJob) {
-    setCancelingJobId(job.id);
+  async function handleDeleteJob(job: ReviewJob) {
+    setDeletingJobId(job.id);
     dispatch(setJobMutating(true));
 
     try {
-      await cancelReviewJob(job.id);
+      await deleteReviewJob(job.id);
       dispatch(removeJob(job.id));
-      toast.success("Review job canceled.");
+      toast.success("Review job deleted.");
     } catch (requestError) {
-      toast.error(getApiErrorMessage(requestError, "Unable to cancel job."));
+      toast.error(getApiErrorMessage(requestError, "Unable to delete job."));
     } finally {
-      setCancelingJobId(null);
+      setDeletingJobId(null);
       dispatch(setJobMutating(false));
     }
   }
@@ -101,19 +127,8 @@ export default function ReviewsPage() {
       <Card className="overflow-hidden">
         <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <CardTitle>Job List</CardTitle>
-            <CardDescription>
-              Monitor repository review jobs and open completed reports.
-            </CardDescription>
+            <CardTitle>Review History</CardTitle>
           </div>
-          <Button
-            disabled={isLoading}
-            onClick={() => void loadJobs()}
-            variant="secondary"
-          >
-            <RefreshCw aria-hidden="true" />
-            Refresh
-          </Button>
         </CardHeader>
         <CardContent className="p-0">
           {isLoading ? <JobListSkeleton /> : null}
@@ -126,10 +141,10 @@ export default function ReviewsPage() {
           {!isLoading && !error && items.length > 0 ? (
             <>
               <JobsTable
-                cancelingJobId={cancelingJobId}
+                deletingJobId={deletingJobId}
                 isMutating={isMutating}
                 jobs={pagedItems}
-                onCancelJob={handleCancelJob}
+                onDeleteJob={handleDeleteJob}
               />
               <PaginationControls
                 currentPage={currentPage}
@@ -182,17 +197,17 @@ function JobListSkeleton() {
 }
 
 type JobsTableProps = {
-  cancelingJobId: string | null;
+  deletingJobId: string | null;
   isMutating: boolean;
   jobs: ReviewJob[];
-  onCancelJob: (job: ReviewJob) => Promise<void>;
+  onDeleteJob: (job: ReviewJob) => Promise<void>;
 };
 
 function JobsTable({
-  cancelingJobId,
+  deletingJobId,
   isMutating,
   jobs,
-  onCancelJob,
+  onDeleteJob,
 }: JobsTableProps) {
   return (
     <div className="overflow-x-auto border-t border-border">
@@ -230,17 +245,17 @@ function JobsTable({
                 {formatDate(job.created_at)}
               </td>
               <td className="px-6 py-4 text-right">
-                {!TERMINAL_STATUSES.has(job.status) ? (
-                  <Button
-                    aria-label={`Cancel ${job.repository_name ?? job.id}`}
-                    disabled={isMutating || cancelingJobId === job.id}
-                    onClick={() => void onCancelJob(job)}
-                    size="icon"
-                    variant="ghost"
-                  >
-                    <Trash2 aria-hidden="true" />
-                  </Button>
-                ) : null}
+                <Button
+                  aria-label={`Delete ${job.repository_name ?? job.id}`}
+                  className="text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                  disabled={isMutating || deletingJobId === job.id}
+                  onClick={() => void onDeleteJob(job)}
+                  size="icon"
+                  title="Delete job"
+                  variant="ghost"
+                >
+                  <Trash2 aria-hidden="true" />
+                </Button>
               </td>
             </tr>
           ))}

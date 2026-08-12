@@ -9,7 +9,7 @@ import time
 from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from contextvars import ContextVar, Token
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from http import HTTPStatus
 from typing import Any, TypeVar
@@ -60,6 +60,10 @@ class LLMSessionState:
     rate_limit_failures: int = 0
     openai_circuit_open: bool = False
     last_openai_request_at: float | None = None
+    request_pacing_lock: asyncio.Lock = field(
+        default_factory=asyncio.Lock,
+        repr=False,
+    )
 
 
 _session_state: ContextVar[LLMSessionState | None] = ContextVar(
@@ -110,9 +114,9 @@ class ManagedOpenAILLM(Runnable[Any, Any]):
             self.model,
             "openai",
             self.state,
-            input,
-            config,
-            kwargs,
+            input=input,
+            config=config,
+            kwargs=kwargs,
         )
 
     async def ainvoke(
@@ -125,9 +129,9 @@ class ManagedOpenAILLM(Runnable[Any, Any]):
             self.model,
             "openai",
             self.state,
-            input,
-            config,
-            kwargs,
+            input=input,
+            config=config,
+            kwargs=kwargs,
         )
 
 
@@ -236,6 +240,7 @@ def _invoke_model(
     model: ChatOpenAI,
     provider: str,
     state: LLMSessionState,
+    *,
     input: Any,
     config: RunnableConfig | None,
     kwargs: dict[str, Any],
@@ -265,6 +270,7 @@ async def _ainvoke_model(
     model: ChatOpenAI,
     provider: str,
     state: LLMSessionState,
+    *,
     input: Any,
     config: RunnableConfig | None,
     kwargs: dict[str, Any],
@@ -383,11 +389,12 @@ def _remaining_openai_delay(state: LLMSessionState, now: float) -> float:
 async def _pace_async_request(provider: str, state: LLMSessionState) -> None:
     if provider != "openai":
         return
-    delay = _remaining_openai_delay(state, _monotonic())
-    if delay > 0:
-        logger.info("Pacing OpenAI request for %.3fs", delay)
-        await asyncio.sleep(delay)
-    state.last_openai_request_at = _monotonic()
+    async with state.request_pacing_lock:
+        delay = _remaining_openai_delay(state, _monotonic())
+        if delay > 0:
+            logger.info("Pacing OpenAI request for %.3fs", delay)
+            await asyncio.sleep(delay)
+        state.last_openai_request_at = _monotonic()
 
 
 def _pace_sync_request(provider: str, state: LLMSessionState) -> None:
@@ -483,5 +490,23 @@ def _is_timeout_error(error: Exception) -> bool:
     )
 
 
+def _is_connection_error(error: Exception) -> bool:
+    error_name = type(error).__name__.lower()
+    message = str(error).lower()
+    return (
+        "connectionerror" in error_name
+        or "connecterror" in error_name
+        or "connection error" in message
+        or "connection reset" in message
+        or "connection refused" in message
+        or "server disconnected" in message
+        or "event loop is closed" in message
+    )
+
+
 def _is_transient_provider_error(error: Exception) -> bool:
-    return _is_rate_limit_error(error) or _is_timeout_error(error)
+    return (
+        _is_rate_limit_error(error)
+        or _is_timeout_error(error)
+        or _is_connection_error(error)
+    )
