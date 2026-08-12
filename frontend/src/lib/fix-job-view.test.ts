@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   canPublishFix,
+  formatFixStatus,
   getFixProgressMessage,
   getUnresolvedFixResults,
   requiresFailedValidationOverride,
@@ -72,6 +73,13 @@ describe("fix job view helpers", () => {
     expect(canPublishFix(buildFixJob({ publish_status: "PUBLISHING" }))).toBe(
       false,
     );
+  });
+
+  it("labels the former validation stage as logic review", () => {
+    expect(getFixProgressMessage("VALIDATING")).toBe(
+      "Reviewing cross-file patch logic.",
+    );
+    expect(formatFixStatus("VALIDATING")).toBe("logic review");
   });
 
   it("requires an explicit override and names failed verification accurately", () => {

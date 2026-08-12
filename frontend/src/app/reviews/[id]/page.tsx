@@ -31,7 +31,7 @@ import {
 import { TechnicalDetails } from "@/components/ui/technical-details";
 import { getApiErrorMessage } from "@/lib/api-error";
 import {
-  shouldReconcileJobProgress,
+  shouldPollJobProgress,
   type JobProgressConnectionState,
 } from "@/lib/job-progress";
 import { useJobProgress } from "@/hooks/use-job-progress";
@@ -61,7 +61,6 @@ import type {
 } from "@/types/review-job";
 
 const AI_TRACE_POLLING_INTERVAL_MS = 4_000;
-const JOB_RECONCILIATION_INTERVAL_MS = 10_000;
 const TERMINAL_STATUSES = new Set<ReviewJobStatus>(["COMPLETED", "FAILED"]);
 
 export default function ReviewJobDetailPage() {
@@ -140,35 +139,19 @@ export default function ReviewJobDetailPage() {
   }, [dispatch, loadAiTrace, loadJob]);
 
   useEffect(() => {
-    if (!currentJob || TERMINAL_STATUSES.has(currentJobStatus ?? "PENDING")) {
+    if (!currentJobStatus || !shouldPollJobProgress(currentJobStatus)) {
       return;
     }
 
     const intervalId = window.setInterval(() => {
+      void loadJob(true);
       void loadAiTrace();
     }, AI_TRACE_POLLING_INTERVAL_MS);
 
     return () => {
       window.clearInterval(intervalId);
     };
-  }, [currentJob, currentJobStatus, loadAiTrace]);
-
-  useEffect(() => {
-    if (
-      !currentJobStatus ||
-      !shouldReconcileJobProgress(connectionState, currentJobStatus)
-    ) {
-      return;
-    }
-
-    const intervalId = window.setInterval(() => {
-      void loadJob(true);
-    }, JOB_RECONCILIATION_INTERVAL_MS);
-
-    return () => {
-      window.clearInterval(intervalId);
-    };
-  }, [connectionState, currentJobStatus, loadJob]);
+  }, [currentJobStatus, loadAiTrace, loadJob]);
 
   useEffect(() => {
     const shouldTickDuration =

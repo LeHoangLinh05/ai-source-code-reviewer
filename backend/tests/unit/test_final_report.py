@@ -23,7 +23,7 @@ def test_final_report_schema_ignores_legacy_scores_in_markdown_json() -> None:
         "```"
     )
 
-    assert payload.executive_summary == "Done"
+    assert payload.analysis_overview == "Done"
     assert "overall_score" not in payload.model_dump()
 
 
@@ -43,14 +43,14 @@ def test_final_report_schema_parses_model_wrapper_text() -> None:
         "Final Answer: Final report generated successfully."
     )
 
-    assert payload.executive_summary == "AI review found critical auth issues."
+    assert payload.analysis_overview == "AI review found critical auth issues."
     assert payload.top_priorities == ["Fix plaintext password logging"]
 
 
 def test_final_report_schema_accepts_structured_top_priorities() -> None:
     payload = FinalReportDraft.model_validate(
         {
-            "executive_summary": "Done",
+            "analysis_overview": "Authentication boundaries need immediate review.",
             "security_score": 7,
             "maintainability_score": 6,
             "performance_score": 8,
@@ -81,6 +81,17 @@ def test_final_report_schema_accepts_structured_top_priorities() -> None:
     ]
 
 
+def test_final_report_discards_quantitative_ai_overview() -> None:
+    payload = FinalReportDraft.model_validate(
+        {
+            "analysis_overview": "The review found 12 security issues.",
+            "top_priorities": [],
+        }
+    )
+
+    assert payload.analysis_overview is None
+
+
 @pytest.mark.asyncio
 async def test_final_report_uses_one_raw_json_call_for_cline(
     monkeypatch: pytest.MonkeyPatch,
@@ -90,7 +101,7 @@ async def test_final_report_uses_one_raw_json_call_for_cline(
     async def invoke_raw_json(report_input: str) -> FinalReportDraft:
         calls.append(report_input)
         return FinalReportDraft(
-            executive_summary="Done",
+            analysis_overview="Authentication controls need immediate attention.",
         )
 
     monkeypatch.setattr(
@@ -104,7 +115,9 @@ async def test_final_report_uses_one_raw_json_call_for_cline(
         report_context="{}",
     )
 
-    assert result.executive_summary == "Done"
+    assert result.analysis_overview == (
+        "Authentication controls need immediate attention."
+    )
     assert source == "raw_json_output"
     assert calls == ["report input"]
 

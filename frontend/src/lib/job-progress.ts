@@ -112,13 +112,8 @@ export function parseJobProgressEvent(
   };
 }
 
-export function shouldReconcileJobProgress(
-  connectionState: JobProgressConnectionState,
-  status: ReviewJobStatus,
-): boolean {
-  const isDisconnected =
-    connectionState === "reconnecting" || connectionState === "closed";
-  return isDisconnected && !TERMINAL_JOB_STATUSES.has(status);
+export function shouldPollJobProgress(status: ReviewJobStatus): boolean {
+  return !TERMINAL_JOB_STATUSES.has(status);
 }
 
 export function subscribeToJobProgress(

@@ -37,6 +37,7 @@ class ExpectedIssue:
     category: str
     severity: str | None
     expected_probes: tuple[str, ...]
+    claim_type: str | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -59,6 +60,7 @@ class Finding:
     source: str
     probe_id: str | None
     supporting_evidence: tuple[dict[str, object], ...]
+    claim_type: str | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -379,6 +381,7 @@ async def _load_findings(session: Any, job_id: UUID) -> list[Finding]:
             source=issue.source.value,
             probe_id=_finding_probe_id(issue.raw_output),
             supporting_evidence=_finding_supporting_evidence(issue.raw_output),
+            claim_type=_finding_claim_type(issue.raw_output),
         )
         for issue in result.all()
     ]
@@ -419,6 +422,7 @@ def _expected_issues_from_items(
                 category=_required_string(item, "category"),
                 severity=severity if isinstance(severity, str) else None,
                 expected_probes=tuple(expected_probes),
+                claim_type=_optional_string(item.get("claim_type")),
             )
         )
     return issues
@@ -564,6 +568,8 @@ def _judge_candidate_matches_issue(
         return False
     if str(candidate.get("probe_id") or "") not in issue.expected_probes:
         return False
+    if issue.claim_type is not None and candidate.get("claim_type") != issue.claim_type:
+        return False
     category = str(candidate.get("category") or "")
     return _categories_compatible(category, issue.category) and (
         _document_matches_issue(candidate, issue)
@@ -576,6 +582,8 @@ def _judge_candidate_matches_issue(
 
 def _finding_matches_issue(finding: Finding, issue: ExpectedIssue) -> bool:
     if finding.probe_id not in issue.expected_probes:
+        return False
+    if issue.claim_type is not None and finding.claim_type != issue.claim_type:
         return False
     location_matches = _path_matches(
         finding.file_path, issue.file_path
@@ -598,6 +606,11 @@ def _finding_probe_id(raw_output: object) -> str | None:
     probe_review = _mapping(_mapping(raw_output).get("probe_review"))
     probe_id = probe_review.get("probe_id")
     return probe_id if isinstance(probe_id, str) and probe_id else None
+
+
+def _finding_claim_type(raw_output: object) -> str | None:
+    probe_review = _mapping(_mapping(raw_output).get("probe_review"))
+    return _optional_string(probe_review.get("claim_type"))
 
 
 def _finding_supporting_evidence(
@@ -987,6 +1000,10 @@ def _required_string(item: dict[str, object], key: str) -> str:
     if not isinstance(value, str) or not value:
         raise ValueError(f"Missing string field {key}")
     return value
+
+
+def _optional_string(value: object) -> str | None:
+    return value if isinstance(value, str) and value else None
 
 
 def _required_int(item: dict[str, object], key: str) -> int:

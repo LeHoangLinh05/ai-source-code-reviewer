@@ -68,10 +68,6 @@ import type {
   FixJobProgressEvent,
   FixJobStatus,
   FixIssueResult,
-  FixValidationCheck,
-  FixValidationCheckStatus,
-  FixValidationResult,
-  FixValidationStatus,
 } from "@/types/fix-job";
 import type { RepositoryProviderStatus } from "@/types/provider";
 import type { ReviewJob } from "@/types/review-job";
@@ -340,44 +336,13 @@ export default function ReviewFixesPage() {
 
   return (
     <>
-      <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+      <div className="flex items-center">
         <Button asChild size="sm" variant="ghost">
           <Link href={`/reviews/${jobId}`}>
             <ArrowLeft aria-hidden="true" />
             Review Job
           </Link>
         </Button>
-        <div className="flex flex-wrap gap-2">
-          {selectedFix && canPublishViaFork(selectedFix) ? (
-            <Button
-              disabled={pendingAction !== null}
-              onClick={() => void publishSelectedFix()}
-            >
-              <GitPullRequest aria-hidden="true" />
-              Publish via fork
-            </Button>
-          ) : null}
-          {selectedFix && canRetryPublish(selectedFix) ? (
-            <Button
-              disabled={pendingAction !== null}
-              onClick={() => void retrySelectedPublish()}
-              variant="secondary"
-            >
-              <RotateCcw aria-hidden="true" />
-              Retry publish
-            </Button>
-          ) : null}
-          {selectedFix && canCancelPublish(selectedFix) ? (
-            <Button
-              disabled={pendingAction !== null}
-              onClick={() => void cancelSelectedPublish()}
-              variant="destructive"
-            >
-              <XCircle aria-hidden="true" />
-              Cancel publish
-            </Button>
-          ) : null}
-        </div>
       </div>
 
       <ReviewWorkspaceTabs activeTab="fixes" jobId={jobId} />
@@ -464,11 +429,15 @@ export default function ReviewFixesPage() {
                     connectionState={connectionState}
                     diff={diff}
                     fix={selectedFix}
+                    isActionPending={pendingAction !== null}
                     isConnectPending={pendingAction === "connect"}
                     isDiffLoading={isDiffLoading}
                     jobId={jobId}
+                    onCancelPublish={() => void cancelSelectedPublish()}
                     providerStatus={providerStatus}
                     onConnectGithub={() => void connectGitHubApp()}
+                    onPublishViaFork={() => void publishSelectedFix()}
+                    onRetryPublish={() => void retrySelectedPublish()}
                     progressEvent={progressEvent}
                   />
                 </div>
@@ -489,21 +458,29 @@ function FixDetails({
   connectionState,
   diff,
   fix,
+  isActionPending,
   isConnectPending,
   isDiffLoading,
   jobId,
+  onCancelPublish,
   providerStatus,
   onConnectGithub,
+  onPublishViaFork,
+  onRetryPublish,
   progressEvent,
 }: {
   connectionState: FixJobProgressConnectionState;
   diff: FixDiff | null;
   fix: FixJob;
+  isActionPending: boolean;
   isConnectPending: boolean;
   isDiffLoading: boolean;
   jobId: string;
+  onCancelPublish: () => void;
   providerStatus: RepositoryProviderStatus | null;
   onConnectGithub: () => void;
+  onPublishViaFork: () => void;
+  onRetryPublish: () => void;
   progressEvent: FixJobProgressEvent | null;
 }) {
   const diffSections = diff ? splitUnifiedDiffByFile(diff) : [];
@@ -520,10 +497,14 @@ function FixDetails({
 
       <PublishStatusCard
         fix={fix}
+        isActionPending={isActionPending}
         isConnectPending={isConnectPending}
         jobId={jobId}
+        onCancelPublish={onCancelPublish}
         providerStatus={providerStatus}
         onConnectGithub={onConnectGithub}
+        onPublishViaFork={onPublishViaFork}
+        onRetryPublish={onRetryPublish}
       />
 
       <Card>
@@ -531,12 +512,8 @@ function FixDetails({
           <CardTitle>Patch Preview</CardTitle>
         </CardHeader>
         <CardContent className="grid gap-4">
-          <div className="grid gap-3 rounded-md border border-border bg-background p-4 sm:grid-cols-3">
+          <div className="grid gap-3 rounded-md border border-border bg-background p-4 sm:grid-cols-2">
             <Metric label="Status" value={formatFixStatus(fix.status)} />
-            <Metric
-              label="Validation"
-              value={formatValidationStatus(fix.validation_status)}
-            />
             <Metric label="Changed files" value={fix.changed_files?.length ?? 0} />
           </div>
 
@@ -595,11 +572,7 @@ function FixDetails({
         </CardContent>
       </Card>
 
-      <TechnicalDetails title="Validation details">
-        <ValidationResults result={fix.validation_summary} />
-      </TechnicalDetails>
-
-      <TechnicalDetails title="Issue verification">
+      <TechnicalDetails title="Logic review by issue">
         <IssueVerificationResults results={fix.issue_results} />
       </TechnicalDetails>
     </div>
@@ -713,7 +686,7 @@ function IssueVerificationResults({ results }: { results: FixIssueResult[] }) {
   if (results.length === 0) {
     return (
       <p className="text-sm text-muted-foreground">
-        Issue verification has not produced a result yet.
+        Logic review has not produced a result yet.
       </p>
     );
   }
@@ -769,16 +742,24 @@ function IssueVerificationResults({ results }: { results: FixIssueResult[] }) {
 
 function PublishStatusCard({
   fix,
+  isActionPending,
   isConnectPending,
   jobId,
+  onCancelPublish,
   providerStatus,
   onConnectGithub,
+  onPublishViaFork,
+  onRetryPublish,
 }: {
   fix: FixJob;
+  isActionPending: boolean;
   isConnectPending: boolean;
   jobId: string;
+  onCancelPublish: () => void;
   providerStatus: RepositoryProviderStatus | null;
   onConnectGithub: () => void;
+  onPublishViaFork: () => void;
+  onRetryPublish: () => void;
 }) {
   const publishError = fix.publish_error;
 
@@ -801,6 +782,35 @@ function PublishStatusCard({
             label="Provider"
             value={formatProviderValue(fix, providerStatus)}
           />
+        </div>
+
+        <div className="flex flex-wrap gap-2">
+          {canPublishViaFork(fix) ? (
+            <Button disabled={isActionPending} onClick={onPublishViaFork}>
+              <GitPullRequest aria-hidden="true" />
+              Publish via fork
+            </Button>
+          ) : null}
+          {canRetryPublish(fix) ? (
+            <Button
+              disabled={isActionPending}
+              onClick={onRetryPublish}
+              variant="secondary"
+            >
+              <RotateCcw aria-hidden="true" />
+              Retry publish
+            </Button>
+          ) : null}
+          {canCancelPublish(fix) ? (
+            <Button
+              disabled={isActionPending}
+              onClick={onCancelPublish}
+              variant="destructive"
+            >
+              <XCircle aria-hidden="true" />
+              Cancel publish
+            </Button>
+          ) : null}
         </div>
 
         {fix.pr_url ? (
@@ -855,69 +865,6 @@ function PublishStatusCard({
 
       </CardContent>
     </Card>
-  );
-}
-
-function ValidationResults({ result }: { result: FixValidationResult | null }) {
-  if (!result) {
-    return (
-      <p className="text-sm text-muted-foreground">
-        Validation has not produced a result yet.
-      </p>
-    );
-  }
-
-  return (
-    <div className="grid gap-3">
-      <div className="rounded-md border border-border bg-background p-4">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <p className="text-sm font-semibold">{result.summary}</p>
-          <ValidationSummaryPill status={result.status} />
-        </div>
-      </div>
-
-      {result.checks.length === 0 ? (
-        <p className="text-sm text-muted-foreground">
-          No validation commands ran for this patch.
-        </p>
-      ) : null}
-
-      {result.checks.map((check) => (
-        <ValidationCheckCard check={check} key={`${check.name}:${check.command}`} />
-      ))}
-    </div>
-  );
-}
-
-function ValidationCheckCard({ check }: { check: FixValidationCheck }) {
-  const tone = getValidationCheckTone(check.status);
-
-  return (
-    <div className="rounded-md border border-border bg-background p-3">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <p className="font-mono text-xs font-semibold">{check.name}</p>
-        <span className={`rounded-md border px-2 py-1 text-xs ${tone}`}>
-          {check.status}
-        </span>
-      </div>
-      <p className="mt-2 break-all font-mono text-xs text-muted-foreground">
-        {check.command}
-      </p>
-      <div className="mt-2 flex flex-wrap gap-3 text-xs text-muted-foreground">
-        <span>Exit: {check.exit_code ?? "n/a"}</span>
-        <span>{check.duration_ms}ms</span>
-      </div>
-      {check.stdout ? (
-        <pre className="mt-3 max-h-40 overflow-auto rounded-md bg-muted p-3 text-xs">
-          {check.stdout}
-        </pre>
-      ) : null}
-      {check.stderr ? (
-        <pre className="mt-3 max-h-40 overflow-auto rounded-md bg-muted p-3 text-xs">
-          {check.stderr}
-        </pre>
-      ) : null}
-    </div>
   );
 }
 
@@ -986,16 +933,6 @@ function ProgressBar({ tone, value }: { tone: string; value: number }) {
         style={{ width: `${Math.max(0, Math.min(100, value))}%` }}
       />
     </div>
-  );
-}
-
-function ValidationSummaryPill({ status }: { status: FixValidationStatus }) {
-  return (
-    <span
-      className={`rounded-md border px-2 py-1 text-xs font-semibold ${getValidationSummaryTone(status)}`}
-    >
-      {formatValidationStatus(status)}
-    </span>
   );
 }
 
@@ -1078,28 +1015,6 @@ function getConnectionState(state: FixJobProgressConnectionState): {
   };
 }
 
-function getValidationSummaryTone(status: FixValidationStatus) {
-  if (status === "PASSED") {
-    return "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-200";
-  }
-  if (status === "FAILED") {
-    return "border-destructive/40 bg-destructive/10 text-destructive";
-  }
-
-  return "border-border bg-muted text-muted-foreground";
-}
-
-function getValidationCheckTone(status: FixValidationCheckStatus) {
-  if (status === "passed") {
-    return "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-200";
-  }
-  if (status === "failed") {
-    return "border-destructive/40 bg-destructive/10 text-destructive";
-  }
-
-  return "border-border bg-muted text-muted-foreground";
-}
-
 function getIssueVerdictTone(verdict: FixIssueResult["verdict"]) {
   if (verdict === "fixed") {
     return "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-200";
@@ -1130,10 +1045,6 @@ function shouldShowGitHubConnect(
     publishError.includes("github app id") ||
     publishError.includes("installation")
   );
-}
-
-function formatValidationStatus(status: FixValidationStatus) {
-  return status.replaceAll("_", " ").toLowerCase();
 }
 
 function formatProviderValue(

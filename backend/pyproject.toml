@@ -43,9 +43,14 @@ ignore = [
 "app/ai/rules/build_rules_yaml.py" = [
     "E501",
     "PLR0911",
+    "PLR0917",
     "PLR2004",
     "S101",
 ]
+# FastAPI injects these route dependencies by parameter name; grouping them into
+# transport-only objects would make the API boundary less explicit.
+"app/routers/auth.py" = ["PLR0917"]
+"app/routers/reports.py" = ["PLR0917"]
 # Existing stateful connection lifecycle is module-level by design.
 "app/db/mongodb.py" = ["PLW0603"]
 "app/db/redis.py" = ["PLW0603"]

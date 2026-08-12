@@ -19,12 +19,33 @@ from app.models.fix_job import FixJobStatus, FixPublishStatus, FixValidationStat
 from app.models.repository import RepositoryPlatform
 
 MIN_OVERRIDE_REASON_LENGTH = 20
+EVIDENCE_FILE_PATH_ALIASES = ("file", "path", "source_file")
+EVIDENCE_RATIONALE_ALIASES = (
+    "reason",
+    "explanation",
+    "description",
+    "summary",
+    "details",
+    "observation",
+    "proof",
+    "evidence",
+)
 
 
 def _optional_contract_part(value: object) -> str:
     if not isinstance(value, str):
         return ""
     return value.strip()
+
+
+def _first_nonempty_alias(
+    values: dict[object, object], aliases: tuple[str, ...]
+) -> str:
+    for alias in aliases:
+        normalized_value = _optional_contract_part(values.get(alias))
+        if normalized_value:
+            return normalized_value
+    return ""
 
 
 class FixValidationCheckStatus(StrEnum):
@@ -104,6 +125,25 @@ class FixEvidenceReference(BaseModel):
     line_start: int | None = Field(default=None, ge=1)
     line_end: int | None = Field(default=None, ge=1)
     rationale: str
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_llm_aliases(cls, value: object) -> object:
+        """Normalize common LLM aliases without inventing missing evidence."""
+
+        if not isinstance(value, dict):
+            return value
+
+        normalized = dict(value)
+        if not _optional_contract_part(normalized.get("file_path")):
+            file_path = _first_nonempty_alias(normalized, EVIDENCE_FILE_PATH_ALIASES)
+            if file_path:
+                normalized["file_path"] = file_path
+        if not _optional_contract_part(normalized.get("rationale")):
+            rationale = _first_nonempty_alias(normalized, EVIDENCE_RATIONALE_ALIASES)
+            if rationale:
+                normalized["rationale"] = rationale
+        return normalized
 
 
 class FixIssuePlan(BaseModel):

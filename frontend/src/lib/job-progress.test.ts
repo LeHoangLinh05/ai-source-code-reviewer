@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   parseJobProgressEvent,
-  shouldReconcileJobProgress,
+  shouldPollJobProgress,
   subscribeToJobProgress,
   type JobProgressConnectionState,
   type JobProgressEventSource,
@@ -72,16 +72,12 @@ describe("job progress SSE", () => {
     expect(parseJobProgressEvent("not json")).toBeNull();
   });
 
-  it("reconciles only disconnected non-terminal jobs", () => {
-    expect(shouldReconcileJobProgress("reconnecting", "AI_REVIEWING")).toBe(
-      true,
-    );
-    expect(shouldReconcileJobProgress("closed", "AI_REVIEWING")).toBe(true);
-    expect(shouldReconcileJobProgress("connecting", "AI_REVIEWING")).toBe(
-      false,
-    );
-    expect(shouldReconcileJobProgress("open", "AI_REVIEWING")).toBe(false);
-    expect(shouldReconcileJobProgress("closed", "COMPLETED")).toBe(false);
+  it("polls every non-terminal review status", () => {
+    expect(shouldPollJobProgress("PENDING")).toBe(true);
+    expect(shouldPollJobProgress("AI_REVIEWING")).toBe(true);
+    expect(shouldPollJobProgress("GENERATING_REPORT")).toBe(true);
+    expect(shouldPollJobProgress("COMPLETED")).toBe(false);
+    expect(shouldPollJobProgress("FAILED")).toBe(false);
   });
 
   it("tracks connection states and closes after a terminal event", () => {

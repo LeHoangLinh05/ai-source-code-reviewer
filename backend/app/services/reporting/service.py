@@ -3,6 +3,7 @@
 from uuid import UUID
 
 from app.core.exceptions import AuthorizationError, BadRequestError, NotFoundError
+from app.core.review_targets import is_review_target_path
 from app.models.review_issue import (
     IssueCategory,
     IssueSeverity,
@@ -22,10 +23,15 @@ from app.schemas.report import (
     ReportScores,
     ReportSummaryResponse,
 )
+from app.services.reporting.aggregation import (
+    ReportAggregate,
+    build_report_aggregate,
+    build_verified_summary,
+)
 from app.services.reporting.generation import build_top_risky_files
 from app.services.reporting.issue_presenter import (
-    _canonical_representative_issues,
     _group_issues,
+    _group_matches_filters,
     _has_source_context,
     _issue_group_key,
     _issue_group_response,
@@ -57,11 +63,11 @@ class ReportService:
 
         review_job = await self._ensure_job_access(job_id, current_user)
         report = await self._get_existing_report(job_id, review_job.status)
-        counts = await self._refresh_report_aggregates(report)
+        aggregate = await self._refresh_report_aggregates(report)
         response = ReportResponse.model_validate(report)
-        response.total_findings = counts[0]
-        response.total_occurrences = counts[1]
-        response.total_raw_issues = counts[2]
+        response.total_findings = aggregate.total_findings
+        response.total_occurrences = aggregate.total_occurrences
+        response.total_raw_issues = aggregate.raw_issue_count
         return response
 
     async def get_summary(
@@ -73,19 +79,20 @@ class ReportService:
 
         review_job = await self._ensure_job_access(job_id, current_user)
         report = await self._get_existing_report(job_id, review_job.status)
-        counts = await self._refresh_report_aggregates(report)
+        aggregate = await self._refresh_report_aggregates(report)
         return ReportSummaryResponse(
             job_id=report.job_id,
             executive_summary=report.executive_summary,
+            analysis_overview=report.analysis_overview,
             scores=ReportScores(
                 security_score=report.security_score,
                 maintainability_score=report.maintainability_score,
                 performance_score=report.performance_score,
                 overall_score=report.overall_score,
             ),
-            total_findings=counts[0],
-            total_occurrences=counts[1],
-            total_raw_issues=counts[2],
+            total_findings=aggregate.total_findings,
+            total_occurrences=aggregate.total_occurrences,
+            total_raw_issues=aggregate.raw_issue_count,
         )
 
     async def list_issues(
@@ -106,14 +113,18 @@ class ReportService:
         review_job = await self._ensure_job_access(job_id, current_user)
         await self._get_existing_report(job_id, review_job.status)
         sort_field, is_descending = self._parse_sort(sort)
-        issues = await self.report_repository.list_filtered_issues(
-            job_id=job_id,
-            severity=severity,
-            category=category,
-            source=source,
-            file_path=file_path,
-        )
-        groups = _group_issues(issues)
+        issues = await self.report_repository.list_all_issues(job_id)
+        groups = {
+            group_key: grouped_issues
+            for group_key, grouped_issues in _group_issues(issues).items()
+            if _group_matches_filters(
+                grouped_issues,
+                severity=severity,
+                category=category,
+                source=source,
+                file_path=file_path,
+            )
+        }
         sorted_groups = _sort_issue_groups(
             groups,
             sort_field=sort_field,
@@ -152,7 +163,7 @@ class ReportService:
             job_id=job_id,
             issue_id=issue_id,
         )
-        if issue is None:
+        if issue is None or not is_review_target_path(issue.file_path):
             raise NotFoundError("Review issue not found")
 
         group_key = _issue_group_key(issue)
@@ -221,29 +232,31 @@ class ReportService:
     async def _refresh_report_aggregates(
         self,
         report: ReviewReport,
-    ) -> tuple[int, int, int]:
-        """Refresh legacy fields and return canonical report counters."""
+    ) -> ReportAggregate:
+        """Refresh persisted report fields from one canonical snapshot."""
 
         issues = await self.report_repository.list_all_issues(report.job_id)
-        groups = _group_issues(issues)
-        canonical_issues = _canonical_representative_issues(issues)
-        normalized_issues = [_to_normalized_issue(issue) for issue in canonical_issues]
-        severity_counts = {
-            severity: sum(1 for issue in canonical_issues if issue.severity == severity)
-            for severity in IssueSeverity
-        }
+        aggregate = build_report_aggregate(issues)
+        normalized_occurrences = [
+            _to_normalized_issue(issue)
+            for issue in aggregate.occurrence_representatives
+        ]
         refreshed_values = {
-            "total_issues": len(issues),
-            "critical_count": severity_counts[IssueSeverity.CRITICAL],
-            "high_count": severity_counts[IssueSeverity.HIGH],
-            "medium_count": severity_counts[IssueSeverity.MEDIUM],
-            "low_count": severity_counts[IssueSeverity.LOW],
-            "info_count": severity_counts[IssueSeverity.INFO],
+            "total_issues": aggregate.total_findings,
+            "critical_count": aggregate.severity_counts[IssueSeverity.CRITICAL],
+            "high_count": aggregate.severity_counts[IssueSeverity.HIGH],
+            "medium_count": aggregate.severity_counts[IssueSeverity.MEDIUM],
+            "low_count": aggregate.severity_counts[IssueSeverity.LOW],
+            "info_count": aggregate.severity_counts[IssueSeverity.INFO],
             "security_score": None,
             "maintainability_score": None,
             "performance_score": None,
             "overall_score": None,
-            "top_risky_files": build_top_risky_files(normalized_issues),
+            "top_risky_files": build_top_risky_files(normalized_occurrences),
+            "executive_summary": build_verified_summary(
+                aggregate,
+                total_files_analyzed=report.total_files_analyzed,
+            ),
         }
         has_changes = any(
             getattr(report, field_name) != field_value
@@ -253,7 +266,7 @@ class ReportService:
             setattr(report, field_name, field_value)
         if has_changes:
             await self.report_repository.save_report(report)
-        return len(groups), len(canonical_issues), len(issues)
+        return aggregate
 
     def _parse_sort(self, sort: str) -> tuple[str, bool]:
         is_descending = sort.startswith("-")

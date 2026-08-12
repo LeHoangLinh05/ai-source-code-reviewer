@@ -32,6 +32,7 @@ class ReportResponse(BaseModel):
     tech_stack: dict[str, object] | None
     top_risky_files: list[dict[str, object]] | None
     executive_summary: str | None
+    analysis_overview: str | None
     ai_model_used: str | None
     created_at: datetime
 
@@ -50,6 +51,7 @@ class ReportSummaryResponse(BaseModel):
 
     job_id: UUID
     executive_summary: str | None
+    analysis_overview: str | None
     scores: ReportScores
     total_findings: int = 0
     total_occurrences: int = 0

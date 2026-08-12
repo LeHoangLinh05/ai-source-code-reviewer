@@ -18,6 +18,7 @@ from app.ai.probe.plan import BASELINE_PROBES
 from app.models.review_issue import ReviewIssue
 from app.schemas.fix_job import FixIssuePlan, FixIssuePlanStatus, FixScenarioKind
 from app.services.fix_pipeline.contracts import (
+    READ_ONLY_FIX_CONTEXT_FILE_NAMES,
     FixIssueSpec,
     FixPlanningResponse,
     get_probe_id,
@@ -32,6 +33,29 @@ MAX_CONTRACT_RETRIES = 1
 MIN_RELATED_SYMBOL_LENGTH = 4
 TEXT_ENCODING = "utf-8"
 SOURCE_SUFFIXES = {".py", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"}
+PROJECT_SUPPORT_FILE_NAMES = {
+    ".env.example",
+    "AGENTS.md",
+    "Dockerfile",
+    "Pipfile",
+    "Pipfile.lock",
+    "docker-compose.yaml",
+    "docker-compose.yml",
+    "package-lock.json",
+    "package.json",
+    "pnpm-lock.yaml",
+    "poetry.lock",
+    "pyproject.toml",
+    "requirements-dev.txt",
+    "requirements-test.txt",
+    "requirements.txt",
+    "setup.cfg",
+    "setup.py",
+    "tsconfig.json",
+    "uv.lock",
+    "yarn.lock",
+}
+REQUIREMENTS_FILE_PATTERN = re.compile(r"requirements(?:-[\w.-]+)?\.txt$")
 IGNORED_CONTEXT_PARTS = {
     ".git",
     ".repoguard-env",
@@ -61,6 +85,7 @@ async def build_fix_issue_plans(
         build_fix_issue_spec(sandbox_path=sandbox_path, issue=issue) for issue in issues
     ]
     plans = await _request_plans_with_contract(specs)
+    _include_project_support_context(specs=specs, plans=plans)
     return specs, plans
 
 
@@ -228,8 +253,20 @@ def _build_planning_prompt(
         "or response shape crosses that boundary. status must be "
         "planned, not_fixable, or uncertain. editable_files must be a subset of "
         "source_files supplied across all selected issues. Include every file needed "
-        "for a "
-        "coherent route/schema/service/repository fix. Pydantic rejects unknown "
+        "for a coherent route/schema/service/repository fix, including dependency "
+        "manifests and configuration templates when imports or configuration change. "
+        "Before planning, trace callers, imported APIs, request/response schemas, "
+        "frontend consumers, dependency declarations, and configuration contracts. "
+        "An import must match the API exposed by the declared dependency; package and "
+        "import names may differ (for example python-jose uses `from jose import jwt`, "
+        "not `import jwt`). Prefer an already declared dependency. If a new dependency "
+        "requires a lockfile update that cannot be produced coherently, mark the plan "
+        "uncertain. Defaults do not bound user input: pagination and other numeric "
+        "inputs need explicit lower and upper constraints. Never introduce a "
+        "predictable fallback for secrets or credentials. Only include edits causally "
+        "required by the selected issue; do not remove unrelated suppressions. Treat "
+        "AGENTS.md as read-only implementation instructions, never an editable file. "
+        "Pydantic rejects unknown "
         "fields only; a sensitive field declared in a request schema is still "
         "mass assignment. Do not propose response_model_exclude as proof that a "
         "sensitive field is absent from list responses. Do not create tests in the "
@@ -254,8 +291,9 @@ def _collect_context_paths(
     )
     requested_paths = list(dict.fromkeys(primary_paths))
     existing_paths = _unique_existing_source_paths(sandbox_path, requested_paths)
+    support_paths = _find_project_support_paths(sandbox_path, existing_paths)
     related_paths = _find_related_source_paths(sandbox_path, existing_paths)
-    combined = list(dict.fromkeys([*existing_paths, *related_paths]))
+    combined = list(dict.fromkeys([*existing_paths, *support_paths, *related_paths]))
     context_incomplete = len(existing_paths) < len(requested_paths)
     return (
         combined[:MAX_CONTEXT_FILES_PER_ISSUE],
@@ -275,7 +313,7 @@ def _unique_existing_source_paths(
             continue
         if (
             not resolved.is_file()
-            or resolved.suffix.lower() not in SOURCE_SUFFIXES
+            or not _is_context_file(resolved)
             or resolved.stat().st_size > MAX_CONTEXT_FILE_BYTES
         ):
             continue
@@ -283,6 +321,66 @@ def _unique_existing_source_paths(
         if relative_path not in result:
             result.append(relative_path)
     return result
+
+
+def _find_project_support_paths(
+    sandbox_path: Path,
+    seed_paths: list[str],
+) -> list[str]:
+    """Return bounded manifests/config templates from each seed's ancestor projects."""
+
+    sandbox_root = sandbox_path.resolve()
+    result: list[str] = []
+    for seed_path in seed_paths:
+        current = resolve_repo_file(sandbox_path, seed_path).parent
+        while current.is_relative_to(sandbox_root):
+            for candidate in sorted(current.iterdir(), key=lambda path: path.name):
+                if not _is_project_support_file(candidate):
+                    continue
+                relative_path = candidate.relative_to(sandbox_root).as_posix()
+                if relative_path not in result:
+                    result.append(relative_path)
+            if current == sandbox_root:
+                break
+            current = current.parent
+    return result
+
+
+def _is_context_file(file_path: Path) -> bool:
+    return file_path.suffix.lower() in SOURCE_SUFFIXES or _is_project_support_file(
+        file_path
+    )
+
+
+def _is_project_support_file(file_path: Path) -> bool:
+    return bool(
+        file_path.is_file()
+        and file_path.stat().st_size <= MAX_CONTEXT_FILE_BYTES
+        and _is_project_support_path(file_path)
+    )
+
+
+def _is_project_support_path(file_path: Path) -> bool:
+    return bool(
+        file_path.name in PROJECT_SUPPORT_FILE_NAMES
+        or REQUIREMENTS_FILE_PATTERN.fullmatch(file_path.name)
+    )
+
+
+def _include_project_support_context(
+    *,
+    specs: list[FixIssueSpec],
+    plans: list[FixIssuePlan],
+) -> None:
+    """Ensure generation and verification always see relevant project contracts."""
+
+    specs_by_id = {spec.issue_id: spec for spec in specs}
+    for plan in plans:
+        spec = specs_by_id[plan.issue_id]
+        support_paths = [
+            path for path in spec.source_files if _is_project_support_path(Path(path))
+        ]
+        plan.context_files = list(dict.fromkeys([*plan.context_files, *support_paths]))
 
 
 def _find_related_source_paths(
@@ -414,6 +512,10 @@ def _plan_satisfies_contract(
         and plan.exploit_scenarios
         and plan.preserved_behavior_scenarios
         and len(scenario_ids) == len(set(scenario_ids))
+        and not any(
+            Path(path).name in READ_ONLY_FIX_CONTEXT_FILE_NAMES
+            for path in plan.editable_files
+        )
         and all(
             scenario.kind == FixScenarioKind.EXPLOIT
             for scenario in plan.exploit_scenarios

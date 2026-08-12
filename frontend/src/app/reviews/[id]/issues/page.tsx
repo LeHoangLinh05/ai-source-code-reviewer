@@ -26,7 +26,21 @@ import {
 import { Input } from "@/components/ui/input";
 import { PaginationControls } from "@/components/ui/pagination-controls";
 import { getApiErrorMessage } from "@/lib/api-error";
+import {
+  buildFixSelectionItem,
+  clearFixSelections,
+  getFixIssueIds,
+  loadFixSelections,
+  mergeFixSelections,
+  removeFixSelections,
+  saveFixSelections,
+  type FixSelectionItem,
+} from "@/lib/fix-selection";
 import { createFixJob } from "@/lib/fix-jobs";
+import {
+  formatIssueSource,
+  ISSUE_SOURCE_FILTERS,
+} from "@/lib/issue-source";
 import { getReportIssue, getReportIssues } from "@/lib/reports";
 import { useAppDispatch, useAppSelector } from "@/store/hooks";
 import {
@@ -63,22 +77,6 @@ const CATEGORIES: IssueCategory[] = [
   "bug",
   "requirement",
 ];
-const SOURCES: IssueSource[] = [
-  "ai_review",
-  "ruff",
-  "bandit",
-  "eslint",
-  "KB",
-  "secret_scanner",
-];
-const SOURCE_LABELS: Record<IssueSource, string> = {
-  KB: "KB",
-  ai_review: "AI review",
-  bandit: "Bandit",
-  eslint: "ESLint",
-  ruff: "Ruff",
-  secret_scanner: "Secret scanner",
-};
 const SORT_OPTIONS: IssueSort[] = ["-created_at", "created_at", "severity", "file_path"];
 
 export default function ReviewIssuesPage() {
@@ -95,7 +93,15 @@ export default function ReviewIssuesPage() {
   const [isLoading, setIsLoading] = useState(false);
   const [issueList, setIssueList] = useState<IssueListResponse | null>(null);
   const [selectedIssue, setSelectedIssue] = useState<ReviewIssue | null>(null);
-  const [selectedIssueIds, setSelectedIssueIds] = useState<string[]>([]);
+  const [fixSelections, setFixSelections] = useState<FixSelectionItem[]>([]);
+
+  useEffect(() => {
+    setFixSelections(loadFixSelections(jobId, window.sessionStorage));
+  }, [jobId]);
+
+  useEffect(() => {
+    router.prefetch(`/reviews/${jobId}/fixes`);
+  }, [jobId, router]);
 
   useEffect(() => {
     const filePath = searchParams.get("file_path") ?? "";
@@ -158,10 +164,12 @@ export default function ReviewIssuesPage() {
     }
   }
 
-  async function createFixForIssues(issues: ReviewIssue[]) {
-    const issueIds = Array.from(new Set(issues.flatMap(getIssueFixIds)));
+  async function createFixForSelections(
+    selections: FixSelectionItem[],
+  ): Promise<boolean> {
+    const issueIds = getFixIssueIds(selections);
     if (issueIds.length === 0) {
-      return;
+      return false;
     }
 
     setIsCreatingFix(true);
@@ -170,23 +178,50 @@ export default function ReviewIssuesPage() {
       await createFixJob(jobId, { issue_ids: issueIds });
       toast.success("Fix job created.");
       router.push(`/reviews/${jobId}/fixes`);
+      return true;
     } catch (requestError) {
       toast.error(getApiErrorMessage(requestError, "Unable to create fix job."));
+      return false;
     } finally {
       setIsCreatingFix(false);
     }
   }
 
-  function toggleIssueSelection(issueId: string) {
-    setSelectedIssueIds((currentIssueIds) =>
-      currentIssueIds.includes(issueId)
-        ? currentIssueIds.filter((selectedId) => selectedId !== issueId)
-        : [...currentIssueIds, issueId],
-    );
+  function updateFixSelections(
+    update: (currentItems: FixSelectionItem[]) => FixSelectionItem[],
+  ) {
+    setFixSelections((currentItems) => {
+      const updatedItems = update(currentItems);
+      saveFixSelections(jobId, updatedItems, window.sessionStorage);
+      return updatedItems;
+    });
   }
 
-  const selectedIssues =
-    issueList?.issues.filter((issue) => selectedIssueIds.includes(issue.id)) ?? [];
+  function toggleIssueSelection(issue: ReviewIssue) {
+    updateFixSelections((currentItems) => {
+      const isSelected = currentItems.some((item) => item.groupId === issue.id);
+      if (isSelected) {
+        return removeFixSelections(currentItems, [issue.id]);
+      }
+
+      return mergeFixSelections(currentItems, [buildIssueFixSelection(issue)]);
+    });
+  }
+
+  function clearSelection() {
+    clearFixSelections(jobId, window.sessionStorage);
+    setFixSelections([]);
+  }
+
+  async function createSelectedFix() {
+    if (await createFixForSelections(fixSelections)) {
+      clearSelection();
+    }
+  }
+
+  const selectedIssueIds = new Set(
+    fixSelections.map((selection) => selection.groupId),
+  );
 
   return (
     <>
@@ -230,7 +265,8 @@ export default function ReviewIssuesPage() {
             onChange={(value) =>
               dispatch(setIssueSource((value as IssueSource) || null))
             }
-            options={SOURCES}
+            formatOption={(option) => formatIssueSource(option as IssueSource)}
+            options={ISSUE_SOURCE_FILTERS}
             value={filters.source ?? ""}
           />
           <SelectFilter
@@ -272,13 +308,15 @@ export default function ReviewIssuesPage() {
             </CardDescription>
           </div>
           <Button
-            disabled={selectedIssues.length === 0 || isCreatingFix}
-            onClick={() => void createFixForIssues(selectedIssues)}
+            disabled={fixSelections.length === 0 || isCreatingFix}
+            onClick={() => void createSelectedFix()}
             type="button"
           >
             <Wrench aria-hidden="true" />
-            Generate fix
-            {selectedIssues.length > 0 ? ` (${selectedIssues.length})` : ""}
+            {isCreatingFix ? "Creating fix..." : "Generate fix"}
+            {!isCreatingFix && fixSelections.length > 0
+              ? ` (${fixSelections.length})`
+              : ""}
           </Button>
         </CardHeader>
         <CardContent className="p-0">
@@ -317,7 +355,9 @@ export default function ReviewIssuesPage() {
           isCreatingFix={isCreatingFix}
           isLoading={isIssueLoading}
           issue={selectedIssue}
-          onCreateFix={(issue) => createFixForIssues([issue])}
+          onCreateFix={(issue) =>
+            void createFixForSelections([buildIssueFixSelection(issue)])
+          }
           onClose={() => setSelectedIssue(null)}
         />
       ) : null}
@@ -329,8 +369,10 @@ function SelectFilter({
   label,
   onChange,
   options,
+  formatOption = (option) => option.replaceAll("_", " "),
   value,
 }: {
+  formatOption?: (option: string) => string;
   label: string;
   onChange: (value: string) => void;
   options: string[];
@@ -347,7 +389,7 @@ function SelectFilter({
         <option value="">All</option>
         {options.map((option) => (
           <option key={option} value={option}>
-            {option.replaceAll("_", " ")}
+            {formatOption(option)}
           </option>
         ))}
       </select>
@@ -363,8 +405,8 @@ function IssueTable({
 }: {
   issues: ReviewIssue[];
   onSelectIssue: (issue: ReviewIssue) => Promise<void>;
-  onToggleIssue: (issueId: string) => void;
-  selectedIssueIds: string[];
+  onToggleIssue: (issue: ReviewIssue) => void;
+  selectedIssueIds: ReadonlySet<string>;
 }) {
   return (
     <div className="overflow-x-auto border-t border-border">
@@ -397,9 +439,9 @@ function IssueTable({
                 <td className="px-6 py-4">
                   <input
                     aria-label={`Select ${displayTitle}`}
-                    checked={selectedIssueIds.includes(issue.id)}
+                    checked={selectedIssueIds.has(issue.id)}
                     className="size-4 rounded border-border"
-                    onChange={() => onToggleIssue(issue.id)}
+                    onChange={() => onToggleIssue(issue)}
                     onClick={(event) => event.stopPropagation()}
                     type="checkbox"
                   />
@@ -411,7 +453,7 @@ function IssueTable({
                   {issue.category}
                 </td>
                 <td className="px-6 py-4 text-muted-foreground">
-                  {issue.source}
+                  {formatIssueSource(issue.source)}
                 </td>
                 <td className="max-w-[260px] truncate px-6 py-4">
                   {formatIssueTableLocation(issue)}
@@ -492,7 +534,10 @@ function IssueDrawer({
           ) : null}
           <div className="grid gap-3 rounded-md border border-border bg-background p-4 sm:grid-cols-3">
             <DrawerMetric label="Category" value={issue.category} />
-            <DrawerMetric label="Source" value={issue.source} />
+            <DrawerMetric
+              label="Source"
+              value={formatIssueSource(issue.source)}
+            />
             <DrawerMetric
               label="Confidence"
               value={formatConfidence(issue.confidence)}
@@ -517,7 +562,7 @@ function IssueDrawer({
               type="button"
             >
               <Wrench aria-hidden="true" />
-              Generate fix
+              {isCreatingFix ? "Creating fix..." : "Generate fix"}
             </Button>
           </div>
           <DetailSection title="Code Context">
@@ -673,12 +718,8 @@ function getIssueOccurrences(issue: ReviewIssue) {
   return [issueToOccurrence(issue)];
 }
 
-function getIssueFixIds(issue: ReviewIssue) {
-  if (issue.fix_issue_ids.length > 0) {
-    return issue.fix_issue_ids;
-  }
-
-  return [issue.id];
+function buildIssueFixSelection(issue: ReviewIssue): FixSelectionItem {
+  return buildFixSelectionItem(issue);
 }
 
 function getIssueDescriptionLines(
@@ -844,10 +885,6 @@ function getDisplayAffectedFiles(issue: ReviewIssue) {
 
 function formatOccurrenceCount(count: number) {
   return `${count} ${count === 1 ? "occurrence" : "occurrences"}`;
-}
-
-function formatIssueSource(source: IssueSource) {
-  return SOURCE_LABELS[source];
 }
 
 function formatIssuePath(filePath: string | null) {

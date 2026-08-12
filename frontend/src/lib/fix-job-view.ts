@@ -101,6 +101,9 @@ export function getFixProgressMessage(fixOrStatus: FixJob | FixJobStatus): strin
   if (status === "WAITING_APPROVAL") {
     return "Patch is ready for review.";
   }
+  if (status === "VALIDATING") {
+    return "Reviewing cross-file patch logic.";
+  }
   if (status === "APPROVED") {
     return "Patch approved.";
   }
@@ -172,6 +175,10 @@ export function splitUnifiedDiffByFile(diff: FixDiff): DiffFileSection[] {
 }
 
 export function formatFixStatus(status: FixJobStatus) {
+  if (status === "VALIDATING") {
+    return "logic review";
+  }
+
   return status.replaceAll("_", " ").toLowerCase();
 }
 

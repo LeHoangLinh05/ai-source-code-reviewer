@@ -20,6 +20,7 @@ from app.schemas.fix_job import (
     FixValidationResult,
 )
 from app.services.fix_pipeline.contracts import (
+    READ_ONLY_FIX_CONTEXT_FILE_NAMES,
     FixGenerationDisposition,
     FixGenerationDispositionStatus,
     FixGenerationResponse,
@@ -103,9 +104,9 @@ async def repair_fix_failures(
     specs: list[FixIssueSpec],
     plans: list[FixIssuePlan],
     issue_results: list[FixIssueResult],
-    validation_result: FixValidationResult,
+    validation_result: FixValidationResult | None = None,
 ) -> bool:
-    """Repair unresolved issue contracts and command failures as coherent patches."""
+    """Repair unresolved logic contracts and optional command failures."""
 
     failed_ids = {
         result.issue_id for result in issue_results if result.verdict.value != "fixed"
@@ -121,20 +122,20 @@ async def repair_fix_failures(
     ]
     has_command_failure = any(
         check.status.value == "failed" and check.kind.value != "semantic"
-        for check in validation_result.checks
+        for check in (validation_result.checks if validation_result else [])
     )
     if has_command_failure and not failed_plans:
         failed_plans = [
             plan for plan in plans if plan.status == FixIssuePlanStatus.PLANNED
         ]
-    if not failed_plans and validation_result.status.value != "FAILED":
+    if not failed_plans and not has_command_failure:
         return False
 
     repair_context: dict[str, object] = {
         "issue_results": [result.model_dump(mode="json") for result in issue_results],
         "failed_checks": [
             check.model_dump(mode="json")
-            for check in validation_result.checks
+            for check in (validation_result.checks if validation_result else [])
             if check.status.value == "failed"
         ],
     }
@@ -347,7 +348,15 @@ def _build_generation_prompt(
         "one item for each requested issue_id, with status changed, not_changed, or "
         "uncertain. Do not return unknown issue IDs, duplicate paths, test files, or "
         "files outside editable_files. Satisfy every acceptance_check and avoid every "
-        "forbidden_shortcut. Preserve unrelated APIs and behavior. For repair work, "
+        "forbidden_shortcut. Preserve unrelated APIs and behavior. Treat the patch as "
+        "one cross-file change: update every necessary caller, schema, service, "
+        "repository, dependency manifest, and configuration template. Verify that "
+        "each import matches both the declared package and that package's actual API; "
+        "package and import names may differ (python-jose uses "
+        "`from jose import jwt`). "
+        "Do not use a default value as a substitute for enforcing lower and upper "
+        "bounds on user-controlled numeric input. Never add predictable fallback "
+        "secrets. Do not alter unrelated suppressions or findings. For repair work, "
         "use the concrete failed checks as evidence and keep the original fix "
         "intent.\n\n" + json.dumps(payload, ensure_ascii=False)
     )
@@ -413,6 +422,16 @@ def _validate_plan_paths(
         if plan.status == FixIssuePlanStatus.PLANNED and not plan.editable_files:
             raise FixPipelineError(
                 f"Fix planner returned no editable files for issue {plan.issue_id}"
+            )
+        read_only_paths = {
+            path
+            for path in plan.editable_files
+            if Path(path).name in READ_ONLY_FIX_CONTEXT_FILE_NAMES
+        }
+        if read_only_paths:
+            raise FixPipelineError(
+                "Fix planner selected read-only instruction files: "
+                + ", ".join(sorted(read_only_paths))
             )
 
 

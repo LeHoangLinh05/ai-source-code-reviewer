@@ -6,6 +6,7 @@ from uuid import UUID
 from app.models.review_issue import IssueCategory, IssueSeverity
 from app.models.review_report import ReviewReport
 from app.schemas.normalized_issue import NormalizedIssue
+from app.services.reporting.finding_identity import normalize_finding_path
 
 STATIC_REPORT_MODEL = "static-pipeline-v1"
 AI_REPORT_MODEL = "langchain-structured-report-v1"
@@ -58,7 +59,7 @@ def build_top_risky_files(
 
     grouped: dict[str, list[NormalizedIssue]] = {}
     for issue in issues:
-        file_path = issue.file_path or "Unknown file"
+        file_path = normalize_finding_path(issue.file_path) or "Unknown file"
         grouped.setdefault(file_path, []).append(issue)
 
     ranked_files = sorted(

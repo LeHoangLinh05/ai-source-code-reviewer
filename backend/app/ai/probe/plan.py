@@ -6,6 +6,8 @@ import re
 from collections.abc import Sequence
 
 from app.ai.probe.contracts import (
+    OTP_CANONICAL_CLAIM_TYPES,
+    OTP_SECURITY_PROBE_ID,
     SENSITIVE_DATA_LOGGING_PROBE_ID,
     UNRESTRICTED_FILE_UPLOAD_PROBE_ID,
     ProbeDefinition,
@@ -34,6 +36,7 @@ def _baseline(
     lexical_terms: tuple[str, ...],
     question: str,
     risk_area: str | None = None,
+    allowed_claim_types: tuple[str, ...] = (),
 ) -> ProbeDefinition:
     return ProbeDefinition(
         probe_id=probe_id,
@@ -45,6 +48,7 @@ def _baseline(
         lexical_terms=lexical_terms,
         judge_question=question,
         top_k=CATEGORY_TOP_K[category],
+        allowed_claim_types=allowed_claim_types,
     )
 
 
@@ -342,7 +346,7 @@ BASELINE_PROBES: tuple[ProbeDefinition, ...] = (
         question="Does an external boundary accept unsafe or overly broad input?",
     ),
     _baseline(
-        probe_id="security.otp_exposure_rate_limit",
+        probe_id=OTP_SECURITY_PROBE_ID,
         category="security",
         priority="high",
         queries=(
@@ -351,9 +355,15 @@ BASELINE_PROBES: tuple[ProbeDefinition, ...] = (
         ),
         lexical_terms=("otp", "verification_code", "attempt", "rate_limit", "expire"),
         question=(
-            "Can an OTP be disclosed, reused, brute-forced without throttling, or "
-            "remain valid without a short expiration and one-time invalidation?"
+            "Audit the complete OTP flow and return separate issues for every "
+            "proved weakness: response or log exposure, missing authentication, "
+            "predictable generation, missing attempt throttling, plaintext storage, "
+            "or missing expiry and one-time invalidation. When the retrieved bundle "
+            "contains the route declaration plus its handler and delegated service, "
+            "the absence of an authentication dependency or throttling in that "
+            "complete local flow is evidence for the corresponding missing control."
         ),
+        allowed_claim_types=OTP_CANONICAL_CLAIM_TYPES,
     ),
     _baseline(
         probe_id="security.insecure_default_credentials",

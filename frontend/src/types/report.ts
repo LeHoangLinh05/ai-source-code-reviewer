@@ -32,6 +32,7 @@ export type ReviewReport = {
   tech_stack: Record<string, unknown> | null;
   top_risky_files: TopRiskyFile[] | null;
   executive_summary: string | null;
+  analysis_overview: string | null;
   ai_model_used: string | null;
   created_at: string;
 };
@@ -39,5 +40,9 @@ export type ReviewReport = {
 export type ReportSummary = {
   job_id: string;
   executive_summary: string | null;
+  analysis_overview: string | null;
   scores: ReportScores;
+  total_findings: number;
+  total_occurrences: number;
+  total_raw_issues: number;
 };

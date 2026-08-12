@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import ast
 import json
+import logging
 import re
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 from uuid import UUID
+
+from pydantic import ValidationError
 
 from app.ai.json_utils import parse_json_object_text
 from app.models.fix_job import FixValidationStatus
@@ -36,6 +39,7 @@ from app.services.fix_pipeline.workspace import resolve_repo_file
 
 MAX_VERIFICATION_CONTRACT_RETRIES = 1
 MAX_VERIFICATION_OUTPUT_LENGTH = 4_000
+MAX_VERIFICATION_CONTRACT_ERROR_LENGTH = 1_000
 RUFF_COMMAND = "ruff"
 BANDIT_COMMAND = "bandit"
 SENSITIVE_FIELDS = {"cost_price", "role", "is_admin", "is_active"}
@@ -50,7 +54,13 @@ RESPONSE_SENSITIVE_FIELDS = {
 SENSITIVE_ROUTE_TERMS = {"admin", "cost", "margin", "profit", "report"}
 ADMIN_DEPENDENCY_TERMS = {"require_admin", "get_current_admin", "admin_required"}
 
+logger = logging.getLogger(__name__)
+
 Verifier = Callable[[Path, FixIssueSpec, FixIssuePlan, int], FixIssueResult]
+
+
+class _VerificationContractError(ValueError):
+    """The verifier responded, but its JSON did not match the response contract."""
 
 
 async def verify_fix_issues(
@@ -69,14 +79,17 @@ async def verify_fix_issues(
     issues_by_id = {issue.id: issue for issue in issues}
     specs_by_id = {spec.issue_id: spec for spec in specs}
     results: dict[UUID, FixIssueResult] = {}
-    fallback_specs: list[FixIssueSpec] = []
-    fallback_plans: list[FixIssuePlan] = []
+    planned_specs: list[FixIssueSpec] = []
+    planned_plans: list[FixIssuePlan] = []
+    deterministic_results: dict[UUID, FixIssueResult] = {}
     for plan in plans:
         spec = specs_by_id[plan.issue_id]
         issue = issues_by_id[plan.issue_id]
         if plan.status != FixIssuePlanStatus.PLANNED:
             results[plan.issue_id] = _uncertain_plan_result(plan, attempt)
             continue
+        planned_specs.append(spec)
+        planned_plans.append(plan)
         static_result = _verify_static_finding(
             sandbox_path=sandbox_path,
             issue=issue,
@@ -87,23 +100,30 @@ async def verify_fix_issues(
             executor=executor,
         )
         if static_result is not None:
-            results[plan.issue_id] = static_result
+            deterministic_results[plan.issue_id] = static_result
             continue
         verifier = DEDICATED_VERIFIERS.get(spec.probe_id or "")
         if verifier is not None:
-            results[plan.issue_id] = verifier(sandbox_path, spec, plan, attempt)
-            continue
-        fallback_specs.append(spec)
-        fallback_plans.append(plan)
+            deterministic_results[plan.issue_id] = verifier(
+                sandbox_path,
+                spec,
+                plan,
+                attempt,
+            )
 
-    if fallback_specs:
-        fallback_results = await _verify_with_llm_contract(
+    if planned_specs:
+        logic_results = await _verify_with_llm_contract(
             sandbox_path=sandbox_path,
-            specs=fallback_specs,
-            plans=fallback_plans,
+            specs=planned_specs,
+            plans=planned_plans,
             attempt=attempt,
         )
-        results.update({result.issue_id: result for result in fallback_results})
+        for logic_result in logic_results:
+            deterministic_result = deterministic_results.get(logic_result.issue_id)
+            results[logic_result.issue_id] = _combine_logic_results(
+                logic_result,
+                deterministic_result,
+            )
 
     requested_ids = [plan.issue_id for plan in plans]
     if set(results) != set(requested_ids):
@@ -118,6 +138,30 @@ async def verify_fix_issues(
         )
         for result in ordered_results
     ]
+
+
+def _combine_logic_results(
+    logic_result: FixIssueResult,
+    deterministic_result: FixIssueResult | None,
+) -> FixIssueResult:
+    """Keep the least optimistic conclusion from independent logic checks."""
+
+    if deterministic_result is None:
+        return logic_result
+    priority = {
+        FixIssueVerdict.FIXED: 0,
+        FixIssueVerdict.UNCERTAIN: 1,
+        FixIssueVerdict.UNRESOLVED: 2,
+    }
+    primary, secondary = sorted(
+        (logic_result, deterministic_result),
+        key=lambda result: priority[result.verdict],
+        reverse=True,
+    )
+    combined = primary.model_copy(deep=True)
+    if primary.summary != secondary.summary:
+        combined.summary = f"{primary.summary} Independent check: {secondary.summary}"
+    return combined
 
 
 def _enforce_scenario_contract(
@@ -729,15 +773,70 @@ async def _verify_with_llm_contract(
     plans: list[FixIssuePlan],
     attempt: int,
 ) -> list[FixIssueResult]:
-    requested_ids = [spec.issue_id for spec in specs]
-    for contract_attempt in range(MAX_VERIFICATION_CONTRACT_RETRIES + 1):
-        response = await _request_llm_verification(
+    batch_results = await _request_valid_llm_results(
+        sandbox_path=sandbox_path,
+        specs=specs,
+        plans=plans,
+        attempt=attempt,
+    )
+    if batch_results is not None:
+        return batch_results
+
+    results: list[FixIssueResult] = []
+    for spec, plan in zip(specs, plans, strict=True):
+        issue_results = await _request_valid_llm_results(
             sandbox_path=sandbox_path,
-            specs=specs,
-            plans=plans,
+            specs=[spec],
+            plans=[plan],
             attempt=attempt,
-            retry=contract_attempt > 0,
         )
+        if issue_results is None:
+            results.append(
+                _result(
+                    spec,
+                    plan,
+                    FixIssueVerdict.UNCERTAIN,
+                    "Semantic verifier did not return a valid response after retries.",
+                    attempt,
+                )
+            )
+            continue
+        results.extend(issue_results)
+    return results
+
+
+async def _request_valid_llm_results(
+    *,
+    sandbox_path: Path,
+    specs: list[FixIssueSpec],
+    plans: list[FixIssuePlan],
+    attempt: int,
+) -> list[FixIssueResult] | None:
+    requested_ids = [spec.issue_id for spec in specs]
+    contract_error: str | None = None
+    for contract_attempt in range(MAX_VERIFICATION_CONTRACT_RETRIES + 1):
+        try:
+            response = await _request_llm_verification(
+                sandbox_path=sandbox_path,
+                specs=specs,
+                plans=plans,
+                attempt=attempt,
+                retry=contract_attempt > 0,
+                contract_error=contract_error,
+            )
+        except _VerificationContractError as error:
+            contract_error = str(error)[:MAX_VERIFICATION_CONTRACT_ERROR_LENGTH]
+            logger.warning(
+                "Fix verifier returned an invalid response contract",
+                extra={
+                    "contract_attempt": contract_attempt + 1,
+                    "requested_issue_ids": [
+                        str(issue_id) for issue_id in requested_ids
+                    ],
+                },
+            )
+            continue
+
         if _has_valid_llm_results(response.results, requested_ids, plans):
             ordered_results = _ordered_results(response.results, requested_ids)
             return _normalize_llm_results(
@@ -746,33 +845,11 @@ async def _verify_with_llm_contract(
                 plans=plans,
                 attempt=attempt,
             )
-
-    results: list[FixIssueResult] = []
-    for spec, plan in zip(specs, plans, strict=True):
-        response = await _request_llm_verification(
-            sandbox_path=sandbox_path,
-            specs=[spec],
-            plans=[plan],
-            attempt=attempt,
-            retry=True,
+        contract_error = (
+            "results must contain exactly the requested issue IDs, and fixed results "
+            "must include evidence whose file_path belongs to the issue plan"
         )
-        if not _has_valid_llm_results(
-            response.results,
-            [spec.issue_id],
-            [plan],
-        ):
-            raise FixPipelineError(
-                f"Semantic verifier contract failed for issue {spec.issue_id}"
-            )
-        results.extend(
-            _normalize_llm_results(
-                response.results,
-                specs=[spec],
-                plans=[plan],
-                attempt=attempt,
-            )
-        )
-    return results
+    return None
 
 
 async def _request_llm_verification(
@@ -782,10 +859,14 @@ async def _request_llm_verification(
     plans: list[FixIssuePlan],
     attempt: int,
     retry: bool,
+    contract_error: str | None = None,
 ) -> FixVerificationResponse:
     from app.ai.llm.config import run_with_configured_llm
 
     plans_by_id = {plan.issue_id: plan for plan in plans}
+    original_source = {
+        path: content for spec in specs for path, content in spec.source_files.items()
+    }
     payload: list[dict[str, object]] = []
     for spec in specs:
         plan = plans_by_id[spec.issue_id]
@@ -793,10 +874,16 @@ async def _request_llm_verification(
             path: resolve_repo_file(sandbox_path, path).read_text(encoding="utf-8")
             for path in list(dict.fromkeys([*plan.context_files, *plan.editable_files]))
         }
+        planned_paths = list(dict.fromkeys([*plan.context_files, *plan.editable_files]))
         payload.append(
             {
                 "issue": spec.model_dump(mode="json", exclude={"source_files"}),
                 "plan": plan.model_dump(mode="json"),
+                "pre_patch_source": {
+                    path: original_source[path]
+                    for path in planned_paths
+                    if path in original_source
+                },
                 "post_patch_source": source_files,
             }
         )
@@ -811,32 +898,100 @@ async def _request_llm_verification(
                 ),
                 (
                     "human",
-                    _build_verification_prompt(payload, attempt=attempt, retry=retry),
+                    _build_verification_prompt(
+                        payload,
+                        attempt=attempt,
+                        retry=retry,
+                        contract_error=contract_error,
+                    ),
                 ),
             ]
         )
         parsed = parse_json_object_text(_message_content(result))
         if parsed is None:
-            raise ValueError("Fix verification JSON object was not found")
-        return FixVerificationResponse.model_validate(parsed)
+            raise _VerificationContractError(
+                "the response did not contain a JSON object"
+            )
+        try:
+            return FixVerificationResponse.model_validate(parsed)
+        except ValidationError as error:
+            raise _VerificationContractError(
+                _describe_validation_error(error)
+            ) from error
 
     return await run_with_configured_llm(call)
 
 
 def _build_verification_prompt(
-    payload: list[dict[str, object]], *, attempt: int, retry: bool
+    payload: list[dict[str, object]],
+    *,
+    attempt: int,
+    retry: bool,
+    contract_error: str | None = None,
 ) -> str:
-    retry_text = "Previous output violated the exact-ID contract. " if retry else ""
+    retry_text = ""
+    if retry:
+        retry_text = "Previous output violated the response contract. "
+        if contract_error:
+            retry_text += f"Validation feedback: {contract_error}. "
+    response_contract = {
+        "results": [
+            {
+                "issue_id": "requested UUID",
+                "probe_id": "probe ID or null",
+                "verdict": "fixed | unresolved | uncertain",
+                "summary": "post-patch conclusion",
+                "planned_files": ["relative/path.py"],
+                "changed_files": ["relative/path.py"],
+                "verification_attempts": attempt,
+                "evidence": [
+                    {
+                        "file_path": "relative/path.py",
+                        "line_start": 1,
+                        "line_end": 1,
+                        "rationale": "why this post-patch source supports the verdict",
+                    }
+                ],
+            }
+        ]
+    }
     return (
         f"{retry_text}Return an object with results containing exactly one result per "
         "requested issue_id and no unknown IDs. verdict must be fixed, unresolved, or "
         "uncertain. fixed requires positive post-patch evidence that every safety "
-        "property and acceptance check holds. Include issue_id, probe_id, verdict, "
-        "summary, planned_files, changed_files, verification_attempts, and bounded "
-        "evidence references. uncertain never means fixed. "
-        f"Set verification_attempts to {attempt}.\n\n"
+        "property and acceptance check holds. uncertain never means fixed. Use the "
+        "entire batch as one cross-file patch, not isolated snippets. Before returning "
+        "fixed, compare pre_patch_source with post_patch_source and verify: all "
+        "callers and request/response contracts remain coherent; imported APIs match "
+        "the dependency manifests and the library actually declared (for example, "
+        "python-jose exposes `jose.jwt`, not the separate `jwt` module); new or "
+        "changed "
+        "configuration is deployable without predictable fallback secrets; "
+        "user-controlled numeric inputs enforce both lower and upper bounds rather "
+        "than only declaring defaults; and no unrelated suppressions or behavior were "
+        "changed. If any required related file is absent, or compatibility cannot be "
+        "established from the supplied source, return uncertain. If a concrete "
+        "cross-file inconsistency exists, return unresolved and name it in summary. "
+        "This is a static logic review, not proof that the patch runs. Use the "
+        "exact keys file_path and rationale for every evidence item; do not substitute "
+        "file, path, reason, or another alias. fixed requires at least one evidence "
+        "item. line_start and line_end may be null. "
+        f"Set verification_attempts to {attempt}. Exact JSON shape:\n"
+        + json.dumps(response_contract, ensure_ascii=False)
+        + "\n\nIssues and post-patch source:\n"
         + json.dumps(payload, ensure_ascii=False)
     )
+
+
+def _describe_validation_error(error: ValidationError) -> str:
+    failures = [
+        {
+            "location": ".".join(str(part) for part in failure["loc"]),
+            "message": failure["msg"],
+        }
+        for failure in error.errors(include_url=False, include_input=False)
+    ]
+    return "response schema errors: " + json.dumps(failures, ensure_ascii=False)
 
 
 def _uncertain_plan_result(plan: FixIssuePlan, attempt: int) -> FixIssueResult:

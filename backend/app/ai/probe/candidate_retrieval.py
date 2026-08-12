@@ -6,7 +6,7 @@ import re
 from dataclasses import replace
 from typing import Any
 
-from app.ai.probe.contracts import ProbeDefinition
+from app.ai.probe.contracts import OTP_SECURITY_PROBE_ID, ProbeDefinition
 from app.ai.probe.models import ProbeCandidateChunk
 from app.ai.rag.bm25_index import tokenize
 
@@ -431,6 +431,7 @@ def _fuse_probe_candidates(
         lexical_candidates=[*bm25_candidates, *exact_candidates],
         semantic_candidates=semantic_candidates,
         top_k=top_k,
+        structural_limit=(top_k if probe.probe_id == OTP_SECURITY_PROBE_ID else 2),
     )
     return _fill_diverse_candidates(reserved=reserved, ranked=ranked, top_k=top_k)
 
@@ -570,10 +571,11 @@ def _strategy_quota_candidates(
     lexical_candidates: list[ProbeCandidateChunk],
     semantic_candidates: list[ProbeCandidateChunk],
     top_k: int,
+    structural_limit: int = 2,
 ) -> list[ProbeCandidateChunk]:
     selected: list[ProbeCandidateChunk] = []
     for candidates in (
-        structural_candidates[:2],
+        _unique_candidates(structural_candidates)[:structural_limit],
         lexical_candidates[:2],
         semantic_candidates[:2],
     ):

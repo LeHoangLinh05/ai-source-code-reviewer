@@ -12,6 +12,8 @@ from pydantic import BaseModel, Field
 from app.models.review_issue import ReviewIssue
 from app.schemas.fix_job import FixIssuePlan, FixIssueResult, FixScenarioResult
 
+READ_ONLY_FIX_CONTEXT_FILE_NAMES = frozenset({"AGENTS.md"})
+
 
 class FixIssueSpec(BaseModel):
     """Normalized finding and bounded source context used by the fix pipeline."""

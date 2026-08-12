@@ -198,6 +198,12 @@ def test_planner_contract_rejects_planned_fix_when_context_is_incomplete() -> No
     )
 
 
+def test_planner_contract_rejects_editing_agent_instructions() -> None:
+    plan = _build_plan(uuid4(), "AGENTS.md")
+
+    assert planning._plan_satisfies_contract(plan) is False
+
+
 def test_missing_primary_file_marks_issue_context_incomplete(tmp_path: Path) -> None:
     issue = _build_issue(file_path="src/missing.py")
 
@@ -418,6 +424,35 @@ def test_issue_context_follows_typescript_consumers_and_tests(tmp_path: Path) ->
     assert "src/components/item-list.test.tsx" in spec.source_files
 
 
+def test_issue_context_includes_project_manifests_and_config(tmp_path: Path) -> None:
+    source_path = tmp_path / "backend/app/auth.py"
+    source_path.parent.mkdir(parents=True)
+    source_path.write_text("from jose import jwt\n", encoding="utf-8")
+    requirements_path = tmp_path / "backend/requirements.txt"
+    requirements_path.write_text(
+        "python-jose[cryptography]==3.3.0\n",
+        encoding="utf-8",
+    )
+    environment_path = tmp_path / "backend/.env.example"
+    environment_path.write_text("JWT_SECRET=\n", encoding="utf-8")
+    instructions_path = tmp_path / "AGENTS.md"
+    instructions_path.write_text("Use python-jose.\n", encoding="utf-8")
+
+    spec = planning.build_fix_issue_spec(
+        sandbox_path=tmp_path,
+        issue=_build_issue(file_path="backend/app/auth.py"),
+    )
+    plan = _build_plan(spec.issue_id, "backend/app/auth.py")
+    planning._include_project_support_context(specs=[spec], plans=[plan])
+
+    assert "backend/requirements.txt" in spec.source_files
+    assert "backend/.env.example" in spec.source_files
+    assert "AGENTS.md" in spec.source_files
+    assert "backend/requirements.txt" in plan.context_files
+    assert "backend/.env.example" in plan.context_files
+    assert "AGENTS.md" in plan.context_files
+
+
 @pytest.mark.asyncio
 async def test_planner_retries_group_then_individual_missing_verdicts(
     monkeypatch: pytest.MonkeyPatch,
@@ -506,6 +541,30 @@ def test_planning_prompt_requires_string_contracts() -> None:
 
     assert "affected_contracts must be a JSON array of non-empty strings" in prompt
     assert '["POST /api/items request body"]' in prompt
+    assert "dependency manifests and configuration templates" in prompt
+    assert "from jose import jwt" in prompt
+    assert "explicit lower and upper constraints" in prompt
+    assert "predictable fallback" in prompt
+
+
+def test_generation_prompt_requires_cross_file_logic_checks(tmp_path: Path) -> None:
+    issue_id = uuid4()
+    file_path = "allowed.py"
+    (tmp_path / file_path).write_text("safe = True\n", encoding="utf-8")
+
+    prompt = generation._build_generation_prompt(
+        sandbox_path=tmp_path,
+        specs=[_build_spec(issue_id, file_path)],
+        plans=[_build_plan(issue_id, file_path)],
+        repair_context=None,
+        retry_reason=None,
+    )
+
+    assert "one cross-file change" in prompt
+    assert "dependency manifest" in prompt
+    assert "from jose import jwt" in prompt
+    assert "lower and upper bounds" in prompt
+    assert "predictable fallback secrets" in prompt
 
 
 def _build_plan(issue_id: UUID, file_path: str) -> FixIssuePlan:

@@ -123,12 +123,12 @@ export default function ReviewReportPage() {
             </Card>
           </section>
 
-          <section className="grid gap-4 xl:grid-cols-[1.2fr_0.8fr]">
+          <section className="grid gap-4 xl:grid-cols-2">
             <Card>
               <CardHeader>
-                <CardTitle>Executive Summary</CardTitle>
+                <CardTitle>Verified Statistics</CardTitle>
                 <CardDescription>
-                  Review result generated from the analysis pipeline.
+                  Deterministic counts generated from canonical findings.
                 </CardDescription>
               </CardHeader>
               <CardContent>
@@ -140,16 +140,31 @@ export default function ReviewReportPage() {
 
             <Card>
               <CardHeader>
-                <CardTitle>Top Risky Files</CardTitle>
+                <CardTitle>AI Analysis</CardTitle>
                 <CardDescription>
-                  Files with the highest weighted issue density.
+                  Qualitative risk context without authoritative counts.
                 </CardDescription>
               </CardHeader>
               <CardContent>
-                <TopRiskyFiles files={report.top_risky_files ?? []} jobId={jobId} />
+                <p className="text-[15px] leading-6 text-muted-foreground">
+                  {report.analysis_overview ??
+                    "No qualitative AI analysis is available for this report."}
+                </p>
               </CardContent>
             </Card>
           </section>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Top Risky Files</CardTitle>
+              <CardDescription>
+                Files with the highest weighted occurrence density.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <TopRiskyFiles files={report.top_risky_files ?? []} jobId={jobId} />
+            </CardContent>
+          </Card>
 
           <Card>
             <CardHeader>
@@ -158,10 +173,11 @@ export default function ReviewReportPage() {
                 Files analyzed and findings persisted for this report.
               </CardDescription>
             </CardHeader>
-            <CardContent className="grid gap-4 sm:grid-cols-2">
+            <CardContent className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
               <Metric label="Files analyzed" value={report.total_files_analyzed} />
               <Metric label="Findings" value={report.total_findings} />
               <Metric label="Occurrences" value={report.total_occurrences} />
+              <Metric label="Raw detector rows" value={report.total_raw_issues} />
             </CardContent>
           </Card>
 
@@ -330,7 +346,5 @@ function buildCategoryData(issues: ReviewIssue[]) {
 }
 
 function countCategory(issues: ReviewIssue[], category: IssueCategory) {
-  return issues
-    .filter((issue) => issue.category === category)
-    .reduce((sum, issue) => sum + issue.occurrence_count, 0);
+  return issues.filter((issue) => issue.category === category).length;
 }

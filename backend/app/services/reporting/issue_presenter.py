@@ -3,28 +3,29 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
 
-from app.models.review_issue import IssueSeverity, ReviewIssue
+from app.core.review_targets import is_review_target_path
+from app.models.review_issue import (
+    IssueCategory,
+    IssueSeverity,
+    IssueSource,
+    ReviewIssue,
+)
 from app.schemas.normalized_issue import NormalizedIssue
 from app.schemas.report import IssueOccurrenceResponse, IssueResponse
-from app.services.reporting.finding_identity import review_issue_finding_key
+from app.services.reporting.aggregation import (
+    SEVERITY_SORT_ORDER,
+    CanonicalOccurrence,
+    build_report_aggregate,
+    canonical_occurrences,
+    representative_issue,
+)
+from app.services.reporting.finding_identity import (
+    normalize_finding_path,
+    review_issue_finding_key,
+)
 
-SEVERITY_SORT_ORDER = {
-    IssueSeverity.CRITICAL: 0,
-    IssueSeverity.HIGH: 1,
-    IssueSeverity.MEDIUM: 2,
-    IssueSeverity.LOW: 3,
-    IssueSeverity.INFO: 4,
-}
-
-
-@dataclass(slots=True, frozen=True)
-class _CanonicalOccurrence:
-    """One source location after merging overlapping detector rows."""
-
-    representative: ReviewIssue
-    issues: tuple[ReviewIssue, ...]
+AI_REVIEW_SOURCES = frozenset({IssueSource.AI_REVIEW, IssueSource.KB})
 
 
 def _has_source_context(raw_output: dict[str, object] | None) -> bool:
@@ -36,6 +37,8 @@ def _has_source_context(raw_output: dict[str, object] | None) -> bool:
 def _group_issues(issues: list[ReviewIssue]) -> dict[str, list[ReviewIssue]]:
     groups: dict[str, list[ReviewIssue]] = {}
     for issue in issues:
+        if not is_review_target_path(issue.file_path):
+            continue
         groups.setdefault(_issue_group_key(issue), []).append(issue)
     return groups
 
@@ -64,15 +67,7 @@ def _issue_group_sort_key(issues: list[ReviewIssue], sort_field: str) -> object:
 
 
 def _representative_issue(issues: list[ReviewIssue]) -> ReviewIssue:
-    return sorted(
-        issues,
-        key=lambda issue: (
-            SEVERITY_SORT_ORDER[issue.severity],
-            issue.created_at,
-            issue.file_path,
-            issue.line_start,
-        ),
-    )[0]
+    return representative_issue(issues)
 
 
 def _issue_group_response(
@@ -101,7 +96,10 @@ def _issue_group_response(
     response.occurrence_count = len(occurrences)
     response.raw_issue_count = len(review_issues)
     response.affected_files = sorted(
-        {occurrence.representative.file_path for occurrence in occurrences}
+        {
+            normalize_finding_path(occurrence.representative.file_path)
+            for occurrence in occurrences
+        }
     )
     response.primary_issue_id = representative.id
     response.fix_issue_ids = [
@@ -156,39 +154,8 @@ def _issue_group_key(issue: ReviewIssue) -> str:
 
 def _canonical_occurrences(
     issues: list[ReviewIssue],
-) -> list[_CanonicalOccurrence]:
-    occurrences: list[list[ReviewIssue]] = []
-    for issue in sorted(
-        issues,
-        key=lambda item: (
-            item.file_path,
-            item.line_start,
-            item.line_end,
-            item.created_at,
-        ),
-    ):
-        overlapping = next(
-            (
-                occurrence
-                for occurrence in occurrences
-                if occurrence[0].file_path == issue.file_path
-                and min(item.line_start for item in occurrence) <= issue.line_end
-                and max(item.line_end for item in occurrence) >= issue.line_start
-            ),
-            None,
-        )
-        if overlapping is None:
-            occurrences.append([issue])
-        else:
-            overlapping.append(issue)
-
-    return [
-        _CanonicalOccurrence(
-            representative=_representative_issue(occurrence),
-            issues=tuple(occurrence),
-        )
-        for occurrence in occurrences
-    ]
+) -> list[CanonicalOccurrence]:
+    return list(canonical_occurrences(issues))
 
 
 def _canonical_representative_issues(
@@ -196,11 +163,45 @@ def _canonical_representative_issues(
 ) -> list[ReviewIssue]:
     """Return one representative raw row for every canonical occurrence."""
 
-    return [
-        occurrence.representative
-        for grouped_issues in _group_issues(issues).values()
-        for occurrence in _canonical_occurrences(grouped_issues)
-    ]
+    return build_report_aggregate(issues).occurrence_representatives
+
+
+def _canonical_finding_representative_issues(
+    issues: list[ReviewIssue],
+) -> list[ReviewIssue]:
+    """Return one representative row for every canonical finding."""
+
+    return build_report_aggregate(issues).finding_representatives
+
+
+def _group_matches_filters(
+    issues: list[ReviewIssue],
+    *,
+    severity: IssueSeverity | None,
+    category: IssueCategory | None,
+    source: IssueSource | None,
+    file_path: str | None,
+) -> bool:
+    """Evaluate filters against a complete canonical finding group."""
+
+    representative = _representative_issue(issues)
+    if severity is not None and representative.severity is not severity:
+        return False
+    if category is not None and representative.category is not category:
+        return False
+    if source is IssueSource.AI_REVIEW:
+        if all(issue.source not in AI_REVIEW_SOURCES for issue in issues):
+            return False
+    elif source is not None and all(issue.source is not source for issue in issues):
+        return False
+    if file_path is not None:
+        normalized_filter = file_path.replace("\\", "/").casefold()
+        if all(
+            normalized_filter not in issue.file_path.replace("\\", "/").casefold()
+            for issue in issues
+        ):
+            return False
+    return True
 
 
 def _to_normalized_issue(review_issue: ReviewIssue) -> NormalizedIssue:

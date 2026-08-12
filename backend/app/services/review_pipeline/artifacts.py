@@ -14,6 +14,7 @@ from app.analyzers.static_analysis.eslint_analyzer import run_eslint
 from app.analyzers.static_analysis.ruff_analyzer import run_ruff
 from app.analyzers.structure_analyzer import LANGUAGE_BY_EXTENSION
 from app.core.config import BACKEND_DIR
+from app.core.review_targets import is_review_target_path
 from app.schemas.mongodb import (
     FileTreeEntry,
     ParsedStaticIssue,
@@ -156,16 +157,20 @@ def build_flat_file_tree_entries(
 ) -> list[FileTreeEntry]:
     """Build flat MongoDB file entries from filtered files."""
 
-    return [
-        FileTreeEntry(
-            path=to_relative_posix_path(file_path, sandbox_path),
-            language=LANGUAGE_BY_EXTENSION.get(file_path.suffix.lower()),
-            size_bytes=file_path.stat().st_size,
-            line_count=count_lines(file_path),
-            should_review=True,
+    entries: list[FileTreeEntry] = []
+    for file_path in filtered_files:
+        is_review_target = is_review_target_path(file_path)
+        entries.append(
+            FileTreeEntry(
+                path=to_relative_posix_path(file_path, sandbox_path),
+                language=LANGUAGE_BY_EXTENSION.get(file_path.suffix.lower()),
+                size_bytes=file_path.stat().st_size,
+                line_count=count_lines(file_path),
+                should_review=is_review_target,
+                ignore_reason=None if is_review_target else "project_documentation",
+            )
         )
-        for file_path in filtered_files
-    ]
+    return entries
 
 
 def count_lines(file_path: Path) -> int:

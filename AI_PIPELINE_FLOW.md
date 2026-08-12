@@ -702,7 +702,7 @@ Nếu JSON sai schema hoặc LLM lỗi, backend tạo draft xác định từ pe
 
 ### 10.3 Phần nào do AI, phần nào do backend?
 
-Backend dùng executive summary/top priorities từ LLM khi hợp lệ; tech stack lấy từ report phân tích đã persist. Nếu summary rỗng/placeholder, backend thay bằng summary xác định. Các cột/API score cũ chỉ được giữ nullable và deprecated để tương thích; pipeline luôn ghi `null` và frontend không hiển thị chúng.
+Backend tự sinh `executive_summary` và toàn bộ thống kê từ canonical findings. LLM chỉ được sinh `analysis_overview` định tính cùng top priorities; overview có placeholder hoặc quantitative claim sẽ bị bỏ. Tech stack lấy từ report phân tích đã persist. Các cột/API score cũ chỉ được giữ nullable và deprecated để tương thích; pipeline luôn ghi `null` và frontend không hiển thị chúng.
 
 Static, AI và KB row được canonicalize theo category + claim family. Các row cùng finding và cùng source range overlap trở thành một occurrence, nhưng vẫn giữ `raw_issue_ids` và danh sách source để truy vết. Report trả riêng `total_findings`, `total_occurrences` và `total_raw_issues`; bulk fix dùng một representative issue ID cho mỗi occurrence để tránh tạo patch trùng.
 

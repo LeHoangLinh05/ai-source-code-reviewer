@@ -23,7 +23,7 @@ from app.ai.tools.runtime import (
 )
 from app.models.review_issue import ReviewIssue
 from app.repositories.mongodb_repository import ToolCallLogRepository
-from app.services.reporting.issue_presenter import _canonical_representative_issues
+from app.services.reporting.aggregation import build_report_aggregate
 
 logger = logging.getLogger(__name__)
 
@@ -137,7 +137,8 @@ async def _build_report_context(
         select(ReviewIssue).where(ReviewIssue.job_id == job_id)
     )
     raw_issues = list(result.scalars().all())
-    issues = _canonical_representative_issues(raw_issues)
+    aggregate = build_report_aggregate(raw_issues)
+    issues = aggregate.finding_representatives
     issues.sort(key=_persisted_issue_priority)
     severity_counts: dict[str, int] = {}
     category_counts: dict[str, int] = {}
@@ -164,8 +165,9 @@ async def _build_report_context(
     ]
     return json.dumps(
         {
-            "total_issues": len(issues),
-            "total_raw_issues": len(raw_issues),
+            "total_issues": aggregate.total_findings,
+            "total_occurrences": aggregate.total_occurrences,
+            "total_raw_issues": aggregate.raw_issue_count,
             "severity_counts": severity_counts,
             "category_counts": category_counts,
             "source_counts": source_counts,

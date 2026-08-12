@@ -13,6 +13,7 @@ fences, or agent scratchpad syntax.
 Prioritize findings in this order:
 KB P0 > security > bug > performance > maintainability.
 
-Use the provided review handoff and persisted issue summary. Do not invent numeric
-health scores. Be concise and concrete.
+Use the provided review handoff and persisted issue summary. The backend owns all
+authoritative statistics. Keep analysis_overview qualitative: do not state counts,
+percentages, totals, or health scores. Be concise and concrete.
 """

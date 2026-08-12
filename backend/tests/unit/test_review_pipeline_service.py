@@ -17,6 +17,7 @@ from app.services.code_indexing.documents import (
 )
 from app.services.code_indexing.service import CodeIndexingService
 from app.services.review_pipeline import service as review_pipeline_service
+from app.services.review_pipeline.artifacts import build_flat_file_tree_entries
 from app.services.review_pipeline.service import (
     ReviewJobCanceled,
     ReviewPipelineError,
@@ -155,7 +156,7 @@ def test_markdown_plain_chunks_skip_non_readme_files(tmp_path: Path) -> None:
     assert chunks == []
 
 
-def test_markdown_plain_chunks_keep_readme_files(tmp_path: Path) -> None:
+def test_markdown_plain_chunks_skip_readme_review_targets(tmp_path: Path) -> None:
     readme_path = tmp_path / "README.md"
     readme_path.write_text("# Project\n\nSetup instructions\n", encoding="utf-8")
 
@@ -166,9 +167,27 @@ def test_markdown_plain_chunks_keep_readme_files(tmp_path: Path) -> None:
         issues=[],
     )
 
-    assert len(chunks) == 1
-    assert chunks[0].file_path == "README.md"
-    assert chunks[0].language == "markdown"
+    assert chunks == []
+
+
+def test_readme_remains_in_file_tree_as_context_only(tmp_path: Path) -> None:
+    readme_path = tmp_path / "README.md"
+    source_path = tmp_path / "app.py"
+    readme_path.write_text("# Project\n", encoding="utf-8")
+    source_path.write_text("value = 1\n", encoding="utf-8")
+
+    entries = {
+        entry.path: entry
+        for entry in build_flat_file_tree_entries(
+            tmp_path,
+            [readme_path, source_path],
+        )
+    }
+
+    assert entries["README.md"].should_review is False
+    assert entries["README.md"].ignore_reason == "project_documentation"
+    assert entries["app.py"].should_review is True
+    assert entries["app.py"].ignore_reason is None
 
 
 @pytest.mark.asyncio

@@ -1,0 +1,69 @@
+{
+  "name": "mvp_notification_vulnerable_otp",
+  "repository_url": "https://github.com/LeHoangLinh05/mvp-notification.git",
+  "commit_sha": "d35328800b32d28e0731da86e2abbe4110d024e2",
+  "review_options": {
+    "review_mode": "full_audit",
+    "rule_profile": null
+  },
+  "require_full_recall": true,
+  "smart_baseline": {},
+  "expected_issues": [
+    {
+      "id": "NOTIFY-OTP-001",
+      "file_path": "backend/app/api/notifications.py",
+      "line_start": 21,
+      "line_end": 23,
+      "category": "security",
+      "claim_type": "otp_missing_authentication",
+      "severity": null,
+      "detector_expected": ["ai_review"],
+      "expected_probes": ["security.otp_exposure_rate_limit"]
+    },
+    {
+      "id": "NOTIFY-OTP-002",
+      "file_path": "backend/app/services/notification_service.py",
+      "line_start": 29,
+      "line_end": 32,
+      "category": "security",
+      "claim_type": "otp_exposure",
+      "severity": null,
+      "detector_expected": ["ai_review"],
+      "expected_probes": ["security.otp_exposure_rate_limit"]
+    },
+    {
+      "id": "NOTIFY-OTP-003",
+      "file_path": "backend/app/services/notification_service.py",
+      "line_start": 30,
+      "line_end": 30,
+      "category": "security",
+      "claim_type": "otp_weak_randomness",
+      "severity": null,
+      "detector_expected": ["ai_review"],
+      "expected_probes": ["security.otp_exposure_rate_limit"]
+    },
+    {
+      "id": "NOTIFY-OTP-004",
+      "file_path": "backend/app/api/notifications.py",
+      "line_start": 20,
+      "line_end": 23,
+      "category": "security",
+      "claim_type": "otp_missing_rate_limit",
+      "severity": null,
+      "detector_expected": ["ai_review"],
+      "expected_probes": ["security.otp_exposure_rate_limit"]
+    },
+    {
+      "id": "NOTIFY-OTP-005",
+      "file_path": "backend/app/repositories/notification_repository.py",
+      "line_start": 41,
+      "line_end": 45,
+      "category": "security",
+      "claim_type": "otp_plaintext_storage",
+      "severity": null,
+      "detector_expected": ["ai_review"],
+      "expected_probes": ["security.otp_exposure_rate_limit"]
+    }
+  ],
+  "false_positive_baits": []
+}

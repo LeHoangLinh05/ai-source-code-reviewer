@@ -38,6 +38,7 @@ from app.ai.probe.models import (
     _probe_id,
 )
 from app.ai.roadmap.knowledge import load_roadmap_requirements
+from app.core.review_targets import is_review_target_path
 from app.models.review_issue import (
     IssueCategory,
     IssueSeverity,
@@ -49,8 +50,7 @@ from app.services.reporting.finding_identity import (
     CLAIM_TYPE_FIELD,
     FINDING_KEY_FIELD,
     build_finding_key,
-    normalize_claim_type,
-    review_issue_finding_key,
+    canonical_probe_claim_type,
 )
 
 PROBE_JUDGE_TOOL_NAME = "probe_judge"
@@ -159,11 +159,6 @@ class ProbeJudgeService:
         """Judge evidence batches and persist accepted issues."""
 
         summary = ProbeJudgeSummary()
-        existing_issues = [
-            issue
-            for issue in await self.report_repository.list_all_issues(job_id)
-            if issue.source not in {IssueSource.AI_REVIEW, IssueSource.KB}
-        ]
         pending_issues: list[ReviewIssue] = []
         batches = _judge_batches(
             bundles,
@@ -204,10 +199,8 @@ class ProbeJudgeService:
                     job_id=job_id,
                     results=outcome.response.results,
                     bundles=batch,
-                    existing_issues=existing_issues,
                 )
                 pending_issues.extend(batch_summary.issues)
-                existing_issues.extend(batch_summary.issues)
                 summary = ProbeJudgeSummary(
                     judged_batches=summary.judged_batches + 1,
                     reported_issues=(
@@ -334,7 +327,6 @@ class ProbeJudgeService:
         job_id: UUID,
         results: list[ProbeJudgeResult],
         bundles: list[ProbeEvidenceBundle],
-        existing_issues: list[ReviewIssue],
     ) -> _BatchPersistenceSummary:
         created_issues: list[ReviewIssue] = []
         issue_results = [result for result in results if result.verdict == "issue"]
@@ -353,7 +345,6 @@ class ProbeJudgeService:
                     job_id=job_id,
                     candidate=candidate,
                     bundles=bundles,
-                    existing_issues=[*existing_issues, *created_issues],
                 )
                 if review_issue is not None:
                     created_issues.append(review_issue)
@@ -389,12 +380,10 @@ class ProbeJudgeService:
         job_id: UUID,
         candidate: ProbeJudgeIssueCandidate,
         bundles: list[ProbeEvidenceBundle],
-        existing_issues: list[ReviewIssue],
     ) -> ReviewIssue | None:
         context = self._candidate_persistence_context(
             candidate=candidate,
             bundles=bundles,
-            existing_issues=existing_issues,
         )
         if context is None:
             return None
@@ -409,7 +398,6 @@ class ProbeJudgeService:
         *,
         candidate: ProbeJudgeIssueCandidate,
         bundles: list[ProbeEvidenceBundle],
-        existing_issues: list[ReviewIssue],
     ) -> _CandidatePersistenceContext | None:
         if not self._candidate_is_eligible(candidate):
             return None
@@ -418,34 +406,36 @@ class ProbeJudgeService:
         if location is None or not evidence_chunks:
             return None
         file_path, line_start, line_end = location
+        if not is_review_target_path(file_path):
+            return None
         category = _issue_category(candidate.category)
         title = str(candidate.title or "AI review finding")
-        claim_type = normalize_claim_type(
-            candidate.claim_type,
-            fallback_title=title,
-        )
-        finding_key = build_finding_key(
-            category=category,
-            claim_type=claim_type,
-            title=title,
-        )
-        overlapping_issues = [
-            issue
-            for issue in existing_issues
-            if issue.file_path == file_path
-            and issue.category == category
-            and issue.line_start <= line_end
-            and issue.line_end >= line_start
-        ]
-        if any(
-            review_issue_finding_key(issue) == finding_key
-            for issue in overlapping_issues
-        ):
-            return None
         rule_id = _candidate_rule_id(
             candidate,
             bundles,
             roadmap_by_id=self.roadmap_by_id,
+        )
+        claim_type = canonical_probe_claim_type(
+            probe_id=candidate.probe_id,
+            claim_type=candidate.claim_type,
+            fallback_title=title,
+            context_text=_candidate_claim_context(candidate, evidence_chunks),
+        )
+        allowed_claim_types = next(
+            (
+                bundle.probe.allowed_claim_types
+                for bundle in bundles
+                if bundle.probe.probe_id == candidate.probe_id
+            ),
+            (),
+        )
+        if allowed_claim_types and claim_type not in allowed_claim_types:
+            return None
+        finding_key = build_finding_key(
+            category=category,
+            claim_type=claim_type,
+            title=title,
+            roadmap_rule_id=rule_id,
         )
         if self._evidence_contradicts_candidate(candidate, rule_id, evidence_chunks):
             return None
@@ -540,6 +530,15 @@ class ProbeJudgeService:
                 },
             },
         )
+
+
+def _candidate_claim_context(
+    candidate: ProbeJudgeIssueCandidate,
+    evidence_chunks: list[ProbeCandidateChunk],
+) -> str:
+    context_parts = [candidate.description or "", candidate.suggestion or ""]
+    context_parts.extend(chunk.content for chunk in evidence_chunks)
+    return "\n".join(context_parts)
 
 
 def _probe_verdict_contract(

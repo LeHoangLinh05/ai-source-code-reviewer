@@ -66,6 +66,21 @@ def test_top_risky_files_prioritize_p0_then_categories() -> None:
     ]
 
 
+def test_top_risky_files_merge_equivalent_relative_paths() -> None:
+    issues = [
+        _issue(IssueSeverity.HIGH, IssueCategory.SECURITY, "app/utils.py"),
+        _issue(IssueSeverity.LOW, IssueCategory.SECURITY, "./app/utils.py"),
+    ]
+
+    assert build_top_risky_files(issues) == [
+        {
+            "path": "app/utils.py",
+            "issue_count": 2,
+            "max_severity": "high",
+        }
+    ]
+
+
 def _issue(
     severity: IssueSeverity,
     category: IssueCategory,

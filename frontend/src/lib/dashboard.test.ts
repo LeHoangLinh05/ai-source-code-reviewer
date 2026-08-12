@@ -76,6 +76,7 @@ function makeReport(
     tech_stack: null,
     top_risky_files: null,
     executive_summary: null,
+    analysis_overview: null,
     ai_model_used: null,
     created_at: DEFAULT_CREATED_AT,
     ...overrides,

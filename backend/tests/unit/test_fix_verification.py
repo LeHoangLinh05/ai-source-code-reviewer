@@ -19,7 +19,6 @@ from app.schemas.fix_job import (
 )
 from app.services.fix_pipeline import verification
 from app.services.fix_pipeline.contracts import FixIssueSpec, FixVerificationResponse
-from app.services.fix_pipeline.errors import FixPipelineError
 
 Verifier = Callable[[Path, FixIssueSpec, FixIssuePlan, int], FixIssueResult]
 
@@ -380,7 +379,7 @@ async def test_llm_verifier_retries_group_then_each_missing_issue(
 
 
 @pytest.mark.asyncio
-async def test_llm_verifier_contract_failure_propagates(
+async def test_llm_verifier_contract_failure_becomes_uncertain(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -412,13 +411,101 @@ async def test_llm_verifier_contract_failure_propagates(
         request_unknown_result,
     )
 
-    with pytest.raises(FixPipelineError, match="contract failed"):
-        await verification._verify_with_llm_contract(
-            sandbox_path=tmp_path,
-            specs=[spec],
-            plans=[plan],
-            attempt=1,
+    results = await verification._verify_with_llm_contract(
+        sandbox_path=tmp_path,
+        specs=[spec],
+        plans=[plan],
+        attempt=1,
+    )
+
+    assert len(results) == 1
+    assert results[0].issue_id == issue_id
+    assert results[0].verdict == FixIssueVerdict.UNCERTAIN
+    assert "valid response" in results[0].summary
+
+
+def test_fix_evidence_reference_normalizes_common_llm_aliases() -> None:
+    evidence = FixEvidenceReference.model_validate(
+        {
+            "file": "backend/app/services/notification_service.py",
+            "explanation": "The unsafe deserialization path now rejects pickle data.",
+        }
+    )
+
+    assert evidence.file_path == "backend/app/services/notification_service.py"
+    assert evidence.rationale.startswith("The unsafe deserialization")
+
+
+@pytest.mark.asyncio
+async def test_llm_verifier_retries_malformed_response_schema(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    issue_id = uuid4()
+    spec = _build_spec(issue_id, "custom.issue", "app.py")
+    plan = _build_plan(issue_id, "custom.issue", "app.py")
+    calls: list[str | None] = []
+
+    async def request_llm_verification(**kwargs: object) -> FixVerificationResponse:
+        contract_error = kwargs.get("contract_error")
+        assert contract_error is None or isinstance(contract_error, str)
+        calls.append(contract_error)
+        if len(calls) == 1:
+            raise verification._VerificationContractError(
+                "results.0.evidence.0.rationale is required"
+            )
+        return FixVerificationResponse(
+            results=[
+                FixIssueResult(
+                    issue_id=issue_id,
+                    probe_id=spec.probe_id,
+                    verdict=FixIssueVerdict.FIXED,
+                    summary="verified",
+                    verification_attempts=1,
+                    evidence=[
+                        FixEvidenceReference(
+                            file_path="app.py",
+                            rationale="Post-patch property holds",
+                        )
+                    ],
+                )
+            ]
         )
+
+    monkeypatch.setattr(
+        verification,
+        "_request_llm_verification",
+        request_llm_verification,
+    )
+
+    results = await verification._verify_with_llm_contract(
+        sandbox_path=tmp_path,
+        specs=[spec],
+        plans=[plan],
+        attempt=1,
+    )
+
+    assert results[0].verdict == FixIssueVerdict.FIXED
+    assert calls == [None, "results.0.evidence.0.rationale is required"]
+
+
+def test_verification_prompt_requires_exact_evidence_keys() -> None:
+    prompt = verification._build_verification_prompt(
+        [],
+        attempt=2,
+        retry=True,
+        contract_error="rationale is required",
+    )
+
+    assert '"file_path"' in prompt
+    assert '"rationale"' in prompt
+    assert "rationale is required" in prompt
+    assert '"verification_attempts": 2' in prompt
+    assert "one cross-file patch" in prompt
+    assert "pre_patch_source" in prompt
+    assert "python-jose exposes `jose.jwt`" in prompt
+    assert "lower and upper bounds" in prompt
+    assert "predictable fallback secrets" in prompt
 
 
 def _run_verifier(

@@ -8,7 +8,7 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useForm } from "react-hook-form";
 import { toast } from "sonner";
@@ -379,6 +379,8 @@ function RepositoryTable({
   onDeleteRepository,
   repositories,
 }: RepositoryTableProps) {
+  const router = useRouter();
+
   return (
     <div className="overflow-x-auto border-t border-border">
       <table className="w-full min-w-[760px] text-left text-[15px]">
@@ -394,16 +396,24 @@ function RepositoryTable({
         <tbody>
           {repositories.map((repository) => (
             <tr
-              className="border-t border-border transition-colors hover:bg-muted/35"
+              aria-label={`Open ${repository.name}`}
+              className="cursor-pointer border-t border-border transition-colors hover:bg-muted/35 focus-visible:bg-muted/35 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
               key={repository.id}
+              onClick={() => router.push(`/repositories/${repository.id}`)}
+              onKeyDown={(event) => {
+                if (event.target !== event.currentTarget || event.key !== "Enter") {
+                  return;
+                }
+
+                router.push(`/repositories/${repository.id}`);
+              }}
+              role="link"
+              tabIndex={0}
             >
               <td className="px-6 py-4">
-                <Link
-                  className="font-medium text-foreground hover:text-primary/80"
-                  href={`/repositories/${repository.id}`}
-                >
+                <span className="font-medium text-foreground">
                   {repository.name}
-                </Link>
+                </span>
               </td>
               <td className="max-w-[280px] truncate px-6 py-4 text-muted-foreground">
                 {repository.url}
@@ -421,7 +431,10 @@ function RepositoryTable({
                 <Button
                   aria-label={`Delete ${repository.name}`}
                   disabled={deletingRepositoryId === repository.id}
-                  onClick={() => void onDeleteRepository(repository)}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    void onDeleteRepository(repository);
+                  }}
                   size="icon"
                   variant="ghost"
                 >

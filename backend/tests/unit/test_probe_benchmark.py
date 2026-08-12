@@ -25,6 +25,13 @@ MANIFEST_PATH = (
 MVP_BLOG_MANIFEST_PATH = (
     ROOT_DIR / "backend" / "benchmarks" / "probe_review" / "mvp_blog_vulnerable.json"
 )
+MVP_NOTIFICATION_MANIFEST_PATH = (
+    ROOT_DIR
+    / "backend"
+    / "benchmarks"
+    / "probe_review"
+    / "mvp_notification_vulnerable.json"
+)
 
 
 def test_mvp_inventory_manifest_requires_full_audit_without_roadmap() -> None:
@@ -62,6 +69,31 @@ def test_mvp_blog_manifest_covers_six_intentional_issues() -> None:
     } >= {
         "security.sensitive_data_logging",
         "security.unrestricted_file_upload",
+    }
+
+
+def test_mvp_notification_manifest_covers_otp_flow() -> None:
+    manifest = _load_benchmark_inputs(
+        manifest_path=MVP_NOTIFICATION_MANIFEST_PATH,
+        ground_truth_path=None,
+        false_positives_path=None,
+        probe_map_path=None,
+    )
+
+    assert manifest.require_full_recall
+    assert manifest.commit_sha == "d35328800b32d28e0731da86e2abbe4110d024e2"
+    assert len(manifest.expected_issues) == 5
+    assert {
+        probe_id
+        for issue in manifest.expected_issues
+        for probe_id in issue.expected_probes
+    } == {"security.otp_exposure_rate_limit"}
+    assert {issue.claim_type for issue in manifest.expected_issues} == {
+        "otp_exposure",
+        "otp_missing_authentication",
+        "otp_missing_rate_limit",
+        "otp_plaintext_storage",
+        "otp_weak_randomness",
     }
 
 
@@ -223,6 +255,34 @@ def test_finding_rejects_evidence_from_wrong_probe() -> None:
         source="ai_review",
         probe_id="security.sensitive_response_exposure",
         supporting_evidence=(),
+    )
+
+    assert not _finding_matches_issue(finding, issue)
+
+
+def test_finding_rejects_wrong_canonical_claim_type() -> None:
+    issue = ExpectedIssue(
+        issue_id="NOTIFY-OTP-002",
+        file_path="backend/app/services/notification_service.py",
+        line_start=29,
+        line_end=32,
+        category="security",
+        severity=None,
+        expected_probes=("security.otp_exposure_rate_limit",),
+        claim_type="otp_exposure",
+    )
+    finding = Finding(
+        finding_id="finding-1",
+        file_path=issue.file_path,
+        line_start=issue.line_start,
+        line_end=issue.line_end,
+        category="security",
+        severity="high",
+        title="OTP endpoint is missing throttling",
+        source="ai_review",
+        probe_id="security.otp_exposure_rate_limit",
+        supporting_evidence=(),
+        claim_type="otp_missing_rate_limit",
     )
 
     assert not _finding_matches_issue(finding, issue)

@@ -82,6 +82,7 @@ class ReviewReport(Base):
     tech_stack: Mapped[dict[str, object] | None] = mapped_column(JSONB)
     top_risky_files: Mapped[list[dict[str, object]] | None] = mapped_column(JSONB)
     executive_summary: Mapped[str | None] = mapped_column(Text)
+    analysis_overview: Mapped[str | None] = mapped_column(Text)
     ai_model_used: Mapped[str | None] = mapped_column(String(100))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

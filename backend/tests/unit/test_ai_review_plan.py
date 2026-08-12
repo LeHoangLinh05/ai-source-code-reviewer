@@ -47,10 +47,10 @@ def test_smart_review_plan_ignores_static_issue_flags() -> None:
         ("app/auth/routes.py", 1),
         ("app/service.py", 0),
     }
-    assert with_static["total_available_chunks"] == 5
+    assert with_static["total_available_chunks"] == 4
 
 
-def test_full_audit_review_plan_targets_all_chunks() -> None:
+def test_full_audit_review_plan_excludes_readme_chunks() -> None:
     plan = build_chunk_review_plan(
         chunk_documents=[
             _chunk("app/a.py", 0, total_chunks=2),
@@ -60,11 +60,10 @@ def test_full_audit_review_plan_targets_all_chunks() -> None:
         review_mode=REVIEW_MODE_FULL_AUDIT,
     )
 
-    assert plan["target_chunks"] == 3
+    assert plan["target_chunks"] == 2
     assert expected_chunk_keys_from_plan(plan) == {
         ("app/a.py", 0),
         ("app/a.py", 1),
-        ("README.md", 0),
     }
 
 

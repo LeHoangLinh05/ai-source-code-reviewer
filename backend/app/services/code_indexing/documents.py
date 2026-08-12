@@ -13,6 +13,7 @@ from app.analyzers.code_chunker import (
 )
 from app.analyzers.file_filter import to_relative_posix_path
 from app.analyzers.structure_analyzer import LANGUAGE_BY_EXTENSION
+from app.core.review_targets import is_review_target_path
 from app.schemas.mongodb import ChunkMetadataDocument
 from app.schemas.normalized_issue import NormalizedIssue
 
@@ -166,11 +167,11 @@ def build_plain_file_chunk_metadata_documents(
 def should_chunk_plain_file(file_path: Path) -> bool:
     """Return whether a non-Python file should enter semantic code chunks."""
 
+    if not is_review_target_path(file_path):
+        return False
     if not should_index_semantic_file(file_path):
         return False
-    if file_path.suffix.lower() != ".md":
-        return True
-    return file_path.name.lower() in {"readme.md", "readme.markdown"}
+    return file_path.suffix.lower() != ".md"
 
 
 def should_index_semantic_file(file_path: Path) -> bool:

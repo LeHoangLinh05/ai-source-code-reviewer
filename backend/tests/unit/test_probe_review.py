@@ -21,6 +21,8 @@ from app.ai.probe.candidate_validation import (
     _supporting_bundle_chunk,
 )
 from app.ai.probe.contracts import (
+    OTP_CANONICAL_CLAIM_TYPES,
+    OTP_SECURITY_PROBE_ID,
     SENSITIVE_DATA_LOGGING_PROBE_ID,
     UNRESTRICTED_FILE_UPLOAD_PROBE_ID,
     ProbeDefinition,
@@ -267,6 +269,33 @@ class _FakeSemanticRetriever:
             "    with open('/tmp/upload', 'wb') as destination:\n"
             "        destination.write(await file.read())",
         ),
+        (
+            OTP_SECURITY_PROBE_ID,
+            "@router.post('/otp')\n"
+            "async def generate_otp(email: str):\n"
+            "    return await service.generate_otp(email)",
+        ),
+        (
+            OTP_SECURITY_PROBE_ID,
+            "async def generate_otp(email: str):\n"
+            "    otp = random.randint(100000, 999999)\n"
+            "    await repository.save_otp(email, otp)\n"
+            "    return {'debug_otp': otp}",
+        ),
+        (
+            OTP_SECURITY_PROBE_ID,
+            "async def save_otp(email: str, otp: str):\n"
+            "    session.add(Otp(email=email, code=otp))",
+        ),
+        (
+            OTP_SECURITY_PROBE_ID,
+            "def build_payload(code: str):\n    return {'debug_otp': code}",
+        ),
+        (
+            OTP_SECURITY_PROBE_ID,
+            "class OTPRecord(Base):\n"
+            "    otp_code: Mapped[str] = mapped_column(String(6))",
+        ),
     ],
 )
 def test_python_structural_candidates_cover_high_value_patterns(
@@ -356,6 +385,259 @@ def test_python_structural_candidates_reject_safe_patterns(
     )
 
     assert candidates == []
+
+
+def test_otp_probe_exposes_canonical_multi_issue_contract() -> None:
+    probe = next(
+        probe for probe in BASELINE_PROBES if probe.probe_id == OTP_SECURITY_PROBE_ID
+    )
+
+    assert probe.allowed_claim_types == OTP_CANONICAL_CLAIM_TYPES
+    assert probe.top_k == 6
+    assert "absence of an authentication dependency" in probe.judge_question
+
+
+def test_otp_fusion_reserves_complete_structural_flow() -> None:
+    probe = next(
+        probe for probe in BASELINE_PROBES if probe.probe_id == OTP_SECURITY_PROBE_ID
+    )
+    structural_children = [
+        _candidate_chunk(
+            file_path=f"backend/app/otp_role_{index}.py",
+            content="async def otp_flow(): pass",
+            strategies=("structural",),
+            final_score=0.5,
+        )
+        for index in range(probe.top_k)
+    ]
+    structural_parents = [
+        _candidate_chunk(
+            file_path=structural_children[index].file_path,
+            chunk_index=100 + index,
+            line_start=1,
+            line_end=50,
+            content="class OtpFlow: pass",
+            strategies=("structural",),
+            final_score=3.0,
+        )
+        for index in range(3)
+    ]
+    structural = [*structural_parents, *structural_children]
+    selected = _fuse_probe_candidates(
+        semantic_candidates=[
+            _candidate_chunk(
+                file_path="backend/app/semantic.py",
+                content="unrelated semantic match",
+                strategies=("semantic",),
+                final_score=2.0,
+            )
+        ],
+        bm25_candidates=[],
+        exact_candidates=[],
+        structural_candidates=structural,
+        probe=probe,
+        query=probe.primary_query,
+        top_k=probe.top_k,
+    )
+
+    assert [chunk.file_path for chunk in selected] == [
+        chunk.file_path for chunk in structural_children
+    ]
+
+
+def test_otp_structural_fusion_keeps_route_service_and_storage_roles() -> None:
+    job_id = uuid4()
+    probe = next(
+        probe for probe in BASELINE_PROBES if probe.probe_id == OTP_SECURITY_PROBE_ID
+    )
+    documents = [
+        _chunk(
+            job_id=job_id,
+            file_path="backend/app/api/notifications.py",
+            chunk_index=0,
+            chunk_type="module",
+            line_start=1,
+            content=(
+                "from app.api.deps import get_current_user\n"
+                "from app.schemas.notification import OtpRequest\n"
+                "router = APIRouter(prefix='/notifications')"
+            ),
+        ),
+        _chunk(
+            job_id=job_id,
+            file_path="backend/app/api/notifications.py",
+            chunk_index=1,
+            chunk_type="module",
+            line_start=20,
+            content="@router.post('/otp/send')",
+        ),
+        _chunk(
+            job_id=job_id,
+            file_path="backend/app/api/notifications.py",
+            chunk_index=2,
+            line_start=22,
+            content=(
+                "async def send_otp(data, db=Depends(get_db)):\n"
+                "    return await service.send_otp(data.phone)"
+            ),
+        ),
+        _chunk(
+            job_id=job_id,
+            file_path="backend/app/services/notification_service.py",
+            chunk_index=3,
+            line_start=29,
+            content=(
+                "async def send_otp(phone: str):\n"
+                "    code = random.randint(100000, 999999)\n"
+                "    await repository.create_otp(phone, code)\n"
+                "    return {'debug_otp': code}"
+            ),
+        ),
+        _chunk(
+            job_id=job_id,
+            file_path="backend/app/repositories/notification_repository.py",
+            chunk_index=4,
+            line_start=41,
+            content=(
+                "async def create_otp(phone: str, otp_code: str):\n"
+                "    session.add(OTPRecord(phone=phone, otp_code=otp_code))"
+            ),
+        ),
+        _chunk(
+            job_id=job_id,
+            file_path="backend/app/models/notification.py",
+            chunk_index=5,
+            chunk_type="class",
+            line_start=31,
+            content=(
+                "class OTPRecord(Base):\n"
+                "    otp_code: Mapped[str]\n"
+                "    expires_at: Mapped[datetime]"
+            ),
+        ),
+        _chunk(
+            job_id=job_id,
+            file_path="backend/app/services/notification_service.py",
+            chunk_index=6,
+            line_start=9,
+            content=("def __init__(self):\n    self.otp_repo = OTPRepository()"),
+        ),
+    ]
+    structural = _structural_candidates(chunk_documents=documents, probe=probe)
+
+    selected = _fuse_probe_candidates(
+        semantic_candidates=[],
+        bm25_candidates=[],
+        exact_candidates=[],
+        structural_candidates=structural,
+        probe=probe,
+        query=probe.primary_query,
+        top_k=probe.top_k,
+    )
+
+    assert {chunk.key for chunk in selected} == {
+        ("backend/app/api/notifications.py", 0),
+        ("backend/app/api/notifications.py", 1),
+        ("backend/app/api/notifications.py", 2),
+        ("backend/app/services/notification_service.py", 3),
+        ("backend/app/repositories/notification_repository.py", 4),
+        ("backend/app/models/notification.py", 5),
+    }
+
+
+def test_global_trim_keeps_complete_otp_structural_bundle() -> None:
+    probe = next(
+        probe for probe in BASELINE_PROBES if probe.probe_id == OTP_SECURITY_PROBE_ID
+    )
+    otp_bundle = ProbeEvidenceBundle(
+        probe=probe,
+        retrieval_status="ok",
+        candidate_chunks=[
+            _candidate_chunk(
+                file_path=f"backend/app/otp_role_{index}.py",
+                content="async def otp_flow(): pass",
+                strategies=("structural",),
+            )
+            for index in range(probe.top_k)
+        ],
+        strategies_used=["structural"],
+        strategy_candidate_counts={"structural": probe.top_k},
+        selected_count_before_trim=probe.top_k,
+    )
+    other_bundles = [
+        _bundle(
+            probe={"probe_id": f"security.other_{index}"},
+            chunks=[
+                _candidate_chunk(
+                    file_path=f"backend/app/other_{index}.py",
+                    content="def inspect(): pass",
+                )
+            ],
+        )
+        for index in range(2)
+    ]
+
+    trimmed = _trim_bundles([otp_bundle, *other_bundles], max_chunks=8)
+
+    assert len(trimmed[0].candidate_chunks) == probe.top_k
+    assert trimmed[0].trimmed_count == 0
+
+
+@pytest.mark.asyncio
+async def test_safe_otp_flow_is_not_persisted_when_judge_returns_no_issue() -> None:
+    job_id = uuid4()
+    probe = next(
+        probe for probe in BASELINE_PROBES if probe.probe_id == OTP_SECURITY_PROBE_ID
+    )
+    candidates = _structural_candidates(
+        chunk_documents=[
+            _chunk(
+                job_id=job_id,
+                file_path="backend/app/services/otp.py",
+                content=(
+                    "async def issue_otp(user_id: UUID):\n"
+                    "    otp = secrets.randbelow(900000) + 100000\n"
+                    "    await store_hashed_otp(user_id, hash_otp(otp), ttl=300)\n"
+                    "    return {'message': 'OTP sent'}"
+                ),
+            )
+        ],
+        probe=probe,
+    )
+    repository = _TrackingReportRepository()
+    service = ProbeJudgeService(
+        llm=_JudgeLlm(
+            {
+                "results": [
+                    {
+                        "probe_id": OTP_SECURITY_PROBE_ID,
+                        "verdict": "no_issue",
+                        "confidence": 0.95,
+                        "issues": [],
+                    }
+                ]
+            }
+        ),
+        report_repository=cast(ReportRepository, repository),
+    )
+
+    result = await service.judge_and_persist(
+        job_id=job_id,
+        bundles=[
+            ProbeEvidenceBundle(
+                probe=probe,
+                retrieval_status="ok",
+                candidate_chunks=candidates,
+                strategies_used=["structural"],
+                strategy_candidate_counts={"structural": len(candidates)},
+                selected_count_before_trim=len(candidates),
+            )
+        ],
+        trace_writer=_TraceWriter(),
+    )
+
+    assert result == ProbeJudgeSummary(judged_batches=1, no_issue_results=1)
+    assert repository.issues == []
 
 
 def test_upload_structural_matcher_retrieves_validated_flow_for_ai_judging() -> None:
@@ -649,6 +931,141 @@ async def test_probe_judge_persists_only_high_confidence_candidates() -> None:
     assert isinstance(trace_output, dict)
     assert trace_output["created_count"] == 1
     assert trace_output["rejected_issue_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_probe_judge_rejects_readme_finding_targets() -> None:
+    job_id = uuid4()
+    file_path = "README.md"
+    chunk = _candidate_chunk(
+        file_path=file_path,
+        line_start=1,
+        line_end=5,
+        content="# API\nThe API supports access tokens.",
+    )
+    probe_id = "requirement.refresh_endpoint"
+    repository = _TrackingReportRepository()
+    service = ProbeJudgeService(
+        llm=_JudgeLlm(
+            {
+                "candidates": [
+                    {
+                        "verdict": "issue",
+                        "probe_id": probe_id,
+                        "title": "Missing refresh endpoint",
+                        "description": "No refresh endpoint is documented.",
+                        "severity": "high",
+                        "category": "requirement",
+                        "confidence": 0.95,
+                        "file_path": file_path,
+                        "line_start": 1,
+                        "line_end": 5,
+                        "supporting_evidence": [
+                            {
+                                "file_path": file_path,
+                                "chunk_index": 0,
+                                "line_start": 1,
+                                "line_end": 5,
+                            }
+                        ],
+                    }
+                ]
+            }
+        ),
+        report_repository=cast(ReportRepository, repository),
+    )
+
+    summary = await service.judge_and_persist(
+        job_id=job_id,
+        bundles=[
+            _bundle(
+                probe={"probe_id": probe_id, "category": "requirement"},
+                chunks=[chunk],
+            )
+        ],
+        trace_writer=_TraceWriter(),
+    )
+
+    assert summary.reported_issues == 1
+    assert summary.created_issues == 0
+    assert summary.rejected_issues == 1
+    assert repository.issues == []
+
+
+@pytest.mark.asyncio
+async def test_full_audit_persists_contextual_otp_claim_with_canonical_key() -> None:
+    job_id = uuid4()
+    probe_id = "coverage.full_audit.notification_service.0"
+    file_path = "backend/app/services/notification_service.py"
+    chunk = _candidate_chunk(
+        file_path=file_path,
+        line_start=29,
+        line_end=32,
+        content=(
+            "async def send_otp(phone: str):\n"
+            "    code = random.randint(100000, 999999)\n"
+            "    await repository.create_otp(phone, code)\n"
+            "    return {'debug_otp': code}"
+        ),
+    )
+    repository = _TrackingReportRepository()
+    service = ProbeJudgeService(
+        llm=_JudgeLlm(
+            {
+                "candidates": [
+                    {
+                        "verdict": "issue",
+                        "probe_id": probe_id,
+                        "claim_type": "weak_cryptographic_practice",
+                        "title": (
+                            "Insecure OTP Generation Using Pseudo-Random Numbers"
+                        ),
+                        "description": (
+                            "The OTP is generated with random.randint and can be "
+                            "predicted."
+                        ),
+                        "severity": "high",
+                        "category": "security",
+                        "confidence": 0.95,
+                        "file_path": file_path,
+                        "line_start": 29,
+                        "line_end": 32,
+                        "supporting_evidence": [
+                            {
+                                "file_path": file_path,
+                                "chunk_index": 0,
+                                "line_start": 29,
+                                "line_end": 32,
+                            }
+                        ],
+                    }
+                ]
+            }
+        ),
+        report_repository=cast(ReportRepository, repository),
+    )
+
+    summary = await service.judge_and_persist(
+        job_id=job_id,
+        bundles=[
+            _bundle(
+                probe={"probe_id": probe_id, "category": "security"},
+                chunks=[chunk],
+            )
+        ],
+        trace_writer=_TraceWriter(),
+    )
+
+    assert summary == ProbeJudgeSummary(
+        judged_batches=1,
+        reported_issues=1,
+        created_issues=1,
+    )
+    assert len(repository.issues) == 1
+    raw_output = repository.issues[0].raw_output
+    assert isinstance(raw_output, dict)
+    assert raw_output["claim_type"] == "otp_weak_randomness"
+    assert raw_output["finding_key"] == "security:otp_weak_randomness"
 
 
 @pytest.mark.asyncio
@@ -1882,20 +2299,22 @@ def _chunk(
     job_id: object,
     file_path: str,
     chunk_index: int = 0,
+    chunk_type: str = "function",
     content: str,
     function_name: str | None = None,
+    line_start: int = 1,
 ) -> dict[str, object]:
     return {
         "job_id": str(job_id),
         "file_path": file_path,
         "language": "python",
-        "chunk_type": "function",
+        "chunk_type": chunk_type,
         "chunk_index": chunk_index,
         "total_chunks": 1,
         "function_name": function_name,
         "class_name": None,
-        "line_start": 1,
-        "line_end": max(1, len(content.splitlines())),
+        "line_start": line_start,
+        "line_end": line_start + max(0, len(content.splitlines()) - 1),
         "imports": [],
         "module": "app",
         "risk_area": "security" if "auth" in file_path else "general",

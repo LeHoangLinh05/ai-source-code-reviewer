@@ -12,6 +12,7 @@ from app.ai.probe.candidate_retrieval import (
     _exact_score,
 )
 from app.ai.probe.contracts import (
+    OTP_SECURITY_PROBE_ID,
     SENSITIVE_DATA_LOGGING_PROBE_ID,
     UNRESTRICTED_FILE_UPLOAD_PROBE_ID,
     ProbeDefinition,
@@ -49,6 +50,7 @@ def _structural_candidates(
                 probe=probe,
                 chunk_type=chunk_type,
                 file_path=candidate.file_path,
+                content=content,
             )
             candidates.append(
                 replace(
@@ -64,13 +66,43 @@ def _structural_shape_bonus(
     probe: ProbeDefinition,
     chunk_type: str,
     file_path: str,
+    content: str,
 ) -> float:
     normalized_path = file_path.replace("\\", "/").lower()
     if probe.probe_id == "security.sensitive_response_exposure":
         if chunk_type == "class" and "/schemas/" in normalized_path:
             return 0.8
         return 0.0
+    if probe.probe_id == OTP_SECURITY_PROBE_ID:
+        return _otp_candidate_bonus(content, chunk_type=chunk_type)
     return 0.4 if chunk_type == "function" else 0.0
+
+
+def _otp_candidate_bonus(content: str, *, chunk_type: str) -> float:
+    normalized = content.casefold()
+    signal_groups = (
+        ("@router.", '"/otp', "'/otp"),
+        ("debug_otp", "return", "response", "logger"),
+        ("depends(", "current_user", "authenticated", "authorize"),
+        ("random.randint", "random.randrange", "secrets.", "token_urlsafe"),
+        (
+            "create_otp",
+            "save_otp",
+            "store_otp",
+            "otprecord",
+            "otp_code",
+            "otp_hash",
+            "hashed_otp",
+        ),
+        ("rate_limit", "attempt", "throttle", "lockout"),
+        ("expire", "ttl", "delete", "used_at", "consumed"),
+    )
+    signal_bonus = sum(
+        0.12 for terms in signal_groups if any(term in normalized for term in terms)
+    )
+    route_bonus = 0.4 if "@router." in normalized and "/otp" in normalized else 0.0
+    function_bonus = 0.4 if chunk_type == "function" and signal_bonus else 0.0
+    return route_bonus + function_bonus + min(signal_bonus, 0.6)
 
 
 def _structural_candidate_rank(
@@ -579,8 +611,12 @@ def _matches_resource_lifecycle(content: str) -> bool:
 
 
 def _matches_otp_flow(content: str) -> bool:
-    return _contains_any(content, "otp", "verification_code", "one_time") and (
-        _contains_any(content, "verify", "response", "logger", "attempt")
+    return _contains_any(
+        content,
+        "otp",
+        "verification_code",
+        "one_time_password",
+        "one_time",
     )
 
 
@@ -627,7 +663,7 @@ _STRUCTURAL_MATCHERS: dict[str, Any] = {
     "security.reset_token_lifecycle": _matches_reset_token,
     "security.refresh_token_validation": _matches_refresh_validation,
     "security.logout_revocation": _matches_logout,
-    "security.otp_exposure_rate_limit": _matches_otp_flow,
+    OTP_SECURITY_PROBE_ID: _matches_otp_flow,
     "security.insecure_default_credentials": _matches_insecure_default_credentials,
     "bug.async_concurrency": _matches_race,
     "bug.inventory_invariant": _matches_inventory_invariant,

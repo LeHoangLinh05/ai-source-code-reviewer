@@ -7,7 +7,7 @@ from hashlib import sha256
 from typing import Any
 
 from app.ai.probe.candidate_retrieval import _candidate_from_document
-from app.ai.probe.contracts import ProbeDefinition, ProbeLane
+from app.ai.probe.contracts import OTP_SECURITY_PROBE_ID, ProbeDefinition, ProbeLane
 from app.ai.probe.models import ProbeCandidateChunk, ProbeEvidenceBundle, _probe_id
 
 FULL_AUDIT_CHUNKS_PER_PROBE = 6
@@ -94,7 +94,10 @@ def _reserve_probe_candidates(
             "structural" in chunk.strategies and chunk.key in kept[probe_id]
             for chunk in bundle.candidate_chunks
         )
-        structural_slots = max(0, 2 - kept_structural_count)
+        structural_target = (
+            bundle.probe.top_k if bundle.probe.probe_id == OTP_SECURITY_PROBE_ID else 2
+        )
+        structural_slots = max(0, structural_target - kept_structural_count)
         structural_candidates = [
             chunk
             for chunk in bundle.candidate_chunks

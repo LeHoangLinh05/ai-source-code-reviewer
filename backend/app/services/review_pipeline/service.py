@@ -21,6 +21,7 @@ from app.analyzers.structure_analyzer import (
     analyze_structure,
 )
 from app.core.config import Settings
+from app.core.review_targets import is_review_target_path
 from app.models.review_job import ReviewJob, ReviewJobStatus
 from app.repositories.mongodb_repository import (
     FileAnalysisResultRepository,
@@ -149,6 +150,11 @@ class ReviewPipelineService:
         sandbox_path: Path,
         filtered_files: list[Path],
     ) -> None:
+        review_target_files = [
+            file_path
+            for file_path in filtered_files
+            if is_review_target_path(file_path)
+        ]
         await self._ensure_job_active(review_job.id)
         structure = await self._analyze_structure(
             review_job,
@@ -163,14 +169,14 @@ class ReviewPipelineService:
         issues = await self._collect_static_issues(
             review_job,
             sandbox_path,
-            filtered_files,
+            review_target_files,
         )
 
         await self._ensure_job_active(review_job.id)
         await self._chunk_code(
             review_job,
             sandbox_path,
-            filtered_files,
+            review_target_files,
             issues,
         )
 
@@ -178,7 +184,7 @@ class ReviewPipelineService:
         await self._persist_pre_agent_report(
             review_job,
             structure,
-            filtered_files,
+            review_target_files,
             issues,
         )
 

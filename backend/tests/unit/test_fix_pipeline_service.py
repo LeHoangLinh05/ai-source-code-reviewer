@@ -18,8 +18,6 @@ from app.schemas.fix_job import (
     FixIssueResult,
     FixIssueVerdict,
     FixScenarioKind,
-    FixValidationCheck,
-    FixValidationCheckStatus,
     FixValidationResult,
     FixVerificationScenario,
 )
@@ -30,29 +28,15 @@ from app.services.fix_pipeline.service import FixPipelineService
 
 
 @pytest.mark.asyncio
-async def test_validate_and_repair_patch_revalidates_after_repair(
+async def test_logic_review_repairs_without_running_runtime_validation(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    failed_result = _validation_result(FixValidationStatus.FAILED)
-    passed_result = _validation_result(FixValidationStatus.PASSED)
-    validation_results = [failed_result, passed_result]
     issue_id = uuid4()
-    validation_changed_files: list[list[str]] = []
     repair_calls: list[list[str]] = []
 
-    def validate_fix(
-        *,
-        sandbox_path: Path,
-        changed_files: list[str],
-        timeout_seconds: int,
-        executor: object,
-    ) -> FixValidationResult:
-        del sandbox_path, timeout_seconds, executor
-        validation_changed_files.append(changed_files)
-        return validation_results.pop(0)
-
     async def verify_fix_issues(**kwargs: object) -> list[FixIssueResult]:
+        assert kwargs["scenario_results_by_issue"] is None
         attempt = cast(int, kwargs["attempt"])
         verdict = FixIssueVerdict.UNRESOLVED if attempt == 1 else FixIssueVerdict.FIXED
         return [
@@ -73,8 +57,9 @@ async def test_validate_and_repair_patch_revalidates_after_repair(
         specs: list[FixIssueSpec],
         plans: list[FixIssuePlan],
         issue_results: list[FixIssueResult],
-        validation_result: FixValidationResult,
+        validation_result: FixValidationResult | None,
     ) -> bool:
+        assert validation_result is None
         del sandbox_path, specs, plans, issue_results, validation_result
         repair_calls.append(["src/app.py"])
         return True
@@ -82,7 +67,6 @@ async def test_validate_and_repair_patch_revalidates_after_repair(
     async def publish_fix_job_progress(*_args: object, **_kwargs: object) -> int:
         return 0
 
-    monkeypatch.setattr(fix_pipeline_service, "validate_fix", validate_fix)
     monkeypatch.setattr(
         fix_pipeline_service,
         "repair_fix_failures",
@@ -113,7 +97,7 @@ async def test_validate_and_repair_patch_revalidates_after_repair(
         executor=cast(FixCommandExecutor, object()),
     )
 
-    result, changed_files, issue_results = await service._validate_and_repair_patch(
+    result, changed_files, issue_results = await service._review_and_repair_patch(
         fix_job=cast(FixJob, SimpleNamespace(id=uuid4())),
         sandbox_path=tmp_path,
         changed_files=["src/app.py"],
@@ -165,34 +149,9 @@ async def test_validate_and_repair_patch_revalidates_after_repair(
         ],
     )
 
-    assert result.status == FixValidationStatus.PASSED
+    assert result.status == FixValidationStatus.NOT_RUN
+    assert "logic consistency only" in result.summary
+    assert result.checks == []
     assert changed_files == ["src/app.py", "src/auth.py"]
-    assert validation_changed_files == [
-        ["src/app.py"],
-        ["src/app.py", "src/auth.py"],
-    ]
     assert repair_calls == [["src/app.py"]]
     assert issue_results[0].verdict == FixIssueVerdict.FIXED
-
-
-def _validation_result(status: FixValidationStatus) -> FixValidationResult:
-    check_status = (
-        FixValidationCheckStatus.FAILED
-        if status == FixValidationStatus.FAILED
-        else FixValidationCheckStatus.PASSED
-    )
-    return FixValidationResult(
-        status=status,
-        summary="Validation summary",
-        checks=[
-            FixValidationCheck(
-                name="ruff check",
-                command="ruff check src/app.py",
-                status=check_status,
-                exit_code=0 if status == FixValidationStatus.PASSED else 1,
-                stdout="",
-                stderr="validation output",
-                duration_ms=1,
-            )
-        ],
-    )
