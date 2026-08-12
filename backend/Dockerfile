@@ -2,8 +2,6 @@ FROM node:20-slim AS node-runtime
 
 FROM python:3.12-slim AS runtime
 
-ARG TORCH_CPU_VERSION=2.5.1+cpu
-
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
@@ -12,7 +10,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl git \
+    && apt-get install -y --no-install-recommends git \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node
@@ -21,13 +19,14 @@ RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
     && ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
 
 COPY requirements.txt .
-RUN python -m pip install --upgrade pip \
-    && python -m pip install \
-        --index-url https://download.pytorch.org/whl/cpu \
-        "torch==${TORCH_CPU_VERSION}" \
-    && python -m pip install -r requirements.txt \
-    && python -m pip install ruff bandit \
-    && npm install -g eslint @eslint/js typescript typescript-eslint
+RUN python -m pip install --no-compile --upgrade pip \
+    && python -m pip install --no-compile -r requirements.txt \
+    && python -m pip install --no-compile ruff bandit \
+    && npm install --global eslint @eslint/js typescript typescript-eslint \
+    && npm cache clean --force \
+    && rm -rf /root/.cache /root/.npm \
+    && find /usr/local/lib/python3.12/site-packages \
+        -type d -name __pycache__ -prune -exec rm -rf '{}' +
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends docker-cli \
@@ -37,4 +36,4 @@ COPY . .
 
 EXPOSE 8000
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

@@ -32,6 +32,7 @@ from app.core.config import get_settings
 logger = logging.getLogger(__name__)
 
 ResultT = TypeVar("ResultT")
+HTTP_SERVER_ERROR_STATUS_UPPER_BOUND = 600
 
 
 class OpenAICompatibleChatOpenAI(ChatOpenAI):
@@ -338,7 +339,7 @@ def _should_retry_transient_error(
     if any(marker in message for marker in permanent_markers):
         return False
     settings = get_settings()
-    return attempt < min(getattr(settings, "openai_max_retries", 2), 2)
+    return attempt < getattr(settings, "openai_max_retries", 2)
 
 
 def _rate_limit_retry_delay(error: Exception, attempt: int) -> float:
@@ -504,9 +505,20 @@ def _is_connection_error(error: Exception) -> bool:
     )
 
 
+def _is_server_error(error: Exception) -> bool:
+    status_code = getattr(error, "status_code", None)
+    return (
+        isinstance(status_code, int)
+        and HTTPStatus.INTERNAL_SERVER_ERROR
+        <= status_code
+        < HTTP_SERVER_ERROR_STATUS_UPPER_BOUND
+    )
+
+
 def _is_transient_provider_error(error: Exception) -> bool:
     return (
         _is_rate_limit_error(error)
         or _is_timeout_error(error)
         or _is_connection_error(error)
+        or _is_server_error(error)
     )

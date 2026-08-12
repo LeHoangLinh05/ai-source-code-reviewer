@@ -11,9 +11,9 @@ from app.core.config import get_settings
 
 COLLECTION_NAME = "knowledge_base"
 KNOWLEDGE_EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
-KNOWLEDGE_EMBEDDING_MODEL_VERSION = "all-MiniLM-L6-v2"
+KNOWLEDGE_EMBEDDING_MODEL_VERSION = "all-MiniLM-L6-v2-onnx-v1"
 KNOWLEDGE_EMBEDDING_DIMENSION = 384
-REQUIRED_RAG_PACKAGES = ("chromadb", "sentence_transformers")
+REQUIRED_RAG_PACKAGES = ("chromadb", "onnxruntime")
 
 
 @dataclass(slots=True)
@@ -26,32 +26,35 @@ class VectorSearchResult:
     score: float
 
 
-class _SentenceTransformerEmbedder:
-    """Small embedding adapter around sentence-transformers."""
+class _OnnxMiniLmEmbedder:
+    """CPU embedding adapter backed by Chroma's bundled ONNX runtime."""
 
     def __init__(self, model_name: str) -> None:
+        if model_name != KNOWLEDGE_EMBEDDING_MODEL:
+            raise ValueError(f"Unsupported knowledge embedding model: {model_name}")
+
         try:
-            from sentence_transformers import SentenceTransformer
-        except ImportError as error:
+            from chromadb.utils.embedding_functions import ONNXMiniLM_L6_V2
+        except (ImportError, ValueError) as error:
             raise RuntimeError(
-                "sentence-transformers is required for RAG embeddings. "
+                "Chroma ONNX MiniLM dependencies are required for RAG embeddings. "
                 "Install backend requirements before seeding or querying RAG."
             ) from error
 
-        self._model = SentenceTransformer(model_name, device="cpu")
+        self._embedding_function = ONNXMiniLM_L6_V2(
+            preferred_providers=["CPUExecutionProvider"],
+        )
 
     def embed(self, texts: list[str]) -> list[list[float]]:
-        """Embed texts with CPU-friendly sentence-transformers."""
+        """Embed texts with the normalized all-MiniLM-L6-v2 ONNX model."""
 
         if not texts:
             return []
 
-        embeddings = self._model.encode(
-            texts,
-            normalize_embeddings=True,
-            show_progress_bar=False,
-        )
-        return embeddings.tolist()
+        embeddings = self._embedding_function(texts)
+        return [
+            [float(component) for component in embedding] for embedding in embeddings
+        ]
 
 
 class ChromaVectorStore:
@@ -91,7 +94,7 @@ class ChromaVectorStore:
             metadata=self._collection_metadata(),
         )
         self._validate_collection_model()
-        self._embedder = _SentenceTransformerEmbedder(self.embedding_model_name)
+        self._embedder = _OnnxMiniLmEmbedder(self.embedding_model_name)
         self._initialized = True
 
     @property

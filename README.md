@@ -90,7 +90,7 @@ stack is restarted.
 
 ```powershell
 # Start the external PostgreSQL and Redis used by the root stack.
-docker compose -f docker/docker-compose.yml up -d postgres redis
+docker compose --env-file .env -f docker/docker-compose.yml up -d postgres redis
 
 # Build the disposable fix executor and start the application services.
 docker compose up --build -d
@@ -112,14 +112,27 @@ network access. To stop the application stack without removing data:
 
 ```powershell
 docker compose down
+
+# Stop PostgreSQL and Redis as well when they are no longer needed.
+docker compose --env-file .env -f docker/docker-compose.yml down
 ```
 
 ## Native development setup
 
-Install backend dependencies from `backend/` and frontend dependencies from
-`frontend/`, then point `POSTGRES_URL`, `REDIS_URL`, and `MONGODB_URL` at your
-local services (use `localhost` when running processes directly on the host).
-Run the API and worker in separate terminals:
+Install backend development dependencies from `backend/` and frontend
+dependencies from `frontend/`:
+
+```powershell
+cd backend
+python -m pip install -r requirements-dev.txt
+
+cd ../frontend
+npm ci
+```
+
+Then point `POSTGRES_URL`, `REDIS_URL`, and `MONGODB_URL` at your local services
+(use `localhost` when running processes directly on the host). Run the API and
+worker in separate terminals:
 
 ```powershell
 cd backend
@@ -131,7 +144,6 @@ In another terminal:
 
 ```powershell
 cd frontend
-npm install
 npm run dev
 ```
 
@@ -152,6 +164,10 @@ knowledge base from the repository root:
 ```powershell
 python scripts/seed_rag.py --skip-smoke
 ```
+
+The knowledge-base embedding runtime uses Chroma's ONNX build of
+`all-MiniLM-L6-v2`. After upgrading from the former PyTorch embedding image,
+rebuild an existing local collection once with `--reset`.
 
 The seed command ingests the manifest sources and the current probe/KB roadmap
 documents. It does not alter the review pipeline or code-embedding cache.

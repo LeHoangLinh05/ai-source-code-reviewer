@@ -286,6 +286,39 @@ async def test_openai_connection_error_retries_same_request(
 
 
 @pytest.mark.asyncio
+async def test_openai_server_error_uses_configured_retry_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bad_gateway_errors = []
+    for _ in range(3):
+        error = RuntimeError("502 Bad Gateway")
+        error.status_code = 502  # type: ignore[attr-defined]
+        bad_gateway_errors.append(error)
+    openai_model = _FakePipelineModel([*bad_gateway_errors, "continued"])
+    delays: list[float] = []
+    settings = SimpleNamespace(
+        llm_provider="openai",
+        llm_job_call_budget=96,
+        openai_max_retries=3,
+    )
+
+    async def record_sleep(delay: float) -> None:
+        delays.append(delay)
+
+    monkeypatch.setattr(llm_config, "get_settings", lambda: settings)
+    monkeypatch.setattr(llm_config, "get_openai_llm", lambda: openai_model)
+    monkeypatch.setattr(llm_config.asyncio, "sleep", record_sleep)
+
+    async with llm_config.llm_session():
+        model = llm_config.get_pipeline_llm()
+        result = await model.ainvoke("same-agent-step")
+
+    assert result == "continued"
+    assert openai_model.calls == 4
+    assert delays == [1.0, 2.0, 4.0]
+
+
+@pytest.mark.asyncio
 async def test_callback_connection_error_retries_fix_generation_call(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -75,6 +75,7 @@ services:
       - repoguard-network
 
   backend:
+    image: repoguard-backend:latest
     build:
       context: ./backend
     container_name: repoguard-backend
@@ -82,14 +83,14 @@ services:
     env_file:
       - .env
     environment:
-      RAG_CHROMA_PATH: ${RAG_CHROMA_PATH:-/app/.chroma}
+      RAG_CHROMA_PATH: /app/.chroma
       TOKENIZERS_PARALLELISM: "false"
       OMP_NUM_THREADS: "1"
       MKL_NUM_THREADS: "1"
-    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
     volumes:
-      - ./backend:/app
       - sandbox_data:/tmp/sandbox
+      - rag_data:/app/.chroma
+      - model_cache:/root/.cache
     ports:
       - "127.0.0.1:${BACKEND_HOST_PORT:-8000}:8000"
     extra_hosts:
@@ -102,7 +103,13 @@ services:
       cache-healthcheck:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://localhost:8000/api/health | grep -q '\"status\":\"ok\"'"]
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health', timeout=5).read()",
+        ]
       interval: 10s
       timeout: 5s
       retries: 10
@@ -111,14 +118,13 @@ services:
       - repoguard-network
 
   worker:
-    build:
-      context: ./backend
+    image: repoguard-backend:latest
     container_name: repoguard-worker
     restart: unless-stopped
     env_file:
       - .env
     environment:
-      RAG_CHROMA_PATH: ${RAG_CHROMA_PATH:-/app/.chroma}
+      RAG_CHROMA_PATH: /app/.chroma
       TOKENIZERS_PARALLELISM: "false"
       OMP_NUM_THREADS: "1"
       MKL_NUM_THREADS: "1"
@@ -133,8 +139,9 @@ services:
         "--pool=solo",
       ]
     volumes:
-      - ./backend:/app
       - sandbox_data:/tmp/sandbox
+      - rag_data:/app/.chroma
+      - model_cache:/root/.cache
       - /var/run/docker.sock:/var/run/docker.sock
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -158,8 +165,7 @@ services:
     command: ["python", "--version"]
 
   beat:
-    build:
-      context: ./backend
+    image: repoguard-backend:latest
     container_name: repoguard-beat
     restart: unless-stopped
     env_file:
@@ -173,8 +179,7 @@ services:
         "--loglevel=info",
       ]
     volumes:
-      - ./backend:/app
-      - sandbox_data:/tmp/sandbox
+      - model_cache:/root/.cache
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
@@ -186,8 +191,13 @@ services:
       - repoguard-network
 
   frontend:
+    image: repoguard-frontend:latest
     build:
       context: ./frontend
+      args:
+        API_PROXY_TARGET: ${API_PROXY_TARGET:-http://backend:8000}
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-/api}
+        NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-/api}
     container_name: repoguard-frontend
     restart: unless-stopped
     env_file:
@@ -197,11 +207,6 @@ services:
       NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-/api}
       NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-/api}
       WATCHPACK_POLLING: "true"
-    command: ["npm", "run", "dev", "--", "--hostname", "0.0.0.0"]
-    volumes:
-      - ./frontend:/app
-      - /app/node_modules
-      - /app/.next
     ports:
       - "127.0.0.1:${FRONTEND_HOST_PORT:-3000}:3000"
     depends_on:
@@ -233,3 +238,5 @@ networks:
 volumes:
   mongodb_data:
   sandbox_data:
+  rag_data:
+  model_cache:

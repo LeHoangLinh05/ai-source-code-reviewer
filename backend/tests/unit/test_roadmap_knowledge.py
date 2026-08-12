@@ -281,9 +281,7 @@ def test_knowledge_collection_uses_minilm_and_no_roadmap_collection(
         "_build_client",
         lambda _self, _path: client,
     )
-    monkeypatch.setattr(
-        vectorstore_module, "_SentenceTransformerEmbedder", FakeEmbedder
-    )
+    monkeypatch.setattr(vectorstore_module, "_OnnxMiniLmEmbedder", FakeEmbedder)
 
     store = ChromaVectorStore(
         persist_path=tmp_path,

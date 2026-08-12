@@ -3,13 +3,22 @@
 import {
   AlertTriangle,
   ArrowLeft,
+  ArrowUp,
+  ChevronDown,
+  ChevronUp,
   Copy,
   Wrench,
   X,
 } from "lucide-react";
 import Link from "next/link";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import type { ReactNode } from "react";
 import { toast } from "sonner";
 
@@ -78,6 +87,8 @@ const CATEGORIES: IssueCategory[] = [
   "requirement",
 ];
 const SORT_OPTIONS: IssueSort[] = ["-created_at", "created_at", "severity", "file_path"];
+const DRAWER_SCROLL_TOP_THRESHOLD_PX = 240;
+const SNIPPET_ID_PREFIX = "issue-snippet";
 
 export default function ReviewIssuesPage() {
   const params = useParams<{ id: string }>();
@@ -492,6 +503,13 @@ function IssueDrawer({
   const displayTitle = getIssueDisplayTitle(issue, occurrences);
   const descriptionLines = getIssueDescriptionLines(issue, occurrences);
   const suggestionText = getIssueSuggestionText(issue, occurrences);
+  const affectedFiles = getDisplayAffectedFiles(issue);
+  const drawerRef = useRef<HTMLElement>(null);
+  const [isBackToTopVisible, setIsBackToTopVisible] = useState(false);
+
+  function scrollToDrawerTop() {
+    drawerRef.current?.scrollTo({ behavior: "smooth", top: 0 });
+  }
 
   return (
     <div
@@ -501,21 +519,28 @@ function IssueDrawer({
       <aside
         aria-label="Issue details"
         className="h-full w-full max-w-3xl overflow-y-auto border-l border-border bg-card p-6 shadow-xl shadow-foreground/10 transition-transform duration-200 ease-out"
+        onScroll={(event) =>
+          setIsBackToTopVisible(
+            event.currentTarget.scrollTop > DRAWER_SCROLL_TOP_THRESHOLD_PX,
+          )
+        }
         onClick={(event) => event.stopPropagation()}
+        ref={drawerRef}
       >
         <div className="flex items-start justify-between gap-4">
-          <div>
+          <div className="min-w-0 flex-1">
             <SeverityBadge severity={issue.severity} />
             <h2 className="mt-4 text-xl font-semibold tracking-normal">
               {displayTitle}
             </h2>
             <p className="mt-2 break-all text-sm text-muted-foreground">
-              {locationSummary.primary}
+              {locationSummary}
             </p>
-            {locationSummary.secondary ? (
-              <p className="mt-1 break-all text-sm text-muted-foreground">
-                {locationSummary.secondary}
-              </p>
+            {affectedFiles.length > 1 ? (
+              <AffectedFilesNavigation
+                affectedFiles={affectedFiles}
+                occurrences={occurrences}
+              />
             ) : null}
           </div>
           <Button
@@ -567,24 +592,148 @@ function IssueDrawer({
           </div>
           <DetailSection title="Code Context">
             <div className="grid gap-4">
-              {occurrences.map((occurrence) => (
+              {occurrences.map((occurrence, occurrenceIndex) => (
                 <CodeSnippetViewer
                   key={occurrence.issue_id}
                   occurrence={occurrence}
+                  snippetId={buildSnippetId(occurrenceIndex)}
                 />
               ))}
             </div>
           </DetailSection>
         </div>
+        {isBackToTopVisible ? (
+          <Button
+            aria-label="Back to top"
+            className="fixed bottom-6 right-6 z-10 rounded-full shadow-lg"
+            onClick={scrollToDrawerTop}
+            size="icon"
+            title="Back to top"
+            type="button"
+          >
+            <ArrowUp aria-hidden="true" />
+          </Button>
+        ) : null}
       </aside>
+    </div>
+  );
+}
+
+function AffectedFilesNavigation({
+  affectedFiles,
+  occurrences,
+}: {
+  affectedFiles: string[];
+  occurrences: IssueOccurrence[];
+}) {
+  const [isExpanded, setIsExpanded] = useState(false);
+  const [hiddenFileCount, setHiddenFileCount] = useState(0);
+  const fileListRef = useRef<HTMLDivElement>(null);
+  const isCollapsible = hiddenFileCount > 0;
+
+  useLayoutEffect(() => {
+    const fileList = fileListRef.current;
+    if (fileList === null) {
+      return;
+    }
+
+    const updateHiddenFileCount = () => {
+      const fileCards = Array.from(fileList.children) as HTMLElement[];
+      const firstCardTop = fileCards[0]?.offsetTop;
+      const firstRowCount = fileCards.filter(
+        (fileCard) => fileCard.offsetTop === firstCardTop,
+      ).length;
+
+      setHiddenFileCount(Math.max(0, affectedFiles.length - firstRowCount));
+    };
+
+    updateHiddenFileCount();
+    const resizeObserver = new ResizeObserver(updateHiddenFileCount);
+    resizeObserver.observe(fileList);
+
+    return () => resizeObserver.disconnect();
+  }, [affectedFiles]);
+
+  function scrollToSnippet(filePath: string) {
+    const occurrenceIndex = occurrences.findIndex(
+      (occurrence) => formatIssuePath(occurrence.file_path) === filePath,
+    );
+    if (occurrenceIndex < 0) {
+      return;
+    }
+
+    document.getElementById(buildSnippetId(occurrenceIndex))?.scrollIntoView({
+      behavior: "smooth",
+      block: "start",
+    });
+  }
+
+  return (
+    <div className="mt-4">
+      <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+        Affected files
+      </p>
+      <div
+        className={`mt-2 flex flex-wrap gap-2 ${
+          isExpanded ? "" : "max-h-9 overflow-hidden"
+        }`}
+        ref={fileListRef}
+      >
+        {affectedFiles.map((filePath) => {
+          const hasSnippet = occurrences.some(
+            (occurrence) => formatIssuePath(occurrence.file_path) === filePath,
+          );
+
+          return (
+            <button
+              aria-label={`Jump to code snippet for ${filePath}`}
+              className="w-fit max-w-full rounded-md border border-border bg-background px-3 py-2 text-left font-mono text-xs text-foreground transition-colors hover:border-foreground/40 hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60"
+              disabled={!hasSnippet}
+              key={filePath}
+              onClick={() => scrollToSnippet(filePath)}
+              title={
+                hasSnippet
+                  ? `Jump to snippet for ${filePath}`
+                  : "No source snippet available"
+              }
+              type="button"
+            >
+              <span className="block truncate">{filePath}</span>
+            </button>
+          );
+        })}
+      </div>
+      {isCollapsible ? (
+        <Button
+          className="mt-2"
+          onClick={() => setIsExpanded((currentValue) => !currentValue)}
+          size="sm"
+          type="button"
+          variant="ghost"
+        >
+          {isExpanded ? (
+            <>
+              <ChevronUp aria-hidden="true" />
+              Show fewer files
+            </>
+          ) : (
+            <>
+              <ChevronDown aria-hidden="true" />
+              Show {hiddenFileCount} more {hiddenFileCount === 1 ? "file" : "files"}
+            </>
+          )}
+        </Button>
+      ) : null}
     </div>
   );
 }
 
 function CodeSnippetViewer({
   occurrence,
+  snippetId,
 }: {
   occurrence: IssueOccurrence;
+  snippetId: string;
 }) {
   const lineStart = occurrence.line_start ?? 1;
   const sourceContext = getSourceContext(occurrence);
@@ -593,7 +742,10 @@ function CodeSnippetViewer({
     const displayPath = formatIssuePath(occurrence.file_path);
 
     return (
-      <div className="rounded-md border border-border bg-background p-4">
+      <div
+        className="scroll-mt-6 rounded-md border border-border bg-background p-4"
+        id={snippetId}
+      >
         <p className="font-mono text-sm text-muted-foreground">
           {displayPath}:{lineStart}
         </p>
@@ -609,7 +761,10 @@ function CodeSnippetViewer({
   const displayPath = formatIssuePath(occurrence.file_path);
 
   return (
-    <div className="overflow-hidden rounded-md border border-border bg-background text-xs">
+    <div
+      className="scroll-mt-6 overflow-hidden rounded-md border border-border bg-background text-xs"
+      id={snippetId}
+    >
       <div className="flex items-center justify-between border-b border-border px-3 py-2 font-mono">
         <span className="truncate text-muted-foreground">
           {displayPath}:{lineStart}
@@ -838,30 +993,23 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
-type IssueLocationSummary = {
-  primary: string;
-  secondary: string | null;
-};
-
-function getIssueLocationSummary(issue: ReviewIssue): IssueLocationSummary {
+function getIssueLocationSummary(issue: ReviewIssue) {
   const affectedFiles = getDisplayAffectedFiles(issue);
   const occurrenceLabel = formatOccurrenceCount(issue.occurrence_count);
 
   if (affectedFiles.length > 1) {
-    return {
-      primary: `${occurrenceLabel} across ${affectedFiles.length} files`,
-      secondary: `Affected files: ${affectedFiles.join(", ")}`,
-    };
+    return `${occurrenceLabel} across ${affectedFiles.length} files`;
   }
 
   const filePath = affectedFiles[0] ?? formatIssuePath(issue.file_path);
   const lineNumber = issue.line_start ? `:${issue.line_start}` : "";
   const groupedCount = issue.occurrence_count > 1 ? ` · ${occurrenceLabel}` : "";
 
-  return {
-    primary: `${filePath}${lineNumber}${groupedCount}`,
-    secondary: null,
-  };
+  return `${filePath}${lineNumber}${groupedCount}`;
+}
+
+function buildSnippetId(occurrenceIndex: number) {
+  return `${SNIPPET_ID_PREFIX}-${occurrenceIndex}`;
 }
 
 function formatIssueTableLocation(issue: ReviewIssue) {

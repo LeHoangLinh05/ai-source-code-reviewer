@@ -2,7 +2,7 @@ name: repoguard-ai-dev
 
 services:
   postgres:
-    image: postgres:16
+    image: postgres:16-alpine
     container_name: repoguard-postgres
     restart: unless-stopped
     environment:
@@ -45,7 +45,7 @@ services:
       retries: 5
 
   redis:
-    image: redis:7
+    image: redis:7-alpine
     container_name: repoguard-redis
     restart: unless-stopped
     command: ["redis-server", "--appendonly", "yes"]

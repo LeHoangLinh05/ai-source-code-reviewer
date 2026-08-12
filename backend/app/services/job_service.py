@@ -18,6 +18,7 @@ from app.schemas.review_job import (
 )
 from app.services.job_queue_service import JobQueueService
 from app.services.notification_service import publish_job_progress
+from app.services.review_pipeline.errors import sanitize_error_message
 
 logger = logging.getLogger(__name__)
 TERMINAL_REVIEW_JOB_STATUSES = {
@@ -192,11 +193,15 @@ class ReviewJobService:
         review_job = await self._get_authorized_job(job_id, current_user)
         history = await self.review_job_repository.get_latest_status_history(job_id)
         progress = history.progress if history is not None else 0
-        message = (
+        stored_message = (
             history.message
             if history is not None and history.message
             else review_job.error_message
-            or review_job.status.value.replace("_", " ").title()
+        )
+        message = (
+            sanitize_error_message(stored_message)
+            if stored_message
+            else review_job.status.value.replace("_", " ").title()
         )
         timestamp = history.changed_at if history is not None else review_job.created_at
         return JobProgressEvent(
@@ -234,7 +239,11 @@ class ReviewJobService:
             status=review_job.status,
             branch=review_job.branch,
             commit_sha=review_job.commit_sha,
-            error_message=review_job.error_message,
+            error_message=(
+                sanitize_error_message(review_job.error_message)
+                if review_job.error_message
+                else None
+            ),
             options=review_job.options,
             started_at=review_job.started_at,
             completed_at=review_job.completed_at,
