@@ -1,9 +1,9 @@
 import { api } from "@/lib/api";
 import type {
   AITrace,
-  CancelReviewJobResponse,
   CreateReviewJobPayload,
   CreateReviewJobResponse,
+  DeleteReviewJobResponse,
   ReviewJob,
   ReviewJobFilters,
   UpdateReviewJobStatusPayload,
@@ -31,8 +31,8 @@ export async function getReviewJobAiTrace(jobId: string) {
   return response.data;
 }
 
-export async function cancelReviewJob(jobId: string) {
-  const response = await api.delete<CancelReviewJobResponse>(
+export async function deleteReviewJob(jobId: string) {
+  const response = await api.delete<DeleteReviewJobResponse>(
     `/review-jobs/${jobId}`,
   );
   return response.data;

@@ -40,6 +40,8 @@ celery_app = Celery(
     broker=celery_broker_url,
     backend=celery_result_backend,
     include=[
+        "app.workers.fix_publish_worker",
+        "app.workers.fix_worker",
         "app.workers.review_worker",
         "app.workers.sandbox_cleanup_worker",
     ],

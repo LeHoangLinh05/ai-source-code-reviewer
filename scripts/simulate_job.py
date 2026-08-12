@@ -1,8 +1,8 @@
 """Optional fallback for simulating review job status transitions.
 
 The main review flow now runs through the Celery process_review_job pipeline.
-Keep this script only for frontend polling/progress UI demos when the worker is
-not running.
+Keep this script only for frontend SSE/progress UI demos when the worker is not
+running.
 
 Usage:
     python scripts/simulate_job.py --job-id <uuid>
@@ -13,10 +13,10 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-from dataclasses import dataclass
 import logging
-from pathlib import Path
 import sys
+from dataclasses import dataclass
+from pathlib import Path
 from uuid import UUID
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]

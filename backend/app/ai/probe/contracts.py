@@ -6,6 +6,17 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 MAX_RETRIEVAL_QUERY_WORDS = 64
+OTP_SECURITY_PROBE_ID = "security.otp_exposure_rate_limit"
+SENSITIVE_DATA_LOGGING_PROBE_ID = "security.sensitive_data_logging"
+UNRESTRICTED_FILE_UPLOAD_PROBE_ID = "security.unrestricted_file_upload"
+OTP_CANONICAL_CLAIM_TYPES = (
+    "otp_exposure",
+    "otp_missing_authentication",
+    "otp_weak_randomness",
+    "otp_missing_rate_limit",
+    "otp_plaintext_storage",
+    "otp_lifecycle",
+)
 
 
 class ProbeLane(StrEnum):
@@ -34,6 +45,7 @@ class ProbeDefinition:
     source_kinds: tuple[str, ...] = ("baseline",)
     reason: str = "category_probe"
     probe_kind: str = "baseline"
+    allowed_claim_types: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.probe_id.strip():
@@ -68,4 +80,5 @@ class ProbeDefinition:
             "judge_question": self.judge_question,
             "related_rule_ids": list(self.related_rule_ids),
             "file_scope": self.file_scope,
+            "allowed_claim_types": list(self.allowed_claim_types),
         }

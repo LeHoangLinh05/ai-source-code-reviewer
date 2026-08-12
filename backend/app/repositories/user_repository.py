@@ -32,14 +32,13 @@ class UserRepository:
         *,
         email: str,
         hashed_password: str,
-        role: UserRole = UserRole.USER,
     ) -> User:
         """Persist a new user account."""
 
         user = User(
             email=email,
             hashed_password=hashed_password,
-            role=role,
+            role=UserRole.USER,
         )
         self.session.add(user)
         await self.session.commit()

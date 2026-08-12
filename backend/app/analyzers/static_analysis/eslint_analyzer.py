@@ -3,7 +3,10 @@
 import json
 from pathlib import Path
 
-from app.analyzers.file_filter import to_relative_posix_path
+from app.analyzers.file_filter import (
+    normalize_analyzer_file_path,
+    to_relative_posix_path,
+)
 from app.analyzers.static_analysis.base import StaticAnalysisRun, run_static_command
 from app.models.review_issue import IssueCategory, IssueSeverity, IssueSource
 from app.schemas.normalized_issue import NormalizedIssue
@@ -70,7 +73,7 @@ def eslint_to_normalized(
         if not isinstance(file_result, dict):
             continue
 
-        file_path = _normalize_file_path(
+        file_path = normalize_analyzer_file_path(
             str(file_result.get("filePath", "")), sandbox_path
         )
         messages = file_result.get("messages")
@@ -108,14 +111,3 @@ def _eslint_severity(severity: object) -> IssueSeverity:
     return (
         IssueSeverity.MEDIUM if severity == ESLINT_ERROR_SEVERITY else IssueSeverity.LOW
     )
-
-
-def _normalize_file_path(file_path: str, sandbox_path: Path | None) -> str:
-    if sandbox_path is None:
-        return file_path
-
-    path = Path(file_path)
-    try:
-        return path.resolve().relative_to(sandbox_path.resolve()).as_posix()
-    except ValueError:
-        return file_path

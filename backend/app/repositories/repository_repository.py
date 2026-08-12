@@ -56,13 +56,6 @@ class RepositoryRepository:
         result = await self.session.execute(statement)
         return list(result.scalars().all())
 
-    async def list_all(self) -> list[Repository]:
-        """Return all repositories, newest first."""
-
-        statement = select(Repository).order_by(Repository.created_at.desc())
-        result = await self.session.execute(statement)
-        return list(result.scalars().all())
-
     async def update_last_reviewed_at(
         self,
         source_repository: Repository,

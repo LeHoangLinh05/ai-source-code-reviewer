@@ -3,7 +3,10 @@
 import json
 from pathlib import Path
 
-from app.analyzers.file_filter import to_relative_posix_path
+from app.analyzers.file_filter import (
+    normalize_analyzer_file_path,
+    to_relative_posix_path,
+)
 from app.analyzers.static_analysis.base import StaticAnalysisRun, run_static_command
 from app.models.review_issue import IssueCategory, IssueSeverity, IssueSource
 from app.schemas.normalized_issue import NormalizedIssue
@@ -81,7 +84,7 @@ def bandit_to_normalized(
         )
         issues.append(
             NormalizedIssue(
-                file_path=_normalize_file_path(
+                file_path=normalize_analyzer_file_path(
                     str(item.get("filename", "")), sandbox_path
                 ),
                 line_start=line_start,
@@ -100,17 +103,6 @@ def bandit_to_normalized(
         )
 
     return issues
-
-
-def _normalize_file_path(file_path: str, sandbox_path: Path | None) -> str:
-    if sandbox_path is None:
-        return file_path
-
-    path = Path(file_path)
-    try:
-        return path.resolve().relative_to(sandbox_path.resolve()).as_posix()
-    except ValueError:
-        return file_path
 
 
 def _bandit_confidence_to_float(confidence: object) -> float:

@@ -30,6 +30,8 @@ def test_ruff_to_normalized_maps_json_findings() -> None:
     assert issues[0].file_path == "src/app.py"
     assert issues[0].source == IssueSource.RUFF
     assert issues[0].category == IssueCategory.STYLE
+    assert issues[0].title == "Ruff F401: unused import"
+    assert issues[0].description == "unused import"
     assert issues[0].line_start == 2
     assert issues[0].raw_output is not None
     assert issues[0].raw_output["code"] == "F401"
@@ -62,6 +64,30 @@ def test_bandit_to_normalized_maps_high_security_findings() -> None:
     assert issues[0].severity == IssueSeverity.HIGH
     assert issues[0].category == IssueCategory.SECURITY
     assert issues[0].confidence == 0.9
+
+
+def test_bandit_to_normalized_resolves_relative_paths_from_sandbox() -> None:
+    sandbox_path = Path("/tmp/sandbox/job")
+    issues = bandit_to_normalized(
+        json.dumps(
+            {
+                "results": [
+                    {
+                        "filename": "./src/app.py",
+                        "line_number": 5,
+                        "issue_severity": "HIGH",
+                        "issue_confidence": "HIGH",
+                        "test_id": "B105",
+                        "test_name": "hardcoded_password_string",
+                        "issue_text": "Possible hardcoded password",
+                    }
+                ]
+            }
+        ),
+        sandbox_path,
+    )
+
+    assert issues[0].file_path == "src/app.py"
 
 
 def test_eslint_to_normalized_maps_absolute_paths(tmp_path: Path) -> None:

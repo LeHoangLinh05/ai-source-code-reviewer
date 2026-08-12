@@ -11,7 +11,12 @@ from app.ai.probe.candidate_retrieval import (
     _candidate_from_document,
     _exact_score,
 )
-from app.ai.probe.contracts import ProbeDefinition
+from app.ai.probe.contracts import (
+    OTP_SECURITY_PROBE_ID,
+    SENSITIVE_DATA_LOGGING_PROBE_ID,
+    UNRESTRICTED_FILE_UPLOAD_PROBE_ID,
+    ProbeDefinition,
+)
 from app.ai.probe.models import ProbeCandidateChunk
 
 
@@ -41,7 +46,12 @@ def _structural_candidates(
         )
         if candidate is not None:
             chunk_type = str(document.get("chunk_type") or "").lower()
-            function_bonus = 0.4 if chunk_type == "function" else 0.0
+            function_bonus = _structural_shape_bonus(
+                probe=probe,
+                chunk_type=chunk_type,
+                file_path=candidate.file_path,
+                content=content,
+            )
             candidates.append(
                 replace(
                     candidate,
@@ -49,6 +59,50 @@ def _structural_candidates(
                 )
             )
     return sorted(candidates, key=_structural_candidate_rank, reverse=True)
+
+
+def _structural_shape_bonus(
+    *,
+    probe: ProbeDefinition,
+    chunk_type: str,
+    file_path: str,
+    content: str,
+) -> float:
+    normalized_path = file_path.replace("\\", "/").lower()
+    if probe.probe_id == "security.sensitive_response_exposure":
+        if chunk_type == "class" and "/schemas/" in normalized_path:
+            return 0.8
+        return 0.0
+    if probe.probe_id == OTP_SECURITY_PROBE_ID:
+        return _otp_candidate_bonus(content, chunk_type=chunk_type)
+    return 0.4 if chunk_type == "function" else 0.0
+
+
+def _otp_candidate_bonus(content: str, *, chunk_type: str) -> float:
+    normalized = content.casefold()
+    signal_groups = (
+        ("@router.", '"/otp', "'/otp"),
+        ("debug_otp", "return", "response", "logger"),
+        ("depends(", "current_user", "authenticated", "authorize"),
+        ("random.randint", "random.randrange", "secrets.", "token_urlsafe"),
+        (
+            "create_otp",
+            "save_otp",
+            "store_otp",
+            "otprecord",
+            "otp_code",
+            "otp_hash",
+            "hashed_otp",
+        ),
+        ("rate_limit", "attempt", "throttle", "lockout"),
+        ("expire", "ttl", "delete", "used_at", "consumed"),
+    )
+    signal_bonus = sum(
+        0.12 for terms in signal_groups if any(term in normalized for term in terms)
+    )
+    route_bonus = 0.4 if "@router." in normalized and "/otp" in normalized else 0.0
+    function_bonus = 0.4 if chunk_type == "function" and signal_bonus else 0.0
+    return route_bonus + function_bonus + min(signal_bonus, 0.6)
 
 
 def _structural_candidate_rank(
@@ -158,13 +212,305 @@ def _matches_object_authorization(content: str) -> bool:
 
 
 def _matches_role_authorization(content: str) -> bool:
-    return "admin" in content and "get_current_user" in content
+    has_authenticated_route = "@router." in content and "get_current_user" in content
+    has_privileged_semantics = _contains_any(
+        content,
+        "admin",
+        "cost_price",
+        "margin",
+        "profit",
+        "report",
+    )
+    has_stronger_authorization = _contains_any(
+        content,
+        "require_admin",
+        "require_role",
+        "is_admin",
+        "check_permission",
+        "has_permission",
+    )
+    return (
+        has_authenticated_route
+        and has_privileged_semantics
+        and not has_stronger_authorization
+    )
 
 
 def _matches_mass_assignment(content: str) -> bool:
-    return "setattr(" in content and _contains_any(
-        content, "payload", ".items()", "dict"
+    has_dynamic_assignment = "setattr(" in content and _contains_any(
+        content,
+        "payload",
+        ".items()",
+        "model_dump(",
+        "dict",
     )
+    has_sensitive_field = (
+        re.search(
+            r"\b(cost_price|is_admin|is_active|owner_id|role)\b",
+            content,
+        )
+        is not None
+    )
+    defines_request_fields = "basemodel" in content or "model_dump(" in content
+    return has_dynamic_assignment or (has_sensitive_field and defines_request_fields)
+
+
+def _matches_jwt_algorithm_allowlist(content: str) -> bool:
+    try:
+        tree = ast.parse(content)
+    except SyntaxError:
+        return "jwt.decode(" in content and _contains_any(
+            content,
+            '"none"',
+            "'none'",
+        )
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not _is_jwt_decode_call(node):
+            continue
+        algorithms = next(
+            (keyword.value for keyword in node.keywords if keyword.arg == "algorithms"),
+            None,
+        )
+        if algorithms is None:
+            return True
+        if _unsafe_jwt_algorithms(algorithms):
+            return True
+    return False
+
+
+def _is_jwt_decode_call(call: ast.Call) -> bool:
+    return (
+        isinstance(call.func, ast.Attribute)
+        and call.func.attr == "decode"
+        and isinstance(call.func.value, ast.Name)
+        and call.func.value.id == "jwt"
+    )
+
+
+def _unsafe_jwt_algorithms(algorithms: ast.expr) -> bool:
+    if not isinstance(algorithms, (ast.List, ast.Tuple, ast.Set)):
+        return True
+
+    values = algorithms.elts
+    if len(values) != 1:
+        return True
+    value = values[0]
+    if isinstance(value, ast.Constant) and isinstance(value.value, str):
+        return True
+    return not (
+        isinstance(value, ast.Attribute)
+        and isinstance(value.value, ast.Name)
+        and value.value.id == "settings"
+        and value.attr == "algorithm"
+    )
+
+
+def _matches_sensitive_data_logging(content: str) -> bool:
+    try:
+        tree = ast.parse(content)
+    except SyntaxError:
+        return bool(
+            re.search(
+                r"(?:logger|logging)\.(?:debug|info|warning|error|exception|critical)"
+                r"\s*\([^\n]*(?:password|passwd|token|secret|api_key|cookie|"
+                r"authorization|credential)",
+                content,
+            )
+        )
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not _is_logging_call(node):
+            continue
+        values = [*node.args, *(keyword.value for keyword in node.keywords)]
+        if any(_contains_sensitive_runtime_value(value) for value in values):
+            return True
+    return False
+
+
+def _is_logging_call(call: ast.Call) -> bool:
+    if not isinstance(call.func, ast.Attribute):
+        return False
+    if call.func.attr.lower() not in {
+        "critical",
+        "debug",
+        "error",
+        "exception",
+        "info",
+        "log",
+        "warning",
+    }:
+        return False
+    try:
+        owner = ast.unparse(call.func.value).lower()
+    except ValueError:
+        return False
+    return "log" in owner
+
+
+def _contains_sensitive_runtime_value(expression: ast.expr) -> bool:
+    if isinstance(expression, ast.Constant):
+        return False
+
+    sensitive_terms = {
+        "api_key",
+        "authorization",
+        "cookie",
+        "credential",
+        "passwd",
+        "password",
+        "secret",
+        "token",
+    }
+    for node in ast.walk(expression):
+        if isinstance(node, ast.Name) and _identifier_has_term(
+            node.id,
+            sensitive_terms,
+        ):
+            return True
+        if isinstance(node, ast.Attribute) and _identifier_has_term(
+            node.attr,
+            sensitive_terms,
+        ):
+            return True
+        if (
+            isinstance(node, ast.Subscript)
+            and isinstance(node.slice, ast.Constant)
+            and isinstance(node.slice.value, str)
+            and _identifier_has_term(
+                node.slice.value,
+                sensitive_terms,
+            )
+        ):
+            return True
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "get"
+            and node.args
+        ):
+            key = node.args[0]
+            if (
+                isinstance(key, ast.Constant)
+                and isinstance(key.value, str)
+                and _identifier_has_term(key.value, sensitive_terms)
+            ):
+                return True
+    return False
+
+
+def _identifier_has_term(identifier: str, terms: set[str]) -> bool:
+    normalized = identifier.lower()
+    return any(term in normalized for term in terms)
+
+
+def _matches_file_upload_flow(content: str) -> bool:
+    try:
+        tree = ast.parse(content)
+    except SyntaxError:
+        has_upload = _contains_any(content, "uploadfile", "multipart", "filename")
+        has_sink = _contains_any(
+            content,
+            ".write(",
+            "copyfileobj(",
+            "shutil.copy(",
+            "shutil.copy2(",
+        )
+        return has_upload and has_sink
+
+    has_upload = any(
+        isinstance(node, ast.Name) and node.id.lower() == "uploadfile"
+        for node in ast.walk(tree)
+    )
+    if not has_upload:
+        return False
+    return any(
+        isinstance(node, ast.Call) and _is_file_write_sink(node)
+        for node in ast.walk(tree)
+    )
+
+
+def _is_file_write_sink(call: ast.Call) -> bool:
+    try:
+        call_name = ast.unparse(call.func).lower()
+    except ValueError:
+        return False
+    return call_name.endswith(".write") or call_name.endswith(
+        ("copyfileobj", "shutil.copy", "shutil.copy2")
+    )
+
+
+def _matches_sensitive_response(content: str) -> bool:
+    has_sensitive_field = _contains_any(
+        content,
+        "cost_price",
+        "hashed_password",
+        "private_key",
+        "profit",
+        "margin",
+    )
+    defines_response_schema = (
+        has_sensitive_field
+        and "basemodel" in content
+        and re.search(r"class\s+[a-z0-9_]*response\b", content) is not None
+    )
+    return defines_response_schema
+
+
+def _matches_insecure_randomness(content: str) -> bool:
+    has_security_value = _contains_any(
+        content,
+        "token",
+        "secret",
+        "password",
+        "credential",
+        "nonce",
+    )
+    has_predictable_randomness = _contains_any(
+        content,
+        "random.seed(",
+        "random.choice(",
+        "random.randint(",
+        "random.random(",
+    )
+    return has_security_value and has_predictable_randomness
+
+
+def _matches_open_redirect(content: str) -> bool:
+    has_redirect_sink = "redirectresponse(" in content and "url=" in content
+    has_request_target = _contains_any(content, "next", "redirect", "return_url")
+    if not has_redirect_sink or not has_request_target:
+        return False
+    has_relative_path_allowlist = (
+        "startswith(" in content
+        and "//" in content
+        and _contains_any(content, "\\\\", "backslash")
+    )
+    return not has_relative_path_allowlist
+
+
+def _matches_inventory_invariant(content: str) -> bool:
+    has_quantity_mutation = (
+        re.search(r"\bquantity\s*\+=\s*[a-z_]", content) is not None
+        or re.search(
+            r"\bquantity\s*=\s*[a-z0-9_.]+\.quantity\s*\+\s*[a-z_]",
+            content,
+        )
+        is not None
+    )
+    if not has_quantity_mutation or "delta" not in content:
+        return False
+    has_non_negative_guard = re.search(
+        r"(?:quantity\s*\+\s*delta|new_quantity)\s*<\s*0",
+        content,
+    ) is not None or _contains_any(
+        content,
+        "checkconstraint",
+        "quantity >= 0",
+        "quantity>=0",
+        "max(0",
+    )
+    return not has_non_negative_guard
 
 
 def _matches_weak_hash(content: str) -> bool:
@@ -264,6 +610,42 @@ def _matches_resource_lifecycle(content: str) -> bool:
     )
 
 
+def _matches_otp_flow(content: str) -> bool:
+    return _contains_any(
+        content,
+        "otp",
+        "verification_code",
+        "one_time_password",
+        "one_time",
+    )
+
+
+def _matches_insecure_default_credentials(content: str) -> bool:
+    has_credential = _contains_any(content, "password", "secret", "api_key", "token")
+    has_fallback = _contains_any(content, "getenv(", "field(default=", ' or "')
+    return has_credential and has_fallback
+
+
+def _matches_task_reliability(content: str) -> bool:
+    has_task = _contains_any(content, "@shared_task", "@celery_app.task", "@app.task")
+    has_reliability_policy = _contains_any(
+        content,
+        "autoretry_for",
+        "time_limit",
+        "soft_time_limit",
+        "self.retry(",
+    )
+    return has_task and not has_reliability_policy
+
+
+def _matches_idempotency_race(content: str) -> bool:
+    has_idempotency_flow = _contains_any(content, "idempotency", "webhook")
+    has_check = _contains_any(content, "exists(", "get_by_")
+    has_write = _contains_any(content, "create(", "insert(", "add(")
+    has_check_then_write = has_check and has_write
+    return has_idempotency_flow and has_check_then_write
+
+
 _STRUCTURAL_MATCHERS: dict[str, Any] = {
     "security.sql_nosql_injection": _matches_sql_injection,
     "security.command_injection": _matches_command_injection,
@@ -271,12 +653,23 @@ _STRUCTURAL_MATCHERS: dict[str, Any] = {
     "security.object_authorization": _matches_object_authorization,
     "security.role_authorization": _matches_role_authorization,
     "security.mass_assignment": _matches_mass_assignment,
+    "security.jwt_algorithm_allowlist": _matches_jwt_algorithm_allowlist,
+    "security.insecure_randomness": _matches_insecure_randomness,
+    "security.open_redirect": _matches_open_redirect,
+    SENSITIVE_DATA_LOGGING_PROBE_ID: _matches_sensitive_data_logging,
+    "security.sensitive_response_exposure": _matches_sensitive_response,
+    UNRESTRICTED_FILE_UPLOAD_PROBE_ID: _matches_file_upload_flow,
     "security.weak_password_hash": _matches_weak_hash,
     "security.reset_token_lifecycle": _matches_reset_token,
     "security.refresh_token_validation": _matches_refresh_validation,
     "security.logout_revocation": _matches_logout,
+    OTP_SECURITY_PROBE_ID: _matches_otp_flow,
+    "security.insecure_default_credentials": _matches_insecure_default_credentials,
     "bug.async_concurrency": _matches_race,
+    "bug.inventory_invariant": _matches_inventory_invariant,
     "bug.state_transaction_consistency": _matches_transaction,
+    "bug.task_retry_timeout": _matches_task_reliability,
+    "bug.idempotency_race": _matches_idempotency_race,
     "performance.n_plus_one": _matches_n_plus_one,
     "performance.pagination_bounds": _matches_pagination,
     "maintainability.resource_lifecycle": _matches_resource_lifecycle,

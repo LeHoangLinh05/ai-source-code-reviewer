@@ -122,6 +122,7 @@ services:
       TOKENIZERS_PARALLELISM: "false"
       OMP_NUM_THREADS: "1"
       MKL_NUM_THREADS: "1"
+      FIX_EXECUTOR_WORKSPACE_VOLUME: ${COMPOSE_PROJECT_NAME:-repoguard-ai-dev}_sandbox_data
     command:
       [
         "celery",
@@ -134,6 +135,7 @@ services:
     volumes:
       - ./backend:/app
       - sandbox_data:/tmp/sandbox
+      - /var/run/docker.sock:/var/run/docker.sock
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
@@ -143,8 +145,17 @@ services:
         condition: service_healthy
       cache-healthcheck:
         condition: service_healthy
+      fix-executor-image:
+        condition: service_completed_successfully
     networks:
       - repoguard-network
+
+  fix-executor-image:
+    image: ${FIX_EXECUTOR_IMAGE:-repoguard-fix-executor:latest}
+    build:
+      context: .
+      dockerfile: docker/fix-executor.Dockerfile
+    command: ["python", "--version"]
 
   beat:
     build:

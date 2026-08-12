@@ -3,11 +3,17 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable, Sequence
+from collections.abc import Sequence
 
-from app.ai.probe.contracts import ProbeDefinition, ProbeLane
+from app.ai.probe.contracts import (
+    OTP_CANONICAL_CLAIM_TYPES,
+    OTP_SECURITY_PROBE_ID,
+    SENSITIVE_DATA_LOGGING_PROBE_ID,
+    UNRESTRICTED_FILE_UPLOAD_PROBE_ID,
+    ProbeDefinition,
+    ProbeLane,
+)
 
-MAX_ROADMAP_RULES_PER_PROBE = 3
 MAX_FILE_AUDIT_ITEMS = 4
 MAX_RETRIEVAL_QUERY_TOKENS = 64
 MIN_ROADMAP_TERM_LENGTH = 4
@@ -30,6 +36,7 @@ def _baseline(
     lexical_terms: tuple[str, ...],
     question: str,
     risk_area: str | None = None,
+    allowed_claim_types: tuple[str, ...] = (),
 ) -> ProbeDefinition:
     return ProbeDefinition(
         probe_id=probe_id,
@@ -41,6 +48,7 @@ def _baseline(
         lexical_terms=lexical_terms,
         judge_question=question,
         top_k=CATEGORY_TOP_K[category],
+        allowed_claim_types=allowed_claim_types,
     )
 
 
@@ -125,6 +133,97 @@ BASELINE_PROBES: tuple[ProbeDefinition, ...] = (
         ),
     ),
     _baseline(
+        probe_id=SENSITIVE_DATA_LOGGING_PROBE_ID,
+        category="security",
+        priority="high",
+        queries=(
+            "logger runtime password token secret cookie authorization value",
+            "logging sensitive credential f-string request payload",
+        ),
+        lexical_terms=(
+            "logger",
+            "logging",
+            "password",
+            "token",
+            "secret",
+            "cookie",
+            "authorization",
+        ),
+        question=(
+            "Is a runtime password, token, secret, cookie, authorization value, or "
+            "other credential passed to a logger? A fixed diagnostic message such "
+            "as 'invalid password' is not sensitive-data logging unless it includes "
+            "the runtime value."
+        ),
+    ),
+    _baseline(
+        probe_id=UNRESTRICTED_FILE_UPLOAD_PROBE_ID,
+        category="security",
+        priority="high",
+        queries=(
+            "UploadFile multipart write copy destination validation size MIME",
+            "file upload extension content type allowlist storage path",
+        ),
+        lexical_terms=(
+            "uploadfile",
+            "multipart",
+            "content_type",
+            "filename",
+            "write",
+            "copyfileobj",
+        ),
+        question=(
+            "Can an uploaded file be persisted without appropriate size, content, "
+            "MIME or extension validation and a controlled destination? Distinguish "
+            "validation that is actually enforced from checks that only inspect a "
+            "client-controlled filename or header."
+        ),
+    ),
+    _baseline(
+        probe_id="security.jwt_algorithm_allowlist",
+        category="security",
+        priority="high",
+        queries=(
+            "jwt decode algorithms allowlist none signature verification",
+            "token decode configured algorithm settings exception handling",
+        ),
+        lexical_terms=("jwt.decode", "algorithms", "none", "algorithm", "token"),
+        question=(
+            "Does JWT verification allow the none algorithm, omit an explicit "
+            "algorithm allowlist, or accept algorithms other than the configured "
+            "production algorithm? Treat an allowlist containing none as Critical."
+        ),
+    ),
+    _baseline(
+        probe_id="security.insecure_randomness",
+        category="security",
+        priority="high",
+        queries=(
+            "security token random seeded time predictable generation",
+            "password reset token secrets systemrandom entropy",
+        ),
+        lexical_terms=("random.seed", "time", "choice", "token", "secrets"),
+        question=(
+            "Is a security-sensitive token or credential generated with predictable "
+            "randomness such as random seeded from time instead of secrets?"
+        ),
+    ),
+    _baseline(
+        probe_id="security.open_redirect",
+        category="security",
+        priority="high",
+        queries=(
+            "redirect response next request parameter external URL validation",
+            "protocol relative backslash redirect urlparse allowlist",
+        ),
+        lexical_terms=("redirectresponse", "next", "urlparse", "netloc", "scheme"),
+        question=(
+            "Can request-controlled redirect input select an external destination, "
+            "including protocol-relative or backslash URL forms? A scheme/netloc-only "
+            "urlparse check is insufficient."
+        ),
+    ),
+    _baseline(
         probe_id="security.object_authorization",
         category="security",
         priority="high",
@@ -149,6 +248,29 @@ BASELINE_PROBES: tuple[ProbeDefinition, ...] = (
         lexical_terms=("admin", "role", "permission", "get_current_user"),
         question=(
             "Can a non-privileged authenticated user invoke a privileged operation?"
+        ),
+    ),
+    _baseline(
+        probe_id="security.sensitive_response_exposure",
+        category="security",
+        priority="high",
+        queries=(
+            "response model exposes cost price profit margin authenticated user",
+            "sensitive internal field API response without admin authorization",
+        ),
+        lexical_terms=(
+            "response_model",
+            "cost_price",
+            "profit",
+            "margin",
+            "get_current_user",
+        ),
+        question=(
+            "Can a non-admin caller receive sensitive internal data such as cost "
+            "price, margins, credentials, secrets, or private authorization fields? "
+            "Prioritize sensitive fields declared in ordinary API response_model "
+            "schemas and their non-admin routes; do not substitute a separate "
+            "privileged report endpoint when that response-model evidence exists."
         ),
     ),
     _baseline(
@@ -224,6 +346,40 @@ BASELINE_PROBES: tuple[ProbeDefinition, ...] = (
         question="Does an external boundary accept unsafe or overly broad input?",
     ),
     _baseline(
+        probe_id=OTP_SECURITY_PROBE_ID,
+        category="security",
+        priority="high",
+        queries=(
+            "OTP verification code response logging exposure rate limit",
+            "one time password verify attempts throttle expiry reuse",
+        ),
+        lexical_terms=("otp", "verification_code", "attempt", "rate_limit", "expire"),
+        question=(
+            "Audit the complete OTP flow and return separate issues for every "
+            "proved weakness: response or log exposure, missing authentication, "
+            "predictable generation, missing attempt throttling, plaintext storage, "
+            "or missing expiry and one-time invalidation. When the retrieved bundle "
+            "contains the route declaration plus its handler and delegated service, "
+            "the absence of an authentication dependency or throttling in that "
+            "complete local flow is evidence for the corresponding missing control."
+        ),
+        allowed_claim_types=OTP_CANONICAL_CLAIM_TYPES,
+    ),
+    _baseline(
+        probe_id="security.insecure_default_credentials",
+        category="security",
+        priority="high",
+        queries=(
+            "default admin password secret fallback credential production",
+            "environment variable credential insecure literal fallback",
+        ),
+        lexical_terms=("default", "admin", "password", "secret", "getenv"),
+        question=(
+            "Can production start with a usable default credential or predictable "
+            "fallback secret when configuration is absent?"
+        ),
+    ),
+    _baseline(
         probe_id="bug.error_none_edges",
         category="bug",
         priority="medium",
@@ -263,6 +419,27 @@ BASELINE_PROBES: tuple[ProbeDefinition, ...] = (
         ),
     ),
     _baseline(
+        probe_id="bug.inventory_invariant",
+        category="bug",
+        priority="high",
+        queries=(
+            "inventory quantity delta negative stock lower bound validation",
+            "adjust stock read modify write check constraint atomic update",
+        ),
+        lexical_terms=(
+            "quantity",
+            "delta",
+            "adjust_stock",
+            "stock",
+            "constraint",
+        ),
+        question=(
+            "Can an inventory mutation make quantity negative because neither the "
+            "request path nor persistence layer enforces a non-negative invariant? "
+            "Also identify non-atomic read-modify-write evidence when present."
+        ),
+    ),
+    _baseline(
         probe_id="bug.state_transaction_consistency",
         category="bug",
         priority="high",
@@ -284,6 +461,48 @@ BASELINE_PROBES: tuple[ProbeDefinition, ...] = (
         lexical_terms=("todo", "pass", "notimplemented", "hardcoded"),
         question=(
             "Is a reachable behavior incomplete, stubbed, or incorrectly bypassed?"
+        ),
+    ),
+    _baseline(
+        probe_id="bug.task_retry_timeout",
+        category="bug",
+        priority="high",
+        queries=(
+            "Celery background task retry timeout acknowledgement failure",
+            "worker external call task time_limit autoretry idempotent",
+        ),
+        lexical_terms=("celery", "task", "retry", "time_limit", "autoretry_for"),
+        question=(
+            "Can a background task hang, lose a transient failure, or duplicate "
+            "side effects because retry, timeout, or acknowledgement policy is unsafe?"
+        ),
+    ),
+    _baseline(
+        probe_id="bug.idempotency_race",
+        category="bug",
+        priority="high",
+        queries=(
+            "idempotency key check then create race duplicate request",
+            "webhook payment duplicate insert unique constraint transaction",
+        ),
+        lexical_terms=("idempotency", "webhook", "exists", "create", "unique"),
+        question=(
+            "Can concurrent retries bypass a check-then-create idempotency guard and "
+            "produce duplicate durable side effects?"
+        ),
+    ),
+    _baseline(
+        probe_id="bug.frontend_registration_contract",
+        category="bug",
+        priority="high",
+        queries=(
+            "frontend register signup API response token navigation error contract",
+            "registration form fetch axios backend schema field mismatch",
+        ),
+        lexical_terms=("register", "signup", "fetch", "axios", "access_token"),
+        question=(
+            "Does the frontend registration flow disagree with the backend request or "
+            "response contract in a way that breaks successful registration?"
         ),
     ),
     _baseline(
@@ -368,6 +587,20 @@ BASELINE_PROBES: tuple[ProbeDefinition, ...] = (
         queries=("API service repository layering infrastructure dependency",),
         lexical_terms=("repository", "service", "engine", "session"),
         question="Does code violate a meaningful application-layer ownership boundary?",
+    ),
+    _baseline(
+        probe_id="maintainability.missing_tests",
+        category="maintainability",
+        priority="medium",
+        queries=(
+            "critical authentication payment registration behavior tests",
+            "production service route without unit integration regression coverage",
+        ),
+        lexical_terms=("test", "pytest", "describe", "authentication", "payment"),
+        question=(
+            "Is critical behavior left without meaningful automated regression tests "
+            "despite source evidence showing a high-risk workflow?"
+        ),
     ),
     _baseline(
         probe_id="style.boundary_contracts",
@@ -459,40 +692,29 @@ def _roadmap_probes(
     grouped = _roadmap_rules_by_group(roadmap_context)
     probes: list[ProbeDefinition] = []
     for category, rules in sorted(grouped.items()):
-        for batch_index, batch in enumerate(
-            _batched(_sorted_rules(rules), MAX_ROADMAP_RULES_PER_PROBE),
-            start=1,
-        ):
-            rule_ids = tuple(_string(rule.get("rule_id")) for rule in batch)
-            skill_groups = " ".join(_string(rule.get("skill_group")) for rule in batch)
-            check_types = " ".join(_string(rule.get("check_type")) for rule in batch)
-            intent = " ".join(
-                _string(rule.get("verification_hint"))
-                or _string(rule.get("requirement"))
-                for rule in batch
-            )
-            requirement = " | ".join(_string(rule.get("requirement")) for rule in batch)
+        for rule in _sorted_rules(rules):
+            rule_id = _string(rule.get("rule_id"))
+            skill_group = _string(rule.get("skill_group"))
+            check_type = _string(rule.get("check_type"))
+            requirement = _string(rule.get("requirement"))
+            intent = _string(rule.get("verification_hint")) or requirement
             probes.append(
                 ProbeDefinition(
-                    probe_id=(f"roadmap.{_slug(category)}.{batch_index}"),
+                    probe_id=f"roadmap.{_slug(rule_id)}",
                     lane=ProbeLane.ROADMAP,
                     category=category,
-                    priority=_highest_priority(
-                        [_string(rule.get("priority")) for rule in batch]
-                    ),
+                    priority=_string(rule.get("priority")) or "medium",
                     risk_area=_category_for_risk(category),
                     retrieval_queries=(_bounded_query(intent or requirement),),
                     lexical_terms=tuple(
-                        _unique_terms(f"{skill_groups} {check_types} {requirement}")[
-                            :12
-                        ]
+                        _unique_terms(f"{skill_group} {check_type} {requirement}")[:12]
                     ),
                     judge_question=(
-                        "Does the source evidence satisfy or contradict these roadmap "
-                        f"requirements: {requirement}?"
+                        "Does the source evidence satisfy or contradict this roadmap "
+                        f"requirement: {requirement}?"
                     ),
-                    top_k=1,
-                    related_rule_ids=rule_ids,
+                    top_k=2,
+                    related_rule_ids=(rule_id,),
                     source_kinds=("roadmap",),
                     probe_kind="roadmap",
                 )
@@ -564,14 +786,6 @@ def _sorted_rules(rules: list[dict[str, object]]) -> list[dict[str, object]]:
     )
 
 
-def _batched(
-    items: list[dict[str, object]],
-    batch_size: int,
-) -> Iterable[list[dict[str, object]]]:
-    for index in range(0, len(items), batch_size):
-        yield items[index : index + batch_size]
-
-
 def _priority(value: str) -> str:
     normalized = value.strip().lower()
     if normalized in HIGH_PRIORITY_VALUES:
@@ -583,10 +797,6 @@ def _priority(value: str) -> str:
 
 def _priority_rank(value: str) -> int:
     return {"high": 0, "medium": 1, "low": 2}.get(_priority(value), 3)
-
-
-def _highest_priority(priorities: list[str]) -> str:
-    return min((_priority(value) for value in priorities), key=_priority_rank)
 
 
 def _category_for_risk(value: str) -> str:

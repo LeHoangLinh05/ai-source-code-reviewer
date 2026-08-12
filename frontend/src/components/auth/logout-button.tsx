@@ -66,6 +66,7 @@ function LogoutActionButton({
       className={className}
       disabled={isPending}
       onClick={handleLogout}
+      type="button"
       variant={variant}
     >
       <Icon aria-hidden="true" />

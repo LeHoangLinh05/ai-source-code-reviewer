@@ -1,0 +1,94 @@
+{
+  "name": "mvp_inventory_vulnerable_security",
+  "repository_url": "https://github.com/LeHoangLinh05/mvp-inventory.git",
+  "commit_sha": "e2d47f2cf77d2e17c98a8d74f3981bb6b85c0caa",
+  "review_options": {
+    "review_mode": "full_audit",
+    "rule_profile": null
+  },
+  "require_full_recall": true,
+  "smart_baseline": {
+    "runtime_seconds": 317,
+    "total_tokens": 271860
+  },
+  "expected_issues": [
+    {
+      "id": "MVP-SEC-001",
+      "file_path": "backend/app/api/deps.py",
+      "line_start": 14,
+      "line_end": 16,
+      "category": "security",
+      "severity": "critical",
+      "detector_expected": ["ai_review"],
+      "expected_probes": ["security.jwt_algorithm_allowlist"]
+    },
+    {
+      "id": "MVP-SEC-002",
+      "file_path": "backend/app/schemas/item.py",
+      "line_start": 8,
+      "line_end": 12,
+      "category": "security",
+      "severity": "high",
+      "detector_expected": ["ai_review"],
+      "expected_probes": ["security.mass_assignment"]
+    },
+    {
+      "id": "MVP-BUG-001",
+      "file_path": "backend/app/repositories/item_repository.py",
+      "line_start": 29,
+      "line_end": 31,
+      "category": "bug",
+      "severity": "high",
+      "detector_expected": ["ai_review"],
+      "expected_probes": ["bug.inventory_invariant"]
+    },
+    {
+      "id": "MVP-SEC-003",
+      "file_path": "backend/app/schemas/item.py",
+      "line_start": 14,
+      "line_end": 17,
+      "category": "security",
+      "severity": "medium",
+      "detector_expected": ["ai_review"],
+      "expected_probes": ["security.sensitive_response_exposure"]
+    },
+    {
+      "id": "MVP-SEC-004",
+      "file_path": "backend/app/core/security.py",
+      "line_start": 20,
+      "line_end": 24,
+      "category": "security",
+      "severity": "medium",
+      "detector_expected": ["ai_review"],
+      "expected_probes": ["security.insecure_randomness"]
+    },
+    {
+      "id": "MVP-SEC-005",
+      "file_path": "backend/app/api/auth.py",
+      "line_start": 18,
+      "line_end": 21,
+      "category": "security",
+      "severity": "medium",
+      "detector_expected": ["ai_review"],
+      "expected_probes": ["security.open_redirect"]
+    },
+    {
+      "id": "MVP-SEC-006",
+      "file_path": "backend/app/api/reports.py",
+      "line_start": 10,
+      "line_end": 13,
+      "category": "security",
+      "severity": "high",
+      "detector_expected": ["ai_review"],
+      "expected_probes": ["security.role_authorization"]
+    }
+  ],
+  "false_positive_baits": [
+    {
+      "id": "MVP-SAFE-001",
+      "file_path": "backend/app/core/security.py",
+      "line_start": 8,
+      "line_end": 12
+    }
+  ]
+}

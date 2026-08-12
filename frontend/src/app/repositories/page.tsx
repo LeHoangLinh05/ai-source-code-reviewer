@@ -5,11 +5,10 @@ import {
   GitBranch,
   GitFork,
   Plus,
-  RefreshCw,
   Trash2,
   X,
 } from "lucide-react";
-import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useForm } from "react-hook-form";
 import { toast } from "sonner";
@@ -177,22 +176,6 @@ export default function RepositoriesPage() {
         </Button>
       </div>
 
-      <section className="grid gap-4 md:grid-cols-3">
-        <MetricCard label="Total repositories" value={items.length.toString()} />
-        <MetricCard
-          label="GitHub"
-          value={items
-            .filter((repository) => repository.platform === "github")
-            .length.toString()}
-        />
-        <MetricCard
-          label="GitLab"
-          value={items
-            .filter((repository) => repository.platform === "gitlab")
-            .length.toString()}
-        />
-      </section>
-
       <Card className="overflow-hidden">
         <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
@@ -201,15 +184,6 @@ export default function RepositoriesPage() {
               Source targets available for static analysis and AI review jobs.
             </CardDescription>
           </div>
-          <Button
-            disabled={isLoading}
-            onClick={() => void loadRepositories()}
-            size="sm"
-            variant="secondary"
-          >
-            <RefreshCw aria-hidden="true" />
-            Refresh
-          </Button>
         </CardHeader>
         <CardContent className="p-0">
           {isLoading ? <RepositoryListSkeleton /> : null}
@@ -354,24 +328,6 @@ export default function RepositoriesPage() {
   );
 }
 
-type MetricCardProps = {
-  label: string;
-  value: string;
-};
-
-function MetricCard({ label, value }: MetricCardProps) {
-  return (
-    <Card>
-      <CardContent className="p-5">
-        <p className="text-xs font-medium uppercase text-muted-foreground">
-          {label}
-        </p>
-        <p className="mt-2 text-4xl font-extrabold tracking-normal">{value}</p>
-      </CardContent>
-    </Card>
-  );
-}
-
 function RepositoryListSkeleton() {
   return (
     <div className="border-t border-border">
@@ -423,6 +379,8 @@ function RepositoryTable({
   onDeleteRepository,
   repositories,
 }: RepositoryTableProps) {
+  const router = useRouter();
+
   return (
     <div className="overflow-x-auto border-t border-border">
       <table className="w-full min-w-[760px] text-left text-[15px]">
@@ -438,16 +396,24 @@ function RepositoryTable({
         <tbody>
           {repositories.map((repository) => (
             <tr
-              className="border-t border-border transition-colors hover:bg-muted/35"
+              aria-label={`Open ${repository.name}`}
+              className="cursor-pointer border-t border-border transition-colors hover:bg-muted/35 focus-visible:bg-muted/35 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
               key={repository.id}
+              onClick={() => router.push(`/repositories/${repository.id}`)}
+              onKeyDown={(event) => {
+                if (event.target !== event.currentTarget || event.key !== "Enter") {
+                  return;
+                }
+
+                router.push(`/repositories/${repository.id}`);
+              }}
+              role="link"
+              tabIndex={0}
             >
               <td className="px-6 py-4">
-                <Link
-                  className="font-medium text-foreground hover:text-primary/80"
-                  href={`/repositories/${repository.id}`}
-                >
+                <span className="font-medium text-foreground">
                   {repository.name}
-                </Link>
+                </span>
               </td>
               <td className="max-w-[280px] truncate px-6 py-4 text-muted-foreground">
                 {repository.url}
@@ -465,7 +431,10 @@ function RepositoryTable({
                 <Button
                   aria-label={`Delete ${repository.name}`}
                   disabled={deletingRepositoryId === repository.id}
-                  onClick={() => void onDeleteRepository(repository)}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    void onDeleteRepository(repository);
+                  }}
                   size="icon"
                   variant="ghost"
                 >

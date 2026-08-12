@@ -14,20 +14,22 @@ from sqlalchemy.types import Uuid
 from app.models.base import Base
 
 if TYPE_CHECKING:
+    from app.models.fix_audit_log import FixAuditLog
+    from app.models.fix_job import FixJob
+    from app.models.provider_installation import ProviderInstallation
     from app.models.refresh_token import RefreshToken
     from app.models.repository import Repository
     from app.models.review_job import ReviewJob
 
 
 class UserRole(StrEnum):
-    """Supported RBAC roles for authenticated users."""
+    """Role value retained for backward-compatible API responses."""
 
     USER = "user"
-    ADMIN = "admin"
 
 
 class User(Base):
-    """Relational user account used by auth, ownership, and RBAC checks."""
+    """Relational user account used by auth and ownership checks."""
 
     __tablename__ = "users"
 
@@ -70,6 +72,17 @@ class User(Base):
     review_jobs: Mapped[list[ReviewJob]] = relationship(
         back_populates="user",
         cascade="all, delete-orphan",
+    )
+    fix_jobs: Mapped[list[FixJob]] = relationship(
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
+    provider_installations: Mapped[list[ProviderInstallation]] = relationship(
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
+    fix_audit_logs: Mapped[list[FixAuditLog]] = relationship(
+        back_populates="user",
     )
     refresh_tokens: Mapped[list[RefreshToken]] = relationship(
         back_populates="user",

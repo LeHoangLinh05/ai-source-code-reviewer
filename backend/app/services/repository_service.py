@@ -5,7 +5,7 @@ from uuid import UUID
 
 from app.core.exceptions import AuthorizationError, BadRequestError, NotFoundError
 from app.models.repository import Repository, RepositoryPlatform
-from app.models.user import User, UserRole
+from app.models.user import User
 from app.repositories.repository_repository import RepositoryRepository
 from app.schemas.repository import RepositoryCreate
 
@@ -43,10 +43,7 @@ class RepositoryService:
             raise
 
     async def list_repositories(self, current_user: User) -> list[Repository]:
-        """List repositories visible to the current user."""
-
-        if current_user.role == UserRole.ADMIN:
-            return await self.repository_repository.list_all()
+        """List repositories owned by the current user."""
 
         return await self.repository_repository.list_for_user(current_user.id)
 
@@ -55,7 +52,7 @@ class RepositoryService:
         repository_id: UUID,
         current_user: User,
     ) -> Repository:
-        """Return a repository after ownership or admin authorization."""
+        """Return a repository after ownership authorization."""
 
         source_repository = await self.repository_repository.get_by_id(repository_id)
         if source_repository is None:
@@ -69,7 +66,7 @@ class RepositoryService:
         repository_id: UUID,
         current_user: User,
     ) -> None:
-        """Delete a repository after ownership or admin authorization."""
+        """Delete a repository after ownership authorization."""
 
         source_repository = await self.get_repository(repository_id, current_user)
         try:
@@ -96,8 +93,5 @@ class RepositoryService:
         source_repository: Repository,
         current_user: User,
     ) -> None:
-        if current_user.role == UserRole.ADMIN:
-            return
-
         if source_repository.user_id != current_user.id:
             raise AuthorizationError("Repository access is restricted to its owner")

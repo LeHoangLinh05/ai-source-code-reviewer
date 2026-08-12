@@ -4,20 +4,19 @@ import {
   CirclePlay,
   GitFork,
   LayoutDashboard,
-  LogOut,
   Menu,
   PanelLeftClose,
   PanelLeftOpen,
   Settings,
-  ShieldCheck,
   X,
   type LucideIcon,
 } from "lucide-react";
+import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useState, type ReactNode } from "react";
 
-import { LogoutButton } from "@/components/auth/logout-button";
+import { AccountMenu } from "@/components/layout/account-menu";
 import { ThemeToggle } from "@/components/layout/theme-toggle";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -66,7 +65,6 @@ export function AppShell({ children }: AppShellProps) {
               onNavigate={() => setIsMobileNavOpen(false)}
               pathname={pathname}
             />
-            <ShellSessionActions />
           </aside>
         </div>
       ) : null}
@@ -88,11 +86,12 @@ export function AppShell({ children }: AppShellProps) {
 
           <div className="ml-auto flex items-center gap-2">
             <ThemeToggle />
+            <AccountMenu />
           </div>
         </header>
 
-        <main className="min-h-0 flex-1 overflow-y-auto">
-          <div className="mx-auto flex w-full max-w-[1600px] flex-col gap-6 px-4 py-7 text-[15px] sm:px-6 lg:px-8 xl:px-10">
+        <main className="min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto">
+          <div className="mx-auto flex w-full min-w-0 max-w-[1600px] flex-col gap-6 px-4 py-7 text-[15px] sm:px-6 lg:px-8 xl:px-10">
             {children}
           </div>
         </main>
@@ -119,11 +118,18 @@ function DesktopSidebar({
     >
       <ShellBrand isCollapsed={isCollapsed} />
       <ShellNav isCollapsed={isCollapsed} pathname={pathname} />
-      <div className="border-t border-border p-3">
+      <div
+        className={cn(
+          "mt-auto flex border-t border-border p-3",
+          isCollapsed ? "justify-center" : "justify-end",
+        )}
+      >
         <Button
           aria-label={isCollapsed ? "Expand sidebar" : "Collapse sidebar"}
-          className={cn("w-full", isCollapsed ? "px-0" : "justify-start")}
+          className="size-8 rounded-md border border-border/80 bg-background/70 p-0 text-muted-foreground shadow-sm shadow-foreground/[0.03] hover:border-primary/30 hover:bg-accent hover:text-accent-foreground"
           onClick={onToggleCollapsed}
+          size="icon"
+          title={isCollapsed ? "Expand panel" : "Collapse panel"}
           type="button"
           variant="ghost"
         >
@@ -132,12 +138,11 @@ function DesktopSidebar({
           ) : (
             <PanelLeftClose aria-hidden="true" />
           )}
-          <span className={isCollapsed ? "sr-only" : undefined}>
-            Collapse panel
+          <span className="sr-only">
+            {isCollapsed ? "Expand panel" : "Collapse panel"}
           </span>
         </Button>
       </div>
-      <ShellSessionActions isCollapsed={isCollapsed} />
     </aside>
   );
 }
@@ -157,22 +162,25 @@ function ShellBrand({
       )}
     >
       <Link
-        aria-label="RepoGuard AI dashboard"
+        aria-label="RepoReview dashboard"
         className={cn(
           "flex min-w-0 items-center gap-3",
           isCollapsed && "justify-center",
         )}
         href="/dashboard"
       >
-        <span className="flex size-10 shrink-0 items-center justify-center rounded-md border border-border bg-background text-foreground">
-          <ShieldCheck aria-hidden="true" className="size-5" />
-        </span>
+        <Image
+          alt=""
+          aria-hidden="true"
+          className="size-10 shrink-0 rounded-[9px]"
+          height={40}
+          priority
+          src="/repo-review-icon.svg"
+          width={40}
+        />
         <span className={cn("min-w-0", isCollapsed && "hidden")}>
           <span className="block truncate text-[15px] font-bold">
-            RepoGuard AI
-          </span>
-          <span className="block truncate text-[13px] text-muted-foreground">
-            Source security review
+            RepoReview
           </span>
         </span>
       </Link>
@@ -236,21 +244,5 @@ function ShellNav({
         );
       })}
     </nav>
-  );
-}
-
-function ShellSessionActions({ isCollapsed = false }: { isCollapsed?: boolean }) {
-  return (
-    <section className="border-t border-border p-3" aria-label="Session">
-      <LogoutButton
-        className={cn(
-          "w-full border border-border bg-background text-muted-foreground hover:bg-accent hover:text-accent-foreground",
-          isCollapsed ? "justify-center px-0" : "justify-start",
-        )}
-        icon={LogOut}
-        showLabel={!isCollapsed}
-        variant="outline"
-      />
-    </section>
   );
 }

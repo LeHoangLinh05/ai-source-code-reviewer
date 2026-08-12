@@ -255,6 +255,69 @@ async def test_openai_timeout_retries_same_request(
 
 
 @pytest.mark.asyncio
+async def test_openai_connection_error_retries_same_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    api_connection_error = type("APIConnectionError", (RuntimeError,), {})
+    openai_model = _FakePipelineModel(
+        [api_connection_error("Connection error."), "continued"]
+    )
+    delays: list[float] = []
+    settings = SimpleNamespace(
+        llm_provider="openai",
+        llm_job_call_budget=96,
+        openai_max_retries=2,
+    )
+
+    async def record_sleep(delay: float) -> None:
+        delays.append(delay)
+
+    monkeypatch.setattr(llm_config, "get_settings", lambda: settings)
+    monkeypatch.setattr(llm_config, "get_openai_llm", lambda: openai_model)
+    monkeypatch.setattr(llm_config.asyncio, "sleep", record_sleep)
+
+    async with llm_config.llm_session():
+        model = llm_config.get_pipeline_llm()
+        result = await model.ainvoke("same-agent-step")
+
+    assert result == "continued"
+    assert openai_model.calls == 2
+    assert delays == [1.0]
+
+
+@pytest.mark.asyncio
+async def test_callback_connection_error_retries_fix_generation_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    api_connection_error = type("APIConnectionError", (RuntimeError,), {})
+    openai_model = _FakePipelineModel(
+        [api_connection_error("Connection error."), "continued"]
+    )
+    delays: list[float] = []
+    settings = SimpleNamespace(
+        llm_provider="openai",
+        llm_job_call_budget=96,
+        openai_max_retries=2,
+    )
+
+    async def record_sleep(delay: float) -> None:
+        delays.append(delay)
+
+    async def callback(llm: Any) -> object:
+        return await llm.ainvoke("fix-file")
+
+    monkeypatch.setattr(llm_config, "get_settings", lambda: settings)
+    monkeypatch.setattr(llm_config, "get_openai_llm", lambda: openai_model)
+    monkeypatch.setattr(llm_config.asyncio, "sleep", record_sleep)
+
+    result = await llm_config.run_with_configured_llm(callback)
+
+    assert result == "continued"
+    assert openai_model.calls == 2
+    assert delays == [1.0]
+
+
+@pytest.mark.asyncio
 async def test_openai_requests_are_paced_within_job(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

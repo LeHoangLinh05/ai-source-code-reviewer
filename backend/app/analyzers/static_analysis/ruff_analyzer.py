@@ -4,10 +4,16 @@ import json
 from pathlib import Path
 from typing import Any
 
-from app.analyzers.file_filter import to_relative_posix_path
+from app.analyzers.file_filter import (
+    normalize_analyzer_file_path,
+    to_relative_posix_path,
+)
 from app.analyzers.static_analysis.base import StaticAnalysisRun, run_static_command
 from app.models.review_issue import IssueCategory, IssueSeverity, IssueSource
 from app.schemas.normalized_issue import NormalizedIssue
+
+RUFF_SOURCE_LABEL = "Ruff"
+DEFAULT_RUFF_DESCRIPTION = "Ruff reported a lint finding."
 
 
 def run_ruff(
@@ -66,20 +72,22 @@ def ruff_to_normalized(
         if not isinstance(item, dict):
             continue
 
+        rule_code = _get_rule_code(item)
+        description = _get_description(item)
         location = item.get("location")
         end_location = item.get("end_location")
         line_start = _get_line_number(location)
         issues.append(
             NormalizedIssue(
-                file_path=_normalize_file_path(
+                file_path=normalize_analyzer_file_path(
                     str(item.get("filename", "")), sandbox_path
                 ),
                 line_start=line_start,
                 line_end=_get_line_number(end_location) or line_start,
                 severity=IssueSeverity.LOW,
                 category=IssueCategory.STYLE,
-                title=f"Ruff {item.get('code', 'finding')}",
-                description=str(item.get("message", "Ruff reported a lint finding.")),
+                title=_build_title(rule_code, description),
+                description=description,
                 suggestion=_get_fix_message(item),
                 source=IssueSource.RUFF,
                 confidence=0.9,
@@ -90,15 +98,32 @@ def ruff_to_normalized(
     return issues
 
 
-def _normalize_file_path(file_path: str, sandbox_path: Path | None) -> str:
-    if sandbox_path is None:
-        return file_path
+def _get_rule_code(item: dict[str, object]) -> str:
+    code = item.get("code")
+    if code is None:
+        return "finding"
 
-    path = Path(file_path)
-    try:
-        return path.resolve().relative_to(sandbox_path.resolve()).as_posix()
-    except ValueError:
-        return file_path
+    rule_code = str(code).strip()
+    return rule_code or "finding"
+
+
+def _get_description(item: dict[str, object]) -> str:
+    message = item.get("message")
+    if message is None:
+        return DEFAULT_RUFF_DESCRIPTION
+
+    description = str(message).strip()
+    return description or DEFAULT_RUFF_DESCRIPTION
+
+
+def _build_title(rule_code: str, description: str) -> str:
+    if rule_code == "finding":
+        return f"{RUFF_SOURCE_LABEL} finding"
+
+    if description == DEFAULT_RUFF_DESCRIPTION:
+        return f"{RUFF_SOURCE_LABEL} {rule_code}"
+
+    return f"{RUFF_SOURCE_LABEL} {rule_code}: {description}"
 
 
 def _get_line_number(location: object) -> int | None:

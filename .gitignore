@@ -7,15 +7,19 @@ backend/.env.*
 
 *.md
 !/AGENTS.md
-!/docs/auth/overview.md
-!/docs/design/style-guide.md
+!/README.md
 
 __pycache__/
 *.py[cod]
 .mypy_cache/
+.mypy-tmp-*/
 .pytest_cache/
+.pytest-tmp-*/
 .ruff_cache/
 .tmp/
 .chroma/
 .sandbox/
+.commit-checks/
 backend/.cache/
+backend/celerybeat-schedule*
+*.log

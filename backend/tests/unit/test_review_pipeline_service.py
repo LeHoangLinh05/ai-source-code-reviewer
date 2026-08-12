@@ -17,11 +17,13 @@ from app.services.code_indexing.documents import (
 )
 from app.services.code_indexing.service import CodeIndexingService
 from app.services.review_pipeline import service as review_pipeline_service
+from app.services.review_pipeline.artifacts import build_flat_file_tree_entries
 from app.services.review_pipeline.service import (
     ReviewJobCanceled,
     ReviewPipelineError,
     ReviewPipelineService,
     StructureAnalysisResult,
+    calculate_ai_review_progress,
     get_rule_profile,
 )
 
@@ -43,6 +45,54 @@ def test_get_rule_profile_preserves_explicit_profile() -> None:
 def test_get_rule_profile_rejects_invalid_profile_shape() -> None:
     with pytest.raises(ReviewPipelineError, match="rule_profile option"):
         get_rule_profile({"rule_profile": "roadmap_bootcamp_v1"})
+
+
+def test_ai_review_batch_progress_uses_reserved_range() -> None:
+    progress_updates = [
+        calculate_ai_review_progress(completed, 10) for completed in range(1, 11)
+    ]
+
+    assert progress_updates == [89, 89, 89, 90, 91, 91, 92, 92, 93, 94]
+    assert calculate_ai_review_progress(0, 10) == 88
+    assert calculate_ai_review_progress(12, 10) == 94
+
+
+@pytest.mark.asyncio
+async def test_ai_review_batch_progress_publishes_realtime_payload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    published_events: list[tuple[object, str, dict[str, object]]] = []
+
+    async def publish_job_progress(
+        job_id: object,
+        event_type: str,
+        data: dict[str, object],
+    ) -> int:
+        published_events.append((job_id, event_type, data))
+        return 1
+
+    monkeypatch.setattr(
+        review_pipeline_service,
+        "publish_job_progress",
+        publish_job_progress,
+    )
+    service: Any = ReviewPipelineService.__new__(ReviewPipelineService)
+    job_id = uuid4()
+
+    await service._publish_ai_batch_progress(job_id, 5, 10)
+
+    assert published_events == [
+        (
+            job_id,
+            "progress_update",
+            {
+                "status": ReviewJobStatus.AI_REVIEWING.value,
+                "progress": 91,
+                "message": "AI review batch 5 of 10 completed",
+                "data": {"completed_batches": 5, "total_batches": 10},
+            },
+        )
+    ]
 
 
 def test_plain_text_files_are_chunked_for_ai_coverage(tmp_path: Path) -> None:
@@ -106,7 +156,7 @@ def test_markdown_plain_chunks_skip_non_readme_files(tmp_path: Path) -> None:
     assert chunks == []
 
 
-def test_markdown_plain_chunks_keep_readme_files(tmp_path: Path) -> None:
+def test_markdown_plain_chunks_skip_readme_review_targets(tmp_path: Path) -> None:
     readme_path = tmp_path / "README.md"
     readme_path.write_text("# Project\n\nSetup instructions\n", encoding="utf-8")
 
@@ -117,9 +167,27 @@ def test_markdown_plain_chunks_keep_readme_files(tmp_path: Path) -> None:
         issues=[],
     )
 
-    assert len(chunks) == 1
-    assert chunks[0].file_path == "README.md"
-    assert chunks[0].language == "markdown"
+    assert chunks == []
+
+
+def test_readme_remains_in_file_tree_as_context_only(tmp_path: Path) -> None:
+    readme_path = tmp_path / "README.md"
+    source_path = tmp_path / "app.py"
+    readme_path.write_text("# Project\n", encoding="utf-8")
+    source_path.write_text("value = 1\n", encoding="utf-8")
+
+    entries = {
+        entry.path: entry
+        for entry in build_flat_file_tree_entries(
+            tmp_path,
+            [readme_path, source_path],
+        )
+    }
+
+    assert entries["README.md"].should_review is False
+    assert entries["README.md"].ignore_reason == "project_documentation"
+    assert entries["app.py"].should_review is True
+    assert entries["app.py"].ignore_reason is None
 
 
 @pytest.mark.asyncio

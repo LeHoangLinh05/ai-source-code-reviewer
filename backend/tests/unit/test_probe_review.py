@@ -8,7 +8,6 @@ from typing import cast
 from uuid import uuid4
 
 import pytest
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai.probe.bundle_selection import _trim_bundles
 from app.ai.probe.candidate_retrieval import (
@@ -21,11 +20,19 @@ from app.ai.probe.candidate_validation import (
     _dependency_manifest_contradicts_candidate,
     _supporting_bundle_chunk,
 )
-from app.ai.probe.contracts import ProbeDefinition, ProbeLane
-from app.ai.probe.judge_service import ProbeJudgeService
+from app.ai.probe.contracts import (
+    OTP_CANONICAL_CLAIM_TYPES,
+    OTP_SECURITY_PROBE_ID,
+    SENSITIVE_DATA_LOGGING_PROBE_ID,
+    UNRESTRICTED_FILE_UPLOAD_PROBE_ID,
+    ProbeDefinition,
+    ProbeLane,
+)
+from app.ai.probe.judge_service import ProbeJudgeContractError, ProbeJudgeService
 from app.ai.probe.judging import (
     _judge_batches,
     _judge_prompt,
+    _probe_issue_severity,
     _probe_judge_response_from_payload,
 )
 from app.ai.probe.models import (
@@ -33,6 +40,7 @@ from app.ai.probe.models import (
     ProbeEvidenceBundle,
     ProbeJudgeIssueCandidate,
     ProbeJudgeResponse,
+    ProbeJudgeSummary,
 )
 from app.ai.probe.plan import BASELINE_PROBES, build_semantic_audit_plan
 from app.ai.probe.retrieval_service import ProbeRetrievalService
@@ -45,6 +53,7 @@ from app.ai.roadmap.knowledge import load_roadmap_requirements
 from app.ai.roadmap.selection import ROADMAP_PROFILE_ID, build_roadmap_context
 from app.db.mongodb import CHUNK_METADATA_COLLECTION
 from app.models.review_issue import IssueSource, ReviewIssue
+from app.repositories.report_repository import ReportRepository
 
 
 class _FakeCursor:
@@ -100,29 +109,28 @@ class _TraceWriter:
         )
 
 
-class _NoExistingIssueResult:
-    def scalars(self) -> _NoExistingIssueResult:
-        return self
-
-    def first(self) -> None:
-        return None
-
-
-class _FakePostgresSession:
+class _TrackingReportRepository:
     def __init__(self) -> None:
-        self.added_issues: list[ReviewIssue] = []
-        self.commit_count = 0
+        self.issues: list[ReviewIssue] = []
+        self.replace_count = 0
 
-    async def execute(self, statement: object) -> _NoExistingIssueResult:
-        _ = statement
-        return _NoExistingIssueResult()
+    async def list_all_issues(self, job_id: object) -> list[ReviewIssue]:
+        return [issue for issue in self.issues if issue.job_id == job_id]
 
-    def add(self, issue: object) -> None:
-        assert isinstance(issue, ReviewIssue)
-        self.added_issues.append(issue)
-
-    async def commit(self) -> None:
-        self.commit_count += 1
+    async def replace_ai_issues(
+        self,
+        *,
+        job_id: object,
+        issues: list[ReviewIssue],
+    ) -> None:
+        self.replace_count += 1
+        self.issues = [
+            issue
+            for issue in self.issues
+            if issue.job_id != job_id
+            or issue.source not in {IssueSource.AI_REVIEW, IssueSource.KB}
+        ]
+        self.issues.extend(issues)
 
 
 class _JudgeLlm:
@@ -132,6 +140,18 @@ class _JudgeLlm:
     async def ainvoke(self, messages: list[tuple[str, str]]) -> SimpleNamespace:
         assert messages
         return SimpleNamespace(content=json.dumps(self.payload))
+
+
+class _SequenceJudgeLlm:
+    def __init__(self, payloads: list[dict[str, object]]) -> None:
+        self.payloads = payloads
+        self.call_count = 0
+
+    async def ainvoke(self, messages: list[tuple[str, str]]) -> SimpleNamespace:
+        assert messages
+        payload = self.payloads[self.call_count]
+        self.call_count += 1
+        return SimpleNamespace(content=json.dumps(payload))
 
 
 class _FakeSemanticRetriever:
@@ -171,8 +191,38 @@ class _FakeSemanticRetriever:
             "    return await users.get_by_id(user_id)",
         ),
         (
+            "security.jwt_algorithm_allowlist",
+            "payload = jwt.decode(token, secret, algorithms=['HS256', 'none'])",
+        ),
+        (
+            "security.insecure_randomness",
+            "def generate_reset_token():\n"
+            "    random.seed(time.time())\n"
+            "    return random.choice(chars)",
+        ),
+        (
+            "security.open_redirect",
+            "@router.post('/login')\n"
+            "async def login(next: str):\n"
+            "    return RedirectResponse(url=next)",
+        ),
+        (
+            "security.role_authorization",
+            "@router.get('/profit')\n"
+            "async def profit_report(user=Depends(get_current_user)):\n"
+            "    return await service.profit_report()",
+        ),
+        (
             "security.mass_assignment",
             "for field, value in payload.items():\n    setattr(account, field, value)",
+        ),
+        (
+            "security.mass_assignment",
+            "class ItemUpdate(BaseModel):\n    cost_price: float | None = None",
+        ),
+        (
+            "security.sensitive_response_exposure",
+            "class ItemResponse(BaseModel):\n    cost_price: float",
         ),
         (
             "security.weak_password_hash",
@@ -189,6 +239,12 @@ class _FakeSemanticRetriever:
             "await repo.update_stock(new_stock)",
         ),
         (
+            "bug.inventory_invariant",
+            "item = await self.get_by_id(item_id)\n"
+            "item.quantity += delta\n"
+            "await self.db.commit()",
+        ),
+        (
             "performance.n_plus_one",
             "for account in accounts:\n    rows = await db.execute(query(account.id))",
         ),
@@ -202,6 +258,43 @@ class _FakeSemanticRetriever:
             "maintainability.resource_lifecycle",
             "async def load():\n"
             "    engine = create_async_engine(settings.database_url)",
+        ),
+        (
+            SENSITIVE_DATA_LOGGING_PROBE_ID,
+            "logger.info(f'Login password={user_in.password}')",
+        ),
+        (
+            UNRESTRICTED_FILE_UPLOAD_PROBE_ID,
+            "async def upload(file: UploadFile):\n"
+            "    with open('/tmp/upload', 'wb') as destination:\n"
+            "        destination.write(await file.read())",
+        ),
+        (
+            OTP_SECURITY_PROBE_ID,
+            "@router.post('/otp')\n"
+            "async def generate_otp(email: str):\n"
+            "    return await service.generate_otp(email)",
+        ),
+        (
+            OTP_SECURITY_PROBE_ID,
+            "async def generate_otp(email: str):\n"
+            "    otp = random.randint(100000, 999999)\n"
+            "    await repository.save_otp(email, otp)\n"
+            "    return {'debug_otp': otp}",
+        ),
+        (
+            OTP_SECURITY_PROBE_ID,
+            "async def save_otp(email: str, otp: str):\n"
+            "    session.add(Otp(email=email, code=otp))",
+        ),
+        (
+            OTP_SECURITY_PROBE_ID,
+            "def build_payload(code: str):\n    return {'debug_otp': code}",
+        ),
+        (
+            OTP_SECURITY_PROBE_ID,
+            "class OTPRecord(Base):\n"
+            "    otp_code: Mapped[str] = mapped_column(String(6))",
         ),
     ],
 )
@@ -218,6 +311,357 @@ def test_python_structural_candidates_cover_high_value_patterns(
 
     candidates = _structural_candidates(
         chunk_documents=[document],
+        probe=probe,
+    )
+
+    assert len(candidates) == 1
+    assert candidates[0].strategies == ("structural",)
+
+
+@pytest.mark.parametrize(
+    ("probe_id", "content"),
+    [
+        (
+            "security.jwt_algorithm_allowlist",
+            "payload = jwt.decode(token, settings.jwt_secret, "
+            "algorithms=[settings.algorithm])",
+        ),
+        (
+            "security.insecure_randomness",
+            "def generate_reset_token():\n    return secrets.token_urlsafe(32)",
+        ),
+        (
+            "security.open_redirect",
+            "if (next.startswith('/') and not next.startswith('//') "
+            "and '\\\\' not in next):\n"
+            "    return RedirectResponse(url=next)",
+        ),
+        (
+            "security.role_authorization",
+            "@router.get('/profit')\n"
+            "async def profit_report(user=Depends(require_admin)):\n"
+            "    return await service.profit_report()",
+        ),
+        (
+            "security.mass_assignment",
+            "class ItemUpdate(BaseModel):\n    name: str | None = None",
+        ),
+        (
+            "security.sensitive_response_exposure",
+            "class ItemResponse(BaseModel):\n    id: int\n    name: str",
+        ),
+        (
+            "security.sensitive_response_exposure",
+            "def hash_secret(secret: str) -> str:\n    return sha256(secret.encode())",
+        ),
+        (
+            "bug.inventory_invariant",
+            "new_quantity = item.quantity + delta\n"
+            "if new_quantity < 0:\n"
+            "    raise ValueError('insufficient stock')\n"
+            "item.quantity = new_quantity",
+        ),
+        (
+            SENSITIVE_DATA_LOGGING_PROBE_ID,
+            "logger.warning('Invalid password supplied')",
+        ),
+    ],
+)
+def test_python_structural_candidates_reject_safe_patterns(
+    probe_id: str,
+    content: str,
+) -> None:
+    probe = next(probe for probe in BASELINE_PROBES if probe.probe_id == probe_id)
+
+    candidates = _structural_candidates(
+        chunk_documents=[
+            _chunk(
+                job_id=uuid4(),
+                file_path="backend/app/example.py",
+                content=content,
+            )
+        ],
+        probe=probe,
+    )
+
+    assert candidates == []
+
+
+def test_otp_probe_exposes_canonical_multi_issue_contract() -> None:
+    probe = next(
+        probe for probe in BASELINE_PROBES if probe.probe_id == OTP_SECURITY_PROBE_ID
+    )
+
+    assert probe.allowed_claim_types == OTP_CANONICAL_CLAIM_TYPES
+    assert probe.top_k == 6
+    assert "absence of an authentication dependency" in probe.judge_question
+
+
+def test_otp_fusion_reserves_complete_structural_flow() -> None:
+    probe = next(
+        probe for probe in BASELINE_PROBES if probe.probe_id == OTP_SECURITY_PROBE_ID
+    )
+    structural_children = [
+        _candidate_chunk(
+            file_path=f"backend/app/otp_role_{index}.py",
+            content="async def otp_flow(): pass",
+            strategies=("structural",),
+            final_score=0.5,
+        )
+        for index in range(probe.top_k)
+    ]
+    structural_parents = [
+        _candidate_chunk(
+            file_path=structural_children[index].file_path,
+            chunk_index=100 + index,
+            line_start=1,
+            line_end=50,
+            content="class OtpFlow: pass",
+            strategies=("structural",),
+            final_score=3.0,
+        )
+        for index in range(3)
+    ]
+    structural = [*structural_parents, *structural_children]
+    selected = _fuse_probe_candidates(
+        semantic_candidates=[
+            _candidate_chunk(
+                file_path="backend/app/semantic.py",
+                content="unrelated semantic match",
+                strategies=("semantic",),
+                final_score=2.0,
+            )
+        ],
+        bm25_candidates=[],
+        exact_candidates=[],
+        structural_candidates=structural,
+        probe=probe,
+        query=probe.primary_query,
+        top_k=probe.top_k,
+    )
+
+    assert [chunk.file_path for chunk in selected] == [
+        chunk.file_path for chunk in structural_children
+    ]
+
+
+def test_otp_structural_fusion_keeps_route_service_and_storage_roles() -> None:
+    job_id = uuid4()
+    probe = next(
+        probe for probe in BASELINE_PROBES if probe.probe_id == OTP_SECURITY_PROBE_ID
+    )
+    documents = [
+        _chunk(
+            job_id=job_id,
+            file_path="backend/app/api/notifications.py",
+            chunk_index=0,
+            chunk_type="module",
+            line_start=1,
+            content=(
+                "from app.api.deps import get_current_user\n"
+                "from app.schemas.notification import OtpRequest\n"
+                "router = APIRouter(prefix='/notifications')"
+            ),
+        ),
+        _chunk(
+            job_id=job_id,
+            file_path="backend/app/api/notifications.py",
+            chunk_index=1,
+            chunk_type="module",
+            line_start=20,
+            content="@router.post('/otp/send')",
+        ),
+        _chunk(
+            job_id=job_id,
+            file_path="backend/app/api/notifications.py",
+            chunk_index=2,
+            line_start=22,
+            content=(
+                "async def send_otp(data, db=Depends(get_db)):\n"
+                "    return await service.send_otp(data.phone)"
+            ),
+        ),
+        _chunk(
+            job_id=job_id,
+            file_path="backend/app/services/notification_service.py",
+            chunk_index=3,
+            line_start=29,
+            content=(
+                "async def send_otp(phone: str):\n"
+                "    code = random.randint(100000, 999999)\n"
+                "    await repository.create_otp(phone, code)\n"
+                "    return {'debug_otp': code}"
+            ),
+        ),
+        _chunk(
+            job_id=job_id,
+            file_path="backend/app/repositories/notification_repository.py",
+            chunk_index=4,
+            line_start=41,
+            content=(
+                "async def create_otp(phone: str, otp_code: str):\n"
+                "    session.add(OTPRecord(phone=phone, otp_code=otp_code))"
+            ),
+        ),
+        _chunk(
+            job_id=job_id,
+            file_path="backend/app/models/notification.py",
+            chunk_index=5,
+            chunk_type="class",
+            line_start=31,
+            content=(
+                "class OTPRecord(Base):\n"
+                "    otp_code: Mapped[str]\n"
+                "    expires_at: Mapped[datetime]"
+            ),
+        ),
+        _chunk(
+            job_id=job_id,
+            file_path="backend/app/services/notification_service.py",
+            chunk_index=6,
+            line_start=9,
+            content=("def __init__(self):\n    self.otp_repo = OTPRepository()"),
+        ),
+    ]
+    structural = _structural_candidates(chunk_documents=documents, probe=probe)
+
+    selected = _fuse_probe_candidates(
+        semantic_candidates=[],
+        bm25_candidates=[],
+        exact_candidates=[],
+        structural_candidates=structural,
+        probe=probe,
+        query=probe.primary_query,
+        top_k=probe.top_k,
+    )
+
+    assert {chunk.key for chunk in selected} == {
+        ("backend/app/api/notifications.py", 0),
+        ("backend/app/api/notifications.py", 1),
+        ("backend/app/api/notifications.py", 2),
+        ("backend/app/services/notification_service.py", 3),
+        ("backend/app/repositories/notification_repository.py", 4),
+        ("backend/app/models/notification.py", 5),
+    }
+
+
+def test_global_trim_keeps_complete_otp_structural_bundle() -> None:
+    probe = next(
+        probe for probe in BASELINE_PROBES if probe.probe_id == OTP_SECURITY_PROBE_ID
+    )
+    otp_bundle = ProbeEvidenceBundle(
+        probe=probe,
+        retrieval_status="ok",
+        candidate_chunks=[
+            _candidate_chunk(
+                file_path=f"backend/app/otp_role_{index}.py",
+                content="async def otp_flow(): pass",
+                strategies=("structural",),
+            )
+            for index in range(probe.top_k)
+        ],
+        strategies_used=["structural"],
+        strategy_candidate_counts={"structural": probe.top_k},
+        selected_count_before_trim=probe.top_k,
+    )
+    other_bundles = [
+        _bundle(
+            probe={"probe_id": f"security.other_{index}"},
+            chunks=[
+                _candidate_chunk(
+                    file_path=f"backend/app/other_{index}.py",
+                    content="def inspect(): pass",
+                )
+            ],
+        )
+        for index in range(2)
+    ]
+
+    trimmed = _trim_bundles([otp_bundle, *other_bundles], max_chunks=8)
+
+    assert len(trimmed[0].candidate_chunks) == probe.top_k
+    assert trimmed[0].trimmed_count == 0
+
+
+@pytest.mark.asyncio
+async def test_safe_otp_flow_is_not_persisted_when_judge_returns_no_issue() -> None:
+    job_id = uuid4()
+    probe = next(
+        probe for probe in BASELINE_PROBES if probe.probe_id == OTP_SECURITY_PROBE_ID
+    )
+    candidates = _structural_candidates(
+        chunk_documents=[
+            _chunk(
+                job_id=job_id,
+                file_path="backend/app/services/otp.py",
+                content=(
+                    "async def issue_otp(user_id: UUID):\n"
+                    "    otp = secrets.randbelow(900000) + 100000\n"
+                    "    await store_hashed_otp(user_id, hash_otp(otp), ttl=300)\n"
+                    "    return {'message': 'OTP sent'}"
+                ),
+            )
+        ],
+        probe=probe,
+    )
+    repository = _TrackingReportRepository()
+    service = ProbeJudgeService(
+        llm=_JudgeLlm(
+            {
+                "results": [
+                    {
+                        "probe_id": OTP_SECURITY_PROBE_ID,
+                        "verdict": "no_issue",
+                        "confidence": 0.95,
+                        "issues": [],
+                    }
+                ]
+            }
+        ),
+        report_repository=cast(ReportRepository, repository),
+    )
+
+    result = await service.judge_and_persist(
+        job_id=job_id,
+        bundles=[
+            ProbeEvidenceBundle(
+                probe=probe,
+                retrieval_status="ok",
+                candidate_chunks=candidates,
+                strategies_used=["structural"],
+                strategy_candidate_counts={"structural": len(candidates)},
+                selected_count_before_trim=len(candidates),
+            )
+        ],
+        trace_writer=_TraceWriter(),
+    )
+
+    assert result == ProbeJudgeSummary(judged_batches=1, no_issue_results=1)
+    assert repository.issues == []
+
+
+def test_upload_structural_matcher_retrieves_validated_flow_for_ai_judging() -> None:
+    probe = next(
+        probe
+        for probe in BASELINE_PROBES
+        if probe.probe_id == UNRESTRICTED_FILE_UPLOAD_PROBE_ID
+    )
+    content = (
+        "async def upload(file: UploadFile):\n"
+        "    if file.content_type not in ALLOWED_MIME_TYPES:\n"
+        "        raise ValueError('unsupported file')\n"
+        "    with open(safe_destination(file.filename), 'wb') as destination:\n"
+        "        destination.write(await file.read(MAX_UPLOAD_BYTES))"
+    )
+
+    candidates = _structural_candidates(
+        chunk_documents=[
+            _chunk(
+                job_id=uuid4(),
+                file_path="backend/app/api/files.py",
+                content=content,
+            )
+        ],
         probe=probe,
     )
 
@@ -245,7 +689,7 @@ def test_real_roadmap_catalog_rules_are_in_unified_probe_plan() -> None:
 
     assert len(catalog_rule_ids) == 79
     assert planned_rule_ids == catalog_rule_ids
-    assert len([item for item in plan if item.lane is ProbeLane.ROADMAP]) == 28
+    assert len([item for item in plan if item.lane is ProbeLane.ROADMAP]) == 79
 
 
 def test_probe_judge_response_accepts_llm_text_and_null_evidence() -> None:
@@ -254,6 +698,7 @@ def test_probe_judge_response_accepts_llm_text_and_null_evidence() -> None:
             "candidates": [
                 {
                     "verdict": "issue",
+                    "probe_id": "security.logout_revocation",
                     "claim_type": "bug",
                     "title": "Logout does not revoke refresh token",
                     "description": (
@@ -285,6 +730,7 @@ def test_probe_judge_response_wraps_single_evidence_object() -> None:
             "candidates": [
                 {
                     "verdict": "issue",
+                    "probe_id": "security.refresh_token_validation",
                     "title": "Refresh token is not hashed",
                     "description": "The provided chunk stores the raw refresh token.",
                     "severity": "medium",
@@ -313,6 +759,7 @@ def test_probe_judge_response_keeps_valid_candidates_from_mixed_batch() -> None:
             "candidates": [
                 {
                     "verdict": "issue",
+                    "probe_id": "security.logout_revocation",
                     "title": "Logout does not revoke refresh token",
                     "description": (
                         "The provided chunk returns success without revocation."
@@ -327,6 +774,7 @@ def test_probe_judge_response_keeps_valid_candidates_from_mixed_batch() -> None:
                 },
                 {
                     "verdict": "issue",
+                    "probe_id": "security.logout_revocation",
                     "title": "Invalid candidate",
                     "description": "This candidate has an invalid confidence type.",
                     "severity": "high",
@@ -342,6 +790,58 @@ def test_probe_judge_response_keeps_valid_candidates_from_mixed_batch() -> None:
 
     assert len(response.candidates) == 1
     assert response.candidates[0].title == "Logout does not revoke refresh token"
+    assert response.schema_rejected_count == 1
+
+
+def test_probe_judge_response_accepts_multiple_issues_for_one_probe() -> None:
+    response = ProbeJudgeResponse.model_validate(
+        {
+            "results": [
+                {
+                    "probe_id": "coverage.files",
+                    "verdict": "issue",
+                    "issues": [
+                        {
+                            "claim_type": "path_traversal",
+                            "title": "Upload path can escape its directory",
+                        },
+                        {
+                            "claim_type": "unrestricted_file_upload",
+                            "title": "Uploaded content is not validated",
+                        },
+                    ],
+                }
+            ]
+        }
+    )
+
+    assert len(response.results) == 1
+    assert len(response.results[0].issues) == 2
+    assert len(response.candidates) == 2
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"probe_id": "security.upload", "verdict": "issue", "issues": []},
+        {
+            "probe_id": "security.upload",
+            "verdict": "no_issue",
+            "issues": [{"title": "Unexpected issue"}],
+        },
+        {
+            "probe_id": "security.upload",
+            "verdict": "uncertain",
+            "issues": [{"title": "Unexpected issue"}],
+        },
+    ],
+)
+def test_probe_judge_response_rejects_invalid_issue_cardinality(
+    payload: dict[str, object],
+) -> None:
+    response = _probe_judge_response_from_payload({"results": [payload]})
+
+    assert response.results == []
     assert response.schema_rejected_count == 1
 
 
@@ -361,6 +861,7 @@ async def test_probe_judge_persists_only_high_confidence_candidates() -> None:
     )
     candidate = {
         "verdict": "issue",
+        "probe_id": "bug.order.total",
         "title": "Order may be missing",
         "description": "The order is dereferenced without a missing-value check.",
         "severity": "high",
@@ -377,34 +878,320 @@ async def test_probe_judge_persists_only_high_confidence_candidates() -> None:
             }
         ],
     }
-    session = _FakePostgresSession()
+    repository = _TrackingReportRepository()
     trace_writer = _TraceWriter()
+    progress_updates: list[tuple[int, int]] = []
+
+    async def record_progress(completed: int, total: int) -> None:
+        progress_updates.append((completed, total))
+
     service = ProbeJudgeService(
         llm=_JudgeLlm(
             {
                 "candidates": [
                     {**candidate, "confidence": 0.91},
-                    {**candidate, "confidence": 0.4},
+                    {
+                        **candidate,
+                        "probe_id": "bug.order.low_confidence",
+                        "confidence": 0.4,
+                    },
                 ]
             }
         ),
-        postgres_session=cast(AsyncSession, session),
+        report_repository=cast(ReportRepository, repository),
     )
 
-    judged_batches, created_count, rejected_count = await service.judge_and_persist(
+    summary = await service.judge_and_persist(
         job_id=job_id,
+        bundles=[
+            bundle,
+            _bundle(
+                probe={
+                    "probe_id": "bug.order.low_confidence",
+                    "category": "bug",
+                },
+                chunks=[chunk],
+            ),
+        ],
+        trace_writer=trace_writer,
+        on_batch_completed=record_progress,
+    )
+
+    assert summary == ProbeJudgeSummary(
+        judged_batches=1,
+        reported_issues=2,
+        created_issues=1,
+        rejected_issues=1,
+    )
+    assert len(repository.issues) == 1
+    assert repository.replace_count == 1
+    assert progress_updates == [(1, 1)]
+    assert repository.issues[0].source is IssueSource.AI_REVIEW
+    trace_output = trace_writer.logs[0]["output"]
+    assert isinstance(trace_output, dict)
+    assert trace_output["created_count"] == 1
+    assert trace_output["rejected_issue_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_probe_judge_rejects_readme_finding_targets() -> None:
+    job_id = uuid4()
+    file_path = "README.md"
+    chunk = _candidate_chunk(
+        file_path=file_path,
+        line_start=1,
+        line_end=5,
+        content="# API\nThe API supports access tokens.",
+    )
+    probe_id = "requirement.refresh_endpoint"
+    repository = _TrackingReportRepository()
+    service = ProbeJudgeService(
+        llm=_JudgeLlm(
+            {
+                "candidates": [
+                    {
+                        "verdict": "issue",
+                        "probe_id": probe_id,
+                        "title": "Missing refresh endpoint",
+                        "description": "No refresh endpoint is documented.",
+                        "severity": "high",
+                        "category": "requirement",
+                        "confidence": 0.95,
+                        "file_path": file_path,
+                        "line_start": 1,
+                        "line_end": 5,
+                        "supporting_evidence": [
+                            {
+                                "file_path": file_path,
+                                "chunk_index": 0,
+                                "line_start": 1,
+                                "line_end": 5,
+                            }
+                        ],
+                    }
+                ]
+            }
+        ),
+        report_repository=cast(ReportRepository, repository),
+    )
+
+    summary = await service.judge_and_persist(
+        job_id=job_id,
+        bundles=[
+            _bundle(
+                probe={"probe_id": probe_id, "category": "requirement"},
+                chunks=[chunk],
+            )
+        ],
+        trace_writer=_TraceWriter(),
+    )
+
+    assert summary.reported_issues == 1
+    assert summary.created_issues == 0
+    assert summary.rejected_issues == 1
+    assert repository.issues == []
+
+
+@pytest.mark.asyncio
+async def test_full_audit_persists_contextual_otp_claim_with_canonical_key() -> None:
+    job_id = uuid4()
+    probe_id = "coverage.full_audit.notification_service.0"
+    file_path = "backend/app/services/notification_service.py"
+    chunk = _candidate_chunk(
+        file_path=file_path,
+        line_start=29,
+        line_end=32,
+        content=(
+            "async def send_otp(phone: str):\n"
+            "    code = random.randint(100000, 999999)\n"
+            "    await repository.create_otp(phone, code)\n"
+            "    return {'debug_otp': code}"
+        ),
+    )
+    repository = _TrackingReportRepository()
+    service = ProbeJudgeService(
+        llm=_JudgeLlm(
+            {
+                "candidates": [
+                    {
+                        "verdict": "issue",
+                        "probe_id": probe_id,
+                        "claim_type": "weak_cryptographic_practice",
+                        "title": (
+                            "Insecure OTP Generation Using Pseudo-Random Numbers"
+                        ),
+                        "description": (
+                            "The OTP is generated with random.randint and can be "
+                            "predicted."
+                        ),
+                        "severity": "high",
+                        "category": "security",
+                        "confidence": 0.95,
+                        "file_path": file_path,
+                        "line_start": 29,
+                        "line_end": 32,
+                        "supporting_evidence": [
+                            {
+                                "file_path": file_path,
+                                "chunk_index": 0,
+                                "line_start": 29,
+                                "line_end": 32,
+                            }
+                        ],
+                    }
+                ]
+            }
+        ),
+        report_repository=cast(ReportRepository, repository),
+    )
+
+    summary = await service.judge_and_persist(
+        job_id=job_id,
+        bundles=[
+            _bundle(
+                probe={"probe_id": probe_id, "category": "security"},
+                chunks=[chunk],
+            )
+        ],
+        trace_writer=_TraceWriter(),
+    )
+
+    assert summary == ProbeJudgeSummary(
+        judged_batches=1,
+        reported_issues=1,
+        created_issues=1,
+    )
+    assert len(repository.issues) == 1
+    raw_output = repository.issues[0].raw_output
+    assert isinstance(raw_output, dict)
+    assert raw_output["claim_type"] == "otp_weak_randomness"
+    assert raw_output["finding_key"] == "security:otp_weak_randomness"
+
+
+@pytest.mark.asyncio
+async def test_probe_judge_retries_only_missing_probe_verdicts() -> None:
+    bundles = [
+        _bundle(
+            probe={"probe_id": probe_id, "category": "bug"},
+            chunks=[
+                _candidate_chunk(
+                    file_path=f"backend/app/{probe_id}.py",
+                    content="value = operation()",
+                )
+            ],
+        )
+        for probe_id in ("bug.one", "bug.two")
+    ]
+    llm = _SequenceJudgeLlm(
+        [
+            {"candidates": [{"verdict": "no_issue", "probe_id": "bug.one"}]},
+            {"candidates": [{"verdict": "no_issue", "probe_id": "bug.two"}]},
+        ]
+    )
+    trace_writer = _TraceWriter()
+    repository = _TrackingReportRepository()
+    service = ProbeJudgeService(
+        llm=llm,
+        report_repository=cast(ReportRepository, repository),
+    )
+
+    result = await service.judge_and_persist(
+        job_id=uuid4(),
+        bundles=bundles,
+        trace_writer=trace_writer,
+    )
+
+    assert result == ProbeJudgeSummary(
+        judged_batches=1,
+        no_issue_results=2,
+    )
+    assert llm.call_count == 2
+    trace_output = cast(dict[str, object], trace_writer.logs[0]["output"])
+    assert trace_output["retry_count"] == 1
+    assert trace_output["missing_probe_ids"] == []
+    attempts = cast(list[dict[str, object]], trace_output["contract_attempts"])
+    assert attempts[0]["missing_probe_ids"] == ["bug.two"]
+
+
+@pytest.mark.asyncio
+async def test_probe_judge_retries_duplicate_probe_verdict() -> None:
+    bundle = _bundle(
+        probe={"probe_id": "bug.duplicate", "category": "bug"},
+        chunks=[
+            _candidate_chunk(
+                file_path="backend/app/duplicate.py",
+                content="value = operation()",
+            )
+        ],
+    )
+    duplicate = {"verdict": "no_issue", "probe_id": "bug.duplicate"}
+    llm = _SequenceJudgeLlm(
+        [
+            {"candidates": [duplicate, duplicate]},
+            {"candidates": [duplicate]},
+        ]
+    )
+    trace_writer = _TraceWriter()
+    repository = _TrackingReportRepository()
+    service = ProbeJudgeService(
+        llm=llm,
+        report_repository=cast(ReportRepository, repository),
+    )
+
+    result = await service.judge_and_persist(
+        job_id=uuid4(),
         bundles=[bundle],
         trace_writer=trace_writer,
     )
 
-    assert (judged_batches, created_count, rejected_count) == (1, 1, 1)
-    assert session.commit_count == 1
-    assert len(session.added_issues) == 1
-    assert session.added_issues[0].source is IssueSource.AI_REVIEW
-    trace_output = trace_writer.logs[0]["output"]
-    assert isinstance(trace_output, dict)
-    assert trace_output["created_count"] == 1
-    assert trace_output["rejected_count"] == 1
+    assert result == ProbeJudgeSummary(
+        judged_batches=1,
+        no_issue_results=1,
+    )
+    attempts = cast(
+        list[dict[str, object]],
+        cast(dict[str, object], trace_writer.logs[0]["output"])["contract_attempts"],
+    )
+    assert attempts[0]["duplicate_probe_ids"] == ["bug.duplicate"]
+
+
+@pytest.mark.asyncio
+async def test_probe_judge_fails_after_contract_retries_are_exhausted() -> None:
+    bundle = _bundle(
+        probe={"probe_id": "bug.missing", "category": "bug"},
+        chunks=[
+            _candidate_chunk(
+                file_path="backend/app/missing.py",
+                content="value = operation()",
+            )
+        ],
+    )
+    trace_writer = _TraceWriter()
+    repository = _TrackingReportRepository()
+    service = ProbeJudgeService(
+        llm=_SequenceJudgeLlm(
+            [
+                {"candidates": []},
+                {"candidates": []},
+                {"candidates": []},
+            ]
+        ),
+        report_repository=cast(ReportRepository, repository),
+    )
+
+    with pytest.raises(ProbeJudgeContractError):
+        await service.judge_and_persist(
+            job_id=uuid4(),
+            bundles=[bundle],
+            trace_writer=trace_writer,
+        )
+
+    assert repository.replace_count == 0
+
+    trace_output = cast(dict[str, object], trace_writer.logs[0]["output"])
+    assert trace_output["status"] == "contract_error"
+    assert trace_output["retry_count"] == 2
+    assert trace_output["missing_probe_ids"] == ["bug.missing"]
 
 
 def test_batched_dependency_candidate_uses_matching_rule_id() -> None:
@@ -494,7 +1281,7 @@ def test_probe_judge_prompt_requires_evidence_arrays() -> None:
         [
             _bundle(
                 probe={
-                    "probe_id": "security.jwt_session_auth",
+                    "probe_id": "security.jwt_algorithm_allowlist",
                     "category": "security",
                     "priority": "high",
                     "query": "JWT token logout blacklist",
@@ -511,7 +1298,18 @@ def test_probe_judge_prompt_requires_evidence_arrays() -> None:
 
     assert "supporting_evidence and contradicting_evidence must be arrays" in prompt
     assert "never use null or a string" in prompt
+    assert "Return exactly one result for every probe" in prompt
+    assert "does not prevent over-posting" in prompt
+    assert '"severity_policy": "critical"' in prompt
     assert '"output_schema"' in prompt
+
+
+def test_dedicated_probe_severity_policy_overrides_judge_value() -> None:
+    assert _probe_issue_severity("security.open_redirect", "high").value == "medium"
+    assert (
+        _probe_issue_severity("security.jwt_algorithm_allowlist", "medium").value
+        == "critical"
+    )
 
 
 def test_supporting_bundle_chunk_requires_explicit_candidate_evidence() -> None:
@@ -520,6 +1318,7 @@ def test_supporting_bundle_chunk_requires_explicit_candidate_evidence() -> None:
             "candidates": [
                 {
                     "verdict": "issue",
+                    "probe_id": "security.jwt_session_auth",
                     "title": "Missing logout revocation",
                     "description": "Logout returns without revoking tokens.",
                     "severity": "high",
@@ -551,6 +1350,132 @@ def test_supporting_bundle_chunk_requires_explicit_candidate_evidence() -> None:
         )
         is None
     )
+
+
+def test_supporting_bundle_chunk_allows_location_spanning_adjacent_chunks() -> None:
+    decorator_chunk = _candidate_chunk(
+        file_path="backend/app/api/reports.py",
+        chunk_index=0,
+        line_start=1,
+        line_end=10,
+        content='@router.get("/profit")',
+    )
+    function_chunk = _candidate_chunk(
+        file_path="backend/app/api/reports.py",
+        chunk_index=1,
+        line_start=11,
+        line_end=13,
+        content=(
+            "async def profit_report(user=Depends(get_current_user)):\n"
+            "    return service.profit_report()"
+        ),
+    )
+    candidate = ProbeJudgeResponse.model_validate(
+        {
+            "candidates": [
+                {
+                    "verdict": "issue",
+                    "probe_id": "security.role_authorization",
+                    "title": "Missing role authorization",
+                    "description": "Any authenticated user can read the report.",
+                    "severity": "high",
+                    "category": "security",
+                    "confidence": 0.95,
+                    "file_path": "backend/app/api/reports.py",
+                    "line_start": 10,
+                    "line_end": 13,
+                    "supporting_evidence": [
+                        {
+                            "file_path": "backend/app/api/reports.py",
+                            "chunk_index": 1,
+                            "line_start": 11,
+                            "line_end": 13,
+                        }
+                    ],
+                }
+            ]
+        }
+    ).candidates[0]
+
+    supporting_chunk = _supporting_bundle_chunk(
+        candidate,
+        [
+            _bundle(
+                probe={"probe_id": "security.role_authorization"},
+                chunks=[decorator_chunk, function_chunk],
+            )
+        ],
+    )
+
+    assert supporting_chunk is function_chunk
+
+
+def test_supporting_bundle_chunk_allows_evidence_spanning_adjacent_chunks() -> None:
+    schema_chunk = _candidate_chunk(
+        file_path="backend/app/schemas/item.py",
+        chunk_index=3,
+        line_start=15,
+        line_end=19,
+        content="class ItemResponse(BaseModel):\n    cost_price: float",
+    )
+    decorator_chunk = _candidate_chunk(
+        file_path="backend/app/api/items.py",
+        chunk_index=0,
+        line_start=1,
+        line_end=11,
+        content='@router.get("/", response_model=list[ItemResponse])',
+    )
+    function_chunk = _candidate_chunk(
+        file_path="backend/app/api/items.py",
+        chunk_index=1,
+        line_start=12,
+        line_end=14,
+        content="async def list_items(user=Depends(get_current_user)): ...",
+    )
+    candidate = ProbeJudgeResponse.model_validate(
+        {
+            "candidates": [
+                {
+                    "verdict": "issue",
+                    "probe_id": "security.sensitive_response_exposure",
+                    "title": "Cost price is exposed",
+                    "description": "ItemResponse exposes cost price to users.",
+                    "severity": "medium",
+                    "category": "security",
+                    "confidence": 0.95,
+                    "file_path": "backend/app/schemas/item.py",
+                    "line_start": 15,
+                    "line_end": 19,
+                    "supporting_evidence": [
+                        {
+                            "file_path": "backend/app/schemas/item.py",
+                            "chunk_index": 3,
+                            "line_start": 15,
+                            "line_end": 19,
+                        },
+                        {
+                            "file_path": "backend/app/api/items.py",
+                            "chunk_index": 0,
+                            "line_start": 11,
+                            "line_end": 14,
+                        },
+                    ],
+                }
+            ]
+        }
+    ).candidates[0]
+
+    supporting_chunk = _supporting_bundle_chunk(
+        candidate,
+        [
+            _bundle(
+                probe={"probe_id": "security.sensitive_response_exposure"},
+                chunks=[schema_chunk, decorator_chunk, function_chunk],
+            )
+        ],
+    )
+
+    assert supporting_chunk is schema_chunk
 
 
 def test_supporting_bundle_chunk_rejects_unsupported_reference() -> None:
@@ -589,6 +1514,7 @@ def test_supporting_bundle_chunk_accepts_verified_multi_chunk_range() -> None:
             "candidates": [
                 {
                     "verdict": "issue",
+                    "probe_id": "security.reset_token_lifecycle",
                     "title": "Reset token has no expiration",
                     "description": "The token has no TTL and remains reusable.",
                     "severity": "high",
@@ -650,6 +1576,7 @@ def test_supporting_bundle_chunk_rejects_multi_chunk_range_without_end_anchor() 
             "candidates": [
                 {
                     "verdict": "issue",
+                    "probe_id": "security.reset_token_lifecycle",
                     "title": "Reset token has no expiration",
                     "description": "The token has no TTL and remains reusable.",
                     "severity": "high",
@@ -1039,6 +1966,79 @@ def test_related_expansion_adds_called_repository_function() -> None:
     assert expanded[1].strategies == ("related",)
 
 
+def test_related_expansion_adds_adjacent_route_function_chunk() -> None:
+    probe = _definition(
+        {
+            "probe_id": "security.role_authorization",
+            "category": "security",
+            "query": "profit report role authorization",
+            "top_k": 2,
+        }
+    )
+    selected = [
+        _candidate_chunk(
+            file_path="backend/app/api/reports.py",
+            chunk_index=0,
+            content='@router.get("/profit")',
+        )
+    ]
+    function_document = _chunk(
+        job_id=uuid4(),
+        file_path="backend/app/api/reports.py",
+        chunk_index=1,
+        content=(
+            "async def profit_report(user=Depends(get_current_user)):\n"
+            "    return await service.profit_report()"
+        ),
+        function_name="profit_report",
+    )
+
+    expanded = _expand_related_candidates(
+        selected=selected,
+        chunk_documents=[function_document],
+        probe=probe,
+        top_k=2,
+        excluded_keys=set(),
+    )
+
+    assert [chunk.chunk_index for chunk in expanded] == [0, 1]
+    assert expanded[1].strategies == ("adjacent",)
+
+
+def test_related_expansion_does_not_add_adjacent_schema_class() -> None:
+    probe = _definition(
+        {
+            "probe_id": "security.sensitive_response_exposure",
+            "category": "security",
+            "query": "sensitive response schema",
+            "top_k": 2,
+        }
+    )
+    selected = [
+        _candidate_chunk(
+            file_path="backend/app/schemas/item.py",
+            chunk_index=3,
+            content="class ItemResponse(BaseModel):\n    cost_price: float",
+        )
+    ]
+    neighboring_schema = _chunk(
+        job_id=uuid4(),
+        file_path="backend/app/schemas/item.py",
+        chunk_index=2,
+        content="class ItemUpdate(BaseModel):\n    cost_price: float | None = None",
+    )
+
+    expanded = _expand_related_candidates(
+        selected=selected,
+        chunk_documents=[neighboring_schema],
+        probe=probe,
+        top_k=2,
+        excluded_keys=set(),
+    )
+
+    assert expanded == selected
+
+
 def test_fusion_reserves_two_candidates_per_primary_strategy() -> None:
     probe = _definition(
         {
@@ -1299,20 +2299,22 @@ def _chunk(
     job_id: object,
     file_path: str,
     chunk_index: int = 0,
+    chunk_type: str = "function",
     content: str,
     function_name: str | None = None,
+    line_start: int = 1,
 ) -> dict[str, object]:
     return {
         "job_id": str(job_id),
         "file_path": file_path,
         "language": "python",
-        "chunk_type": "function",
+        "chunk_type": chunk_type,
         "chunk_index": chunk_index,
         "total_chunks": 1,
         "function_name": function_name,
         "class_name": None,
-        "line_start": 1,
-        "line_end": max(1, len(content.splitlines())),
+        "line_start": line_start,
+        "line_end": line_start + max(0, len(content.splitlines()) - 1),
         "imports": [],
         "module": "app",
         "risk_area": "security" if "auth" in file_path else "general",
@@ -1389,6 +2391,7 @@ def _probe_candidate(
             "candidates": [
                 {
                     "verdict": "issue",
+                    "probe_id": "test.probe",
                     "title": title,
                     "description": description,
                     "severity": "high",

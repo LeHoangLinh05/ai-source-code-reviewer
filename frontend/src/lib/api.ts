@@ -36,7 +36,7 @@ function redirectToLogin() {
   }
 }
 
-async function refreshAccessToken() {
+async function refreshAccessToken(): Promise<void> {
   refreshRequest ??= api
     .post<AuthTokenResponse>(
       "/auth/refresh",
@@ -53,6 +53,22 @@ async function refreshAccessToken() {
     });
 
   return refreshRequest;
+}
+
+function clearExpiredSession() {
+  store.dispatch(clearCredentials());
+  clearSessionMarker();
+  publishAuthEvent("session-cleared");
+  redirectToLogin();
+}
+
+export async function refreshAuthenticatedSession(): Promise<void> {
+  try {
+    await refreshAccessToken();
+  } catch (error) {
+    clearExpiredSession();
+    throw error;
+  }
 }
 
 api.interceptors.response.use(
@@ -76,10 +92,7 @@ api.interceptors.response.use(
 
       return api(originalRequest);
     } catch (refreshError) {
-      store.dispatch(clearCredentials());
-      clearSessionMarker();
-      publishAuthEvent("session-cleared");
-      redirectToLogin();
+      clearExpiredSession();
 
       return Promise.reject(refreshError);
     }

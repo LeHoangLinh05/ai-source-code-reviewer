@@ -29,6 +29,10 @@ RUN python -m pip install --upgrade pip \
     && python -m pip install ruff bandit \
     && npm install -g eslint @eslint/js typescript typescript-eslint
 
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends docker-cli \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY . .
 
 EXPOSE 8000

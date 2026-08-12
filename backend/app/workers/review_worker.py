@@ -1,6 +1,5 @@
 """Background review worker tasks."""
 
-import asyncio
 import logging
 from uuid import UUID
 
@@ -27,6 +26,7 @@ from app.services.review_pipeline.service import (
     ReviewPipelineService,
     build_error_message,
 )
+from app.workers.async_runtime import run_worker_coroutine
 from app.workers.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
@@ -44,7 +44,7 @@ def process_review_job(job_id: str) -> dict[str, str]:
     """Run the full review pipeline for a queued job."""
 
     logger.info("Review worker started job %s", job_id)
-    asyncio.run(process_review_job_async(UUID(job_id)))
+    run_worker_coroutine(process_review_job_async(UUID(job_id)))
     return {"job_id": job_id, "status": "processed"}
 
 

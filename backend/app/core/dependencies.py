@@ -12,7 +12,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import Settings, get_settings
 from app.core.exceptions import (
     AuthenticationError,
-    AuthorizationError,
     RateLimitError,
     ServiceUnavailableError,
 )
@@ -20,13 +19,18 @@ from app.core.security import TokenType, decode_token
 from app.db.mongodb import get_mongodb_database
 from app.db.postgres import get_async_session
 from app.db.redis import get_redis_client
-from app.models.user import User, UserRole
+from app.models.user import User
+from app.repositories.fix_audit_log_repository import FixAuditLogRepository
+from app.repositories.fix_job_repository import FixJobRepository
 from app.repositories.mongodb_repository import (
     ChunkMetadataRepository,
     FileAnalysisResultRepository,
     RawStaticAnalysisOutputRepository,
     RepoSummaryResultRepository,
     ToolCallLogRepository,
+)
+from app.repositories.provider_installation_repository import (
+    ProviderInstallationRepository,
 )
 from app.repositories.refresh_token_repository import RefreshTokenRepository
 from app.repositories.report_repository import ReportRepository
@@ -35,9 +39,15 @@ from app.repositories.review_job_repository import ReviewJobRepository
 from app.repositories.user_repository import UserRepository
 from app.services.ai_trace.service import AITraceService
 from app.services.auth_service import AuthService
+from app.services.fix_job_queue_service import FixJobQueueService
+from app.services.fix_job_service import FixJobService
+from app.services.fix_publish_queue_service import FixPublishQueueService
+from app.services.fix_publish_service import FixPublishService
+from app.services.git_provider.github import GitHubProvider
 from app.services.health_service import HealthService
 from app.services.job_queue_service import JobQueueService
 from app.services.job_service import ReviewJobService
+from app.services.provider_service import ProviderService
 from app.services.repo_summary.query_service import RepoSummaryQueryService
 from app.services.reporting.service import ReportService
 from app.services.repository_service import RepositoryService
@@ -166,6 +176,23 @@ async def get_repository_service(
 RepositoryServiceDep = Annotated[RepositoryService, Depends(get_repository_service)]
 
 
+async def get_provider_service(
+    session: AsyncSessionDep,
+    settings: SettingsDep,
+) -> ProviderService:
+    """Build provider connection service with request-scoped DB access."""
+
+    return ProviderService(
+        settings=settings,
+        provider_installation_repository=ProviderInstallationRepository(session),
+        repository_repository=RepositoryRepository(session),
+        github_provider=GitHubProvider(settings=settings),
+    )
+
+
+ProviderServiceDep = Annotated[ProviderService, Depends(get_provider_service)]
+
+
 async def get_user_service(
     session: AsyncSessionDep,
 ) -> UserService:
@@ -222,6 +249,41 @@ async def get_review_job_service(
 
 
 ReviewJobServiceDep = Annotated[ReviewJobService, Depends(get_review_job_service)]
+
+
+async def get_fix_job_service(
+    session: AsyncSessionDep,
+) -> FixJobService:
+    """Build fix job service with request-scoped DB access."""
+
+    return FixJobService(
+        fix_job_repository=FixJobRepository(session),
+        review_job_repository=ReviewJobRepository(session),
+        report_repository=ReportRepository(session),
+        queue_service=FixJobQueueService(),
+        audit_log_repository=FixAuditLogRepository(session),
+    )
+
+
+FixJobServiceDep = Annotated[FixJobService, Depends(get_fix_job_service)]
+
+
+async def get_fix_publish_service(
+    session: AsyncSessionDep,
+) -> FixPublishService:
+    """Build fix publish service with request-scoped DB access."""
+
+    return FixPublishService(
+        fix_job_repository=FixJobRepository(session),
+        audit_log_repository=FixAuditLogRepository(session),
+        queue_service=FixPublishQueueService(),
+    )
+
+
+FixPublishServiceDep = Annotated[
+    FixPublishService,
+    Depends(get_fix_publish_service),
+]
 
 
 async def get_ai_trace_service(
@@ -293,20 +355,6 @@ async def get_current_user(
 
 
 CurrentUserDep = Annotated[User, Depends(get_current_user)]
-
-
-async def get_current_admin(
-    current_user: CurrentUserDep,
-) -> User:
-    """Require an authenticated admin user for protected admin endpoints."""
-
-    if current_user.role != UserRole.ADMIN:
-        raise AuthorizationError("Admin role is required")
-
-    return current_user
-
-
-CurrentAdminDep = Annotated[User, Depends(get_current_admin)]
 
 
 def build_review_job_create_rate_limit_key(user: User) -> str:

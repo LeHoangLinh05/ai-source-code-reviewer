@@ -8,10 +8,7 @@ from uuid import uuid4
 import pytest
 from fastapi import Response
 
-from app.core.dependencies import get_current_admin
-from app.core.exceptions import AuthorizationError
 from app.models.user import User, UserRole
-from app.routers.admin import get_admin_me
 from app.routers.auth import login, refresh, register
 from app.schemas.auth import (
     LoginRequest,
@@ -80,31 +77,14 @@ async def test_refresh_route_accepts_body_token_and_rotates_cookies() -> None:
     )
 
 
-@pytest.mark.asyncio
-async def test_admin_me_route_returns_current_admin() -> None:
-    admin = build_user(role=UserRole.ADMIN)
-
-    result = await get_admin_me(admin)
-
-    assert result is admin
-
-
-@pytest.mark.asyncio
-async def test_current_admin_dependency_rejects_regular_user() -> None:
-    user = build_user(role=UserRole.USER)
-
-    with pytest.raises(AuthorizationError, match="Admin role is required"):
-        await get_current_admin(user)
-
-
-def build_user(role: UserRole = UserRole.USER) -> User:
+def build_user() -> User:
     now = datetime.now(UTC)
     return User(
         id=uuid4(),
         email=VALID_EMAIL,
         hashed_password="hashed-password",
         full_name=None,
-        role=role,
+        role=UserRole.USER,
         is_active=True,
         created_at=now,
         updated_at=now,
