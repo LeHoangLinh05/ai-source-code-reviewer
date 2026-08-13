@@ -17,8 +17,11 @@ from app.schemas.fix_job import (
     FixScenarioStatus,
     FixVerificationScenario,
 )
-from app.services.fix_pipeline import verification
-from app.services.fix_pipeline.contracts import FixIssueSpec, FixVerificationResponse
+from app.services.fix_jobs.pipeline import verification
+from app.services.fix_jobs.pipeline.contracts import (
+    FixIssueSpec,
+    FixVerificationResponse,
+)
 
 Verifier = Callable[[Path, FixIssueSpec, FixIssuePlan, int], FixIssueResult]
 
@@ -427,12 +430,12 @@ async def test_llm_verifier_contract_failure_becomes_uncertain(
 def test_fix_evidence_reference_normalizes_common_llm_aliases() -> None:
     evidence = FixEvidenceReference.model_validate(
         {
-            "file": "backend/app/services/notification_service.py",
+            "file": "backend/app/services/review_jobs/notifications.py",
             "explanation": "The unsafe deserialization path now rejects pickle data.",
         }
     )
 
-    assert evidence.file_path == "backend/app/services/notification_service.py"
+    assert evidence.file_path == "backend/app/services/review_jobs/notifications.py"
     assert evidence.rationale.startswith("The unsafe deserialization")
 
 

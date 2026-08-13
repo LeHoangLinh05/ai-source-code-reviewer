@@ -27,7 +27,7 @@ from app.db.postgres import AsyncSessionLocal, close_postgres_engine  # noqa: E4
 from app.db.redis import close_redis_client  # noqa: E402
 from app.models.review_job import ReviewJobStatus  # noqa: E402
 from app.repositories.review_job_repository import ReviewJobRepository  # noqa: E402
-from app.services.notification_service import publish_job_progress  # noqa: E402
+from app.services.review_jobs.notifications import publish_job_progress  # noqa: E402
 
 logger = logging.getLogger(__name__)
 

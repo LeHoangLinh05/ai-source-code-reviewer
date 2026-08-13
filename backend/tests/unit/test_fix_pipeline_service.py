@@ -21,10 +21,10 @@ from app.schemas.fix_job import (
     FixValidationResult,
     FixVerificationScenario,
 )
-from app.services.fix_pipeline import service as fix_pipeline_service
-from app.services.fix_pipeline.contracts import FixIssueSpec
-from app.services.fix_pipeline.execution import FixCommandExecutor
-from app.services.fix_pipeline.service import FixPipelineService
+from app.services.fix_jobs.pipeline import service as fix_pipeline_service
+from app.services.fix_jobs.pipeline.contracts import FixIssueSpec
+from app.services.fix_jobs.pipeline.execution import FixCommandExecutor
+from app.services.fix_jobs.pipeline.service import FixPipelineService
 
 
 @pytest.mark.asyncio

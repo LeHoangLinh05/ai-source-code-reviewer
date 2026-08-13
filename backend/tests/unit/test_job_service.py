@@ -10,8 +10,8 @@ from app.models.review_job import ReviewJobStatus
 from app.models.user import User
 from app.repositories.repository_repository import RepositoryRepository
 from app.repositories.review_job_repository import ReviewJobRepository
-from app.services.job_queue_service import JobQueueService
-from app.services.job_service import ReviewJobService
+from app.services.review_jobs.queue import JobQueueService
+from app.services.review_jobs.service import ReviewJobService
 
 
 @pytest.mark.asyncio
@@ -30,7 +30,7 @@ async def test_delete_completed_job_does_not_cancel_queue(
         return 1
 
     monkeypatch.setattr(
-        "app.services.job_service.publish_job_progress",
+        "app.services.review_jobs.service.publish_job_progress",
         publish_job_progress,
     )
 
@@ -63,7 +63,7 @@ async def test_delete_active_job_cancels_queue_and_publishes_event(
         return 1
 
     monkeypatch.setattr(
-        "app.services.job_service.publish_job_progress",
+        "app.services.review_jobs.service.publish_job_progress",
         publish_job_progress,
     )
 

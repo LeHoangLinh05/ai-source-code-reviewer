@@ -1,6 +1,6 @@
 """Tests for safe review pipeline error messages."""
 
-from app.services.review_pipeline.errors import (
+from app.services.review_jobs.pipeline.errors import (
     UPSTREAM_SERVICE_UNAVAILABLE_MESSAGE,
     build_error_message,
     sanitize_error_message,

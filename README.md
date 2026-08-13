@@ -39,6 +39,13 @@ repositories own persistence. The worker pipeline clones a repository, analyzes
 structure, generates a project summary, runs static analyzers, chunks and
 embeds code, performs probe/KB-grounded review, and persists the report.
 
+Backend application services are grouped by domain instead of by technical
+suffix. Review lifecycle code lives under `app/services/review_jobs`, fix
+generation and publishing under `app/services/fix_jobs`, and shared sandbox
+operations under `app/services/sandbox`. Each domain keeps its queue,
+notifications, orchestration, and pipeline modules together; cross-domain
+persistence remains behind `app/repositories`.
+
 ## Technology stack
 
 - Backend: Python 3.11+, FastAPI, Pydantic v2, SQLAlchemy 2 async, Alembic,
@@ -182,6 +189,13 @@ python -m pytest -q
 python -m ruff check .
 python -m ruff format --check .
 python -m mypy .
+```
+
+Install the repository hooks once after installing development dependencies:
+
+```powershell
+pre-commit install
+pre-commit run --all-files
 ```
 
 The three-job Redis integration test is opt-in so normal CI does not require a

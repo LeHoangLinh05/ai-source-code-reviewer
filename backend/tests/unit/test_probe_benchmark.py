@@ -263,7 +263,7 @@ def test_finding_rejects_evidence_from_wrong_probe() -> None:
 def test_finding_rejects_wrong_canonical_claim_type() -> None:
     issue = ExpectedIssue(
         issue_id="NOTIFY-OTP-002",
-        file_path="backend/app/services/notification_service.py",
+        file_path="backend/app/services/review_jobs/notifications.py",
         line_start=29,
         line_end=32,
         category="security",

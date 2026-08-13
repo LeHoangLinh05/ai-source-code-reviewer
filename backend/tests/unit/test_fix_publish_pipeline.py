@@ -24,9 +24,9 @@ from app.repositories.provider_installation_repository import (
 )
 from app.repositories.report_repository import ReportRepository
 from app.schemas.fix_job import FixIssueResult, FixIssueVerdict
-from app.services import fix_publish_pipeline
-from app.services.fix_pipeline.errors import FixPipelineError
-from app.services.fix_publish_pipeline import FixPublishPipelineService
+from app.services.fix_jobs import publish_pipeline as fix_publish_pipeline
+from app.services.fix_jobs.pipeline.errors import FixPipelineError
+from app.services.fix_jobs.publish_pipeline import FixPublishPipelineService
 from app.services.git_provider.base import (
     ForkResult,
     GitProvider,
@@ -305,7 +305,9 @@ def patch_workspace_side_effects(
         lambda **_kwargs: None,
     )
     monkeypatch.setattr(
-        fix_publish_pipeline, "validate_repo_size", lambda *_args, **_kwargs: None
+        fix_publish_pipeline,
+        "validate_repository_size",
+        lambda *_args, **_kwargs: None,
     )
     monkeypatch.setattr(
         fix_publish_pipeline,

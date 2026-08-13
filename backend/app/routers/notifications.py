@@ -6,7 +6,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
 
 from app.core.dependencies import CurrentUserDep, RedisDep, ReviewJobServiceDep
-from app.services.notification_service import stream_job_progress
+from app.services.review_jobs.notifications import stream_job_progress
 
 router = APIRouter(prefix="/review-jobs", tags=["notifications"])
 

@@ -19,8 +19,8 @@ from app.schemas.fix_job import (
     FixScenarioStatus,
     FixVerificationScenario,
 )
-from app.services.fix_pipeline import scenario_testing, verification
-from app.services.fix_pipeline.contracts import (
+from app.services.fix_jobs.pipeline import scenario_testing, verification
+from app.services.fix_jobs.pipeline.contracts import (
     FixEnvironmentStatus,
     FixGeneratedTest,
     FixIssueSpec,

@@ -1,40 +1,51 @@
 """Tests for aggregate infrastructure health checks."""
 
+from typing import cast
+
 import pytest
 
+from app.repositories.health_repository import InfrastructureHealthRepository
 from app.services.health_service import HealthService
 
 
-class FakeSession:
-    """Minimal SQLAlchemy session fake."""
+class FakeHealthRepository:
+    """Controllable infrastructure health repository fake."""
 
-    async def execute(self, _statement: object) -> None:
-        return None
+    def __init__(self, *, is_healthy: bool) -> None:
+        self.is_healthy = is_healthy
 
+    async def is_postgres_available(self) -> bool:
+        return self.is_healthy
 
-class FakeRedis:
-    """Minimal Redis fake."""
+    async def is_redis_available(self) -> bool:
+        return self.is_healthy
 
-    async def ping(self) -> bool:
-        return True
-
-
-class FakeMongoDatabase:
-    """Minimal MongoDB database fake."""
-
-    async def command(self, command_name: str) -> dict[str, int]:
-        assert command_name == "ping"
-        return {"ok": 1}
+    async def is_mongodb_available(self) -> bool:
+        return self.is_healthy
 
 
 @pytest.mark.asyncio
 async def test_health_service_includes_mongodb() -> None:
     health = await HealthService(
-        FakeSession(),  # type: ignore[arg-type]
-        FakeRedis(),  # type: ignore[arg-type]
-        FakeMongoDatabase(),  # type: ignore[arg-type]
+        cast(
+            InfrastructureHealthRepository,
+            FakeHealthRepository(is_healthy=True),
+        ),
     ).check()
 
     assert health.status == "ok"
     assert set(health.services) == {"postgres", "redis", "mongodb"}
     assert health.services["mongodb"].status == "ok"
+
+
+@pytest.mark.asyncio
+async def test_health_service_reports_aggregate_error() -> None:
+    health = await HealthService(
+        cast(
+            InfrastructureHealthRepository,
+            FakeHealthRepository(is_healthy=False),
+        ),
+    ).check()
+
+    assert health.status == "error"
+    assert all(service.status == "error" for service in health.services.values())

@@ -18,8 +18,8 @@ from app.schemas.fix_job import (
     FixScenarioKind,
     FixVerificationScenario,
 )
-from app.services.fix_pipeline import generation, planning
-from app.services.fix_pipeline.contracts import (
+from app.services.fix_jobs.pipeline import generation, planning
+from app.services.fix_jobs.pipeline.contracts import (
     FixGenerationDisposition,
     FixGenerationDispositionStatus,
     FixGenerationResponse,
@@ -27,7 +27,7 @@ from app.services.fix_pipeline.contracts import (
     FixPlanningResponse,
     FixUpdatedFile,
 )
-from app.services.fix_pipeline.errors import FixPipelineError
+from app.services.fix_jobs.pipeline.errors import FixPipelineError
 
 
 @pytest.mark.asyncio

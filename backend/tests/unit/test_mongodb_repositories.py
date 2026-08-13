@@ -7,6 +7,7 @@ import pytest
 
 from app.db import mongodb
 from app.repositories.mongodb_repository import (
+    FileAnalysisResultRepository,
     RepoSummaryResultRepository,
     ToolCallLogRepository,
 )
@@ -24,6 +25,11 @@ class FakeCursor:
 
     def __init__(self, documents: list[dict[str, object]]) -> None:
         self.documents = documents
+        self.sort_keys: list[tuple[str, int]] | None = None
+
+    def sort(self, keys: list[tuple[str, int]]) -> "FakeCursor":
+        self.sort_keys = keys
+        return self
 
     async def to_list(self, length: int | None) -> list[dict[str, object]]:
         return self.documents
@@ -38,6 +44,9 @@ class FakeCollection:
         self.find_one_filter: dict[str, object] | None = None
         self.find_one_sort: list[tuple[str, int]] | None = None
         self.find_one_document: dict[str, object] | None = None
+        self.last_cursor: FakeCursor | None = None
+        self.count_filter: dict[str, object] | None = None
+        self.count_result = 0
         self.indexes: list[tuple[list[tuple[str, int]], str]] = []
 
     async def insert_one(self, payload: dict[str, object]) -> FakeInsertOneResult:
@@ -46,7 +55,12 @@ class FakeCollection:
 
     def find(self, query_filter: dict[str, object]) -> FakeCursor:
         self.find_filter = query_filter
-        return FakeCursor([{"_id": "abc", **query_filter}])
+        self.last_cursor = FakeCursor([{"_id": "abc", **query_filter}])
+        return self.last_cursor
+
+    async def count_documents(self, query_filter: dict[str, object]) -> int:
+        self.count_filter = query_filter
+        return self.count_result
 
     async def find_one(
         self,
@@ -103,6 +117,49 @@ async def test_tool_call_repository_inserts_and_finds_by_job_id() -> None:
     assert repository.collection.inserted_payload["job_id"] == str(job_id)
     assert repository.collection.find_filter == {"job_id": str(job_id)}
     assert documents == [{"_id": "abc", "job_id": str(job_id)}]
+
+
+@pytest.mark.asyncio
+async def test_tool_call_repository_loads_ordered_trace_events() -> None:
+    database = FakeDatabase()
+    repository = ToolCallLogRepository(database)  # type: ignore[arg-type]
+    collection = database["tool_call_logs"]
+    collection.count_result = 3
+    job_id = uuid4()
+
+    count = await repository.count_tool_events(job_id)
+    documents = await repository.find_trace_events(job_id)
+
+    assert count == 3
+    assert collection.count_filter == {
+        "job_id": str(job_id),
+        "$or": [
+            {"event_type": "tool"},
+            {"event_type": {"$exists": False}},
+        ],
+    }
+    assert collection.find_filter == {"job_id": str(job_id)}
+    assert collection.last_cursor is not None
+    assert collection.last_cursor.sort_keys == [
+        ("called_at", 1),
+        ("sequence", 1),
+    ]
+    assert documents == [{"_id": "abc", "job_id": str(job_id)}]
+
+
+@pytest.mark.asyncio
+async def test_file_analysis_repository_finds_latest_for_job() -> None:
+    database = FakeDatabase()
+    repository = FileAnalysisResultRepository(database)  # type: ignore[arg-type]
+    collection = database["file_analysis_results"]
+    job_id = uuid4()
+    collection.find_one_document = {"_id": "analysis-id", "job_id": str(job_id)}
+
+    document = await repository.find_latest_by_job_id(job_id)
+
+    assert collection.find_one_filter == {"job_id": str(job_id)}
+    assert collection.find_one_sort == [("analyzed_at", -1)]
+    assert document == {"_id": "analysis-id", "job_id": str(job_id)}
 
 
 @pytest.mark.asyncio

@@ -16,8 +16,8 @@ from app.repositories.fix_job_repository import FixJobRepository
 from app.repositories.report_repository import ReportRepository
 from app.repositories.review_job_repository import ReviewJobRepository
 from app.schemas.fix_job import FixJobCreate
-from app.services.fix_job_queue_service import FixJobQueueService
-from app.services.fix_job_service import FixJobService
+from app.services.fix_jobs.queue import FixJobQueueService
+from app.services.fix_jobs.service import FixJobService
 
 
 @pytest.mark.asyncio

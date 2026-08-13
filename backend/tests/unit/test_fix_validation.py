@@ -4,8 +4,8 @@ from pathlib import Path
 
 from app.models.fix_job import FixValidationStatus
 from app.schemas.fix_job import FixValidationCheckStatus
-from app.services.fix_pipeline import validation as fix_validation
-from app.services.fix_pipeline.validation import validate_fix
+from app.services.fix_jobs.pipeline import validation as fix_validation
+from app.services.fix_jobs.pipeline.validation import validate_fix
 
 
 class _RecordingExecutor:

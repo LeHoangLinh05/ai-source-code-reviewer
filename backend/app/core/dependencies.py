@@ -22,6 +22,7 @@ from app.db.redis import get_redis_client
 from app.models.user import User
 from app.repositories.fix_audit_log_repository import FixAuditLogRepository
 from app.repositories.fix_job_repository import FixJobRepository
+from app.repositories.health_repository import InfrastructureHealthRepository
 from app.repositories.mongodb_repository import (
     ChunkMetadataRepository,
     FileAnalysisResultRepository,
@@ -39,18 +40,18 @@ from app.repositories.review_job_repository import ReviewJobRepository
 from app.repositories.user_repository import UserRepository
 from app.services.ai_trace.service import AITraceService
 from app.services.auth_service import AuthService
-from app.services.fix_job_queue_service import FixJobQueueService
-from app.services.fix_job_service import FixJobService
-from app.services.fix_publish_queue_service import FixPublishQueueService
-from app.services.fix_publish_service import FixPublishService
+from app.services.fix_jobs.publish_queue import FixPublishQueueService
+from app.services.fix_jobs.publish_service import FixPublishService
+from app.services.fix_jobs.queue import FixJobQueueService
+from app.services.fix_jobs.service import FixJobService
 from app.services.git_provider.github import GitHubProvider
 from app.services.health_service import HealthService
-from app.services.job_queue_service import JobQueueService
-from app.services.job_service import ReviewJobService
 from app.services.provider_service import ProviderService
 from app.services.repo_summary.query_service import RepoSummaryQueryService
 from app.services.reporting.service import ReportService
 from app.services.repository_service import RepositoryService
+from app.services.review_jobs.queue import JobQueueService
+from app.services.review_jobs.service import ReviewJobService
 from app.services.token_blacklist import TokenBlacklistService
 from app.services.user_service import UserService
 
@@ -212,7 +213,13 @@ async def get_health_service(
 ) -> HealthService:
     """Build the service that checks infrastructure health."""
 
-    return HealthService(session, redis_client, database)
+    return HealthService(
+        InfrastructureHealthRepository(
+            postgres_session=session,
+            redis_client=redis_client,
+            mongodb_database=database,
+        )
+    )
 
 
 HealthServiceDep = Annotated[HealthService, Depends(get_health_service)]
@@ -293,8 +300,12 @@ async def get_ai_trace_service(
     """Build the lightweight AI trace service."""
 
     return AITraceService(
-        postgres_session=session,
-        mongodb_database=database,
+        review_job_repository=ReviewJobRepository(session),
+        report_repository=ReportRepository(session),
+        file_analysis_repository=FileAnalysisResultRepository(database),
+        raw_static_repository=RawStaticAnalysisOutputRepository(database),
+        tool_call_repository=ToolCallLogRepository(database),
+        chunk_metadata_repository=ChunkMetadataRepository(database),
     )
 
 

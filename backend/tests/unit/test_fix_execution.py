@@ -3,8 +3,8 @@
 from pathlib import Path
 from types import SimpleNamespace
 
-from app.services.fix_pipeline import execution
-from app.services.fix_pipeline.execution import DockerFixCommandExecutor
+from app.services.fix_jobs.pipeline import execution
+from app.services.fix_jobs.pipeline.execution import DockerFixCommandExecutor
 
 
 def test_docker_executor_uses_ephemeral_restricted_container(

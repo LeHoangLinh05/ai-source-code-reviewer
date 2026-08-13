@@ -16,9 +16,9 @@ from app.services.code_indexing.documents import (
     build_plain_file_chunk_metadata_documents,
 )
 from app.services.code_indexing.service import CodeIndexingService
-from app.services.review_pipeline import service as review_pipeline_service
-from app.services.review_pipeline.artifacts import build_flat_file_tree_entries
-from app.services.review_pipeline.service import (
+from app.services.review_jobs.pipeline import service as review_pipeline_service
+from app.services.review_jobs.pipeline.artifacts import build_flat_file_tree_entries
+from app.services.review_jobs.pipeline.service import (
     ReviewJobCanceled,
     ReviewPipelineError,
     ReviewPipelineService,
@@ -414,7 +414,9 @@ async def test_pipeline_runs_repo_summary_between_structure_and_static(
         review_pipeline_service, "clone_repository", lambda *_args: None
     )
     monkeypatch.setattr(
-        review_pipeline_service, "validate_repo_size", lambda *_args, **_kwargs: None
+        review_pipeline_service,
+        "validate_repository_size",
+        lambda *_args, **_kwargs: None,
     )
     monkeypatch.setattr(
         review_pipeline_service, "get_commit_sha", lambda _sandbox_path: "abc123"

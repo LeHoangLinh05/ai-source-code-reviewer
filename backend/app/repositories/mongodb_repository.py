@@ -1,5 +1,6 @@
 """MongoDB repository helpers for analysis documents and AI traces."""
 
+from collections.abc import Collection
 from typing import Generic, TypeVar, cast
 from uuid import UUID
 
@@ -74,6 +75,20 @@ class FileAnalysisResultRepository(MongoDocumentRepository[FileAnalysisResultDoc
     def __init__(self, database: AsyncIOMotorDatabase) -> None:
         super().__init__(database, FILE_ANALYSIS_RESULTS_COLLECTION)
 
+    async def find_latest_by_job_id(
+        self,
+        job_id: UUID,
+    ) -> dict[str, object] | None:
+        """Return the newest structure analysis document for a review job."""
+
+        document = await self.collection.find_one(
+            {"job_id": str(job_id)},
+            sort=[("analyzed_at", -1)],
+        )
+        if document is None:
+            return None
+        return self._normalize_mongo_id(cast(dict[str, object], document))
+
 
 class RawStaticAnalysisOutputRepository(
     MongoDocumentRepository[RawStaticAnalysisOutputDocument]
@@ -89,6 +104,56 @@ class ToolCallLogRepository(MongoDocumentRepository[ToolCallLogDocument]):
 
     def __init__(self, database: AsyncIOMotorDatabase) -> None:
         super().__init__(database, TOOL_CALL_LOGS_COLLECTION)
+
+    async def count_tool_events(self, job_id: UUID) -> int:
+        """Count tool events, including legacy logs without an event type."""
+
+        return int(
+            await self.collection.count_documents(
+                {
+                    "job_id": str(job_id),
+                    "$or": [
+                        {"event_type": "tool"},
+                        {"event_type": {"$exists": False}},
+                    ],
+                }
+            )
+        )
+
+    async def find_trace_events(
+        self,
+        job_id: UUID,
+    ) -> list[dict[str, object]]:
+        """Return trace events in their persisted execution order."""
+
+        cursor = self.collection.find({"job_id": str(job_id)}).sort(
+            [("called_at", 1), ("sequence", 1)]
+        )
+        documents = cast(
+            list[dict[str, object]],
+            await cursor.to_list(length=None),
+        )
+        return [self._normalize_mongo_id(document) for document in documents]
+
+    async def find_source_reads(
+        self,
+        *,
+        job_id: UUID,
+        tool_names: Collection[str],
+    ) -> list[dict[str, object]]:
+        """Return source-reading trace events used for coverage calculation."""
+
+        cursor = self.collection.find(
+            {
+                "job_id": str(job_id),
+                "tool_name": {"$in": sorted(tool_names)},
+            }
+        )
+        documents = cast(
+            list[dict[str, object]],
+            await cursor.to_list(length=None),
+        )
+        return [self._normalize_mongo_id(document) for document in documents]
 
 
 class ChunkMetadataRepository(MongoDocumentRepository[ChunkMetadataDocument]):

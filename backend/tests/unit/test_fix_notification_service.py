@@ -13,8 +13,8 @@ from redis.asyncio import Redis
 from redis.exceptions import RedisError
 
 from app.models.fix_job import FixJob, FixJobStatus, FixValidationStatus
-from app.services import fix_notification_service
-from app.services.fix_notification_service import (
+from app.services.fix_jobs import notifications as fix_notification_service
+from app.services.fix_jobs.notifications import (
     FIX_JOB_PROGRESS_SNAPSHOT_TTL_SECONDS,
     build_fix_job_progress_channel,
     build_fix_job_progress_event,

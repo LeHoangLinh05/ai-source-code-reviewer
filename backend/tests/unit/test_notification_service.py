@@ -14,8 +14,8 @@ from redis.exceptions import RedisError
 
 from app.main import app
 from app.schemas.notification import JobProgressEvent
-from app.services import notification_service
-from app.services.notification_service import (
+from app.services.review_jobs import notifications as notification_service
+from app.services.review_jobs.notifications import (
     JOB_PROGRESS_SNAPSHOT_TTL_SECONDS,
     build_job_progress_channel,
     build_job_progress_snapshot_key,

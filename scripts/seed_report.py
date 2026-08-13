@@ -146,7 +146,7 @@ SEED_ISSUES: tuple[SeedIssue, ...] = (
         "AI-FE-006",
     ),
     SeedIssue(
-        "backend/app/services/job_service.py",
+        "backend/app/services/review_jobs/service.py",
         55,
         62,
         IssueSeverity.MEDIUM,

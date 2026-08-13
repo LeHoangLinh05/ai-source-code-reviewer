@@ -21,8 +21,8 @@ from app.repositories.report_repository import ReportRepository
 from app.repositories.repository_repository import RepositoryRepository
 from app.repositories.review_job_repository import ReviewJobRepository
 from app.services.code_indexing.service import CodeIndexingService
-from app.services.notification_service import publish_job_progress
-from app.services.review_pipeline.service import (
+from app.services.review_jobs.notifications import publish_job_progress
+from app.services.review_jobs.pipeline.service import (
     ReviewPipelineService,
     build_error_message,
 )

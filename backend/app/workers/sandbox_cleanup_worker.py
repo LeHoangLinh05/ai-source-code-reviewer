@@ -6,7 +6,7 @@ from app.core.config import get_settings
 from app.db.postgres import AsyncSessionLocal, close_postgres_engine
 from app.repositories.fix_job_repository import FixJobRepository
 from app.repositories.review_job_repository import ReviewJobRepository
-from app.services.sandbox_cleanup_service import (
+from app.services.sandbox.service import (
     SandboxCleanupService,
     SandboxCleanupSummary,
 )

@@ -1,8 +1,23 @@
 """Tests for AI trace coverage/status helpers."""
 
 from datetime import UTC, datetime
+from types import SimpleNamespace
+from typing import cast
+from uuid import UUID, uuid4
 
-from app.models.review_job import ReviewJobStatus
+import pytest
+
+from app.models.review_issue import IssueSource
+from app.models.review_job import ReviewJob, ReviewJobStatus
+from app.models.review_report import ReviewReport
+from app.repositories.mongodb_repository import (
+    ChunkMetadataRepository,
+    FileAnalysisResultRepository,
+    RawStaticAnalysisOutputRepository,
+    ToolCallLogRepository,
+)
+from app.repositories.report_repository import ReportRepository
+from app.repositories.review_job_repository import ReviewJobRepository
 from app.schemas.ai_trace import AIToolCallTrace, AITraceCoverage
 from app.services.ai_trace.coverage import (
     _broad_audited_chunk_count,
@@ -10,8 +25,52 @@ from app.services.ai_trace.coverage import (
     _read_chunk_coverage,
 )
 from app.services.ai_trace.events import _token_totals, _token_usage_dict
+from app.services.ai_trace.service import AITraceService
 from app.services.ai_trace.stages import _ai_stage_status, _report_stage_status
 from app.services.reporting.generation import AI_REPORT_MODEL
+
+
+@pytest.mark.asyncio
+async def test_ai_trace_service_delegates_postgres_reads_to_repositories() -> None:
+    job_id = uuid4()
+    review_job = cast(ReviewJob, SimpleNamespace(id=job_id))
+    report = cast(ReviewReport, SimpleNamespace(job_id=job_id))
+
+    class ReviewJobRepositoryStub:
+        async def get_by_id(self, requested_job_id: UUID) -> ReviewJob:
+            assert requested_job_id == job_id
+            return review_job
+
+    class ReportRepositoryStub:
+        async def count_issues_by_source(
+            self,
+            requested_job_id: UUID,
+        ) -> dict[IssueSource, int]:
+            assert requested_job_id == job_id
+            return {IssueSource.AI_REVIEW: 2}
+
+        async def get_report_by_job_id(
+            self,
+            requested_job_id: UUID,
+        ) -> ReviewReport:
+            assert requested_job_id == job_id
+            return report
+
+    service = AITraceService(
+        review_job_repository=cast(
+            ReviewJobRepository,
+            ReviewJobRepositoryStub(),
+        ),
+        report_repository=cast(ReportRepository, ReportRepositoryStub()),
+        file_analysis_repository=cast(FileAnalysisResultRepository, object()),
+        raw_static_repository=cast(RawStaticAnalysisOutputRepository, object()),
+        tool_call_repository=cast(ToolCallLogRepository, object()),
+        chunk_metadata_repository=cast(ChunkMetadataRepository, object()),
+    )
+
+    assert await service._load_issue_counts(job_id) == {"ai_review": 2}
+    assert await service._load_job(job_id) is review_job
+    assert await service._load_report(job_id) is report
 
 
 def test_read_chunk_coverage_counts_only_successful_unique_chunks() -> None:

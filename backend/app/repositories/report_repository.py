@@ -65,6 +65,20 @@ class ReportRepository:
         result = await self.session.execute(statement)
         return int(result.scalar_one())
 
+    async def count_issues_by_source(
+        self,
+        job_id: UUID,
+    ) -> dict[IssueSource, int]:
+        """Count a review job's issues grouped by their persisted source."""
+
+        statement = (
+            select(ReviewIssue.source, func.count(ReviewIssue.id))
+            .where(ReviewIssue.job_id == job_id)
+            .group_by(ReviewIssue.source)
+        )
+        result = await self.session.execute(statement)
+        return {source: int(count) for source, count in result.all()}
+
     async def list_issues(
         self,
         *,

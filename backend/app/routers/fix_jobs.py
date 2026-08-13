@@ -18,7 +18,7 @@ from app.schemas.fix_job import (
     FixJobResponse,
     PublishFixPayload,
 )
-from app.services.fix_notification_service import stream_fix_job_progress
+from app.services.fix_jobs.notifications import stream_fix_job_progress
 
 router = APIRouter(tags=["fix-jobs"])
 

@@ -19,9 +19,9 @@ from app.models.user import User, UserRole
 from app.repositories.fix_audit_log_repository import FixAuditLogRepository
 from app.repositories.fix_job_repository import FixJobRepository
 from app.schemas.fix_job import FixIssueResult, FixIssueVerdict, PublishFixPayload
-from app.services import fix_publish_service as fix_publish_service_module
-from app.services.fix_publish_queue_service import FixPublishQueueService
-from app.services.fix_publish_service import FixPublishService
+from app.services.fix_jobs import publish_service as fix_publish_service_module
+from app.services.fix_jobs.publish_queue import FixPublishQueueService
+from app.services.fix_jobs.publish_service import FixPublishService
 
 
 def test_publish_override_requires_an_auditable_reason() -> None:

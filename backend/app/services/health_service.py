@@ -1,13 +1,8 @@
 """Infrastructure health checks for the public health endpoint."""
 
-from motor.motor_asyncio import AsyncIOMotorDatabase
-from pymongo.errors import PyMongoError
-from redis.asyncio import Redis
-from redis.exceptions import RedisError
-from sqlalchemy import text
-from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy.ext.asyncio import AsyncSession
+import asyncio
 
+from app.repositories.health_repository import InfrastructureHealthRepository
 from app.schemas.health import HealthResponse, HealthServiceStatus
 
 OK_STATUS = "ok"
@@ -19,21 +14,22 @@ class HealthService:
 
     def __init__(
         self,
-        session: AsyncSession,
-        redis_client: Redis,
-        mongodb: AsyncIOMotorDatabase,
+        repository: InfrastructureHealthRepository,
     ) -> None:
-        self.session = session
-        self.redis_client = redis_client
-        self.mongodb = mongodb
+        self.repository = repository
 
     async def check(self) -> HealthResponse:
         """Return aggregate application health."""
 
+        postgres_available, redis_available, mongodb_available = await asyncio.gather(
+            self.repository.is_postgres_available(),
+            self.repository.is_redis_available(),
+            self.repository.is_mongodb_available(),
+        )
         services = {
-            "postgres": await self._check_postgres(),
-            "redis": await self._check_redis(),
-            "mongodb": await self._check_mongodb(),
+            "postgres": _build_service_status(postgres_available),
+            "redis": _build_service_status(redis_available),
+            "mongodb": _build_service_status(mongodb_available),
         }
         status = (
             OK_STATUS
@@ -43,26 +39,7 @@ class HealthService:
 
         return HealthResponse(status=status, services=services)
 
-    async def _check_postgres(self) -> HealthServiceStatus:
-        try:
-            await self.session.execute(text("SELECT 1"))
-        except SQLAlchemyError:
-            return HealthServiceStatus(status=ERROR_STATUS)
 
-        return HealthServiceStatus(status=OK_STATUS)
-
-    async def _check_redis(self) -> HealthServiceStatus:
-        try:
-            await self.redis_client.ping()
-        except RedisError:
-            return HealthServiceStatus(status=ERROR_STATUS)
-
-        return HealthServiceStatus(status=OK_STATUS)
-
-    async def _check_mongodb(self) -> HealthServiceStatus:
-        try:
-            await self.mongodb.command("ping")
-        except PyMongoError:
-            return HealthServiceStatus(status=ERROR_STATUS)
-
-        return HealthServiceStatus(status=OK_STATUS)
+def _build_service_status(is_available: bool) -> HealthServiceStatus:
+    status = OK_STATUS if is_available else ERROR_STATUS
+    return HealthServiceStatus(status=status)

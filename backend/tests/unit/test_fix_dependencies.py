@@ -11,8 +11,8 @@ from app.schemas.fix_job import (
     FixScenarioKind,
     FixVerificationScenario,
 )
-from app.services.fix_pipeline import dependencies
-from app.services.fix_pipeline.contracts import (
+from app.services.fix_jobs.pipeline import dependencies
+from app.services.fix_jobs.pipeline.contracts import (
     FixEnvironmentStatus,
     FixTestFramework,
 )

@@ -7,8 +7,8 @@ from typing import cast
 import pytest
 
 from app.models.review_job import ReviewJob
-from app.services.review_pipeline import workspace
-from app.services.review_pipeline.errors import ReviewPipelineError
+from app.services.review_jobs.pipeline import workspace
+from app.services.review_jobs.pipeline.errors import ReviewPipelineError
 
 
 def test_clone_repository_uses_shallow_clone_for_branch_head(

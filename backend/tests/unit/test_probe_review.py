@@ -483,7 +483,7 @@ def test_otp_structural_fusion_keeps_route_service_and_storage_roles() -> None:
         ),
         _chunk(
             job_id=job_id,
-            file_path="backend/app/services/notification_service.py",
+            file_path="backend/app/services/review_jobs/notifications.py",
             chunk_index=3,
             line_start=29,
             content=(
@@ -517,7 +517,7 @@ def test_otp_structural_fusion_keeps_route_service_and_storage_roles() -> None:
         ),
         _chunk(
             job_id=job_id,
-            file_path="backend/app/services/notification_service.py",
+            file_path="backend/app/services/review_jobs/notifications.py",
             chunk_index=6,
             line_start=9,
             content=("def __init__(self):\n    self.otp_repo = OTPRepository()"),
@@ -539,7 +539,7 @@ def test_otp_structural_fusion_keeps_route_service_and_storage_roles() -> None:
         ("backend/app/api/notifications.py", 0),
         ("backend/app/api/notifications.py", 1),
         ("backend/app/api/notifications.py", 2),
-        ("backend/app/services/notification_service.py", 3),
+        ("backend/app/services/review_jobs/notifications.py", 3),
         ("backend/app/repositories/notification_repository.py", 4),
         ("backend/app/models/notification.py", 5),
     }
@@ -996,7 +996,7 @@ async def test_probe_judge_rejects_readme_finding_targets() -> None:
 async def test_full_audit_persists_contextual_otp_claim_with_canonical_key() -> None:
     job_id = uuid4()
     probe_id = "coverage.full_audit.notification_service.0"
-    file_path = "backend/app/services/notification_service.py"
+    file_path = "backend/app/services/review_jobs/notifications.py"
     chunk = _candidate_chunk(
         file_path=file_path,
         line_start=29,

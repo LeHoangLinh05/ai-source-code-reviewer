@@ -12,7 +12,7 @@ from app.repositories.provider_installation_repository import (
     ProviderInstallationRepository,
 )
 from app.repositories.report_repository import ReportRepository
-from app.services.fix_publish_pipeline import FixPublishPipelineService
+from app.services.fix_jobs.publish_pipeline import FixPublishPipelineService
 from app.services.git_provider.github import GitHubProvider
 from app.workers.async_runtime import run_worker_coroutine
 from app.workers.celery_app import celery_app

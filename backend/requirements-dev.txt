@@ -3,5 +3,6 @@
 pytest>=8.2.0
 pytest-asyncio>=0.23.7
 psutil>=5.9.0
+pre-commit>=4.0.0
 types-passlib>=1.7.7
 types-python-jose>=3.5.0

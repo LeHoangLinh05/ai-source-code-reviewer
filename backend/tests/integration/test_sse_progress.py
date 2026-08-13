@@ -9,7 +9,7 @@ import pytest
 from redis.asyncio import Redis
 from redis.asyncio.client import PubSub
 
-from app.services.notification_service import (
+from app.services.review_jobs.notifications import (
     build_job_progress_channel,
     publish_job_progress,
 )

@@ -4,8 +4,8 @@ from uuid import uuid4
 
 import pytest
 
-from app.services import job_queue_service
-from app.services.job_queue_service import JobQueueService
+from app.services.review_jobs import queue as job_queue_service
+from app.services.review_jobs.queue import JobQueueService
 
 
 @pytest.mark.asyncio

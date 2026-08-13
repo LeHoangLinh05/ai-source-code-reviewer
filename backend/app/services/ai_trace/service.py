@@ -5,10 +5,6 @@ from __future__ import annotations
 from typing import Any, cast
 from uuid import UUID
 
-from motor.motor_asyncio import AsyncIOMotorDatabase
-from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from app.ai.review.plan import (
     build_chunk_review_plan,
     expected_chunk_keys_from_plan,
@@ -16,15 +12,17 @@ from app.ai.review.plan import (
     get_smart_review_max_chunks,
 )
 from app.ai.review.source_evidence import SOURCE_TOOL_NAMES
-from app.db.mongodb import (
-    CHUNK_METADATA_COLLECTION,
-    FILE_ANALYSIS_RESULTS_COLLECTION,
-    RAW_STATIC_ANALYSIS_OUTPUTS_COLLECTION,
-    TOOL_CALL_LOGS_COLLECTION,
-)
-from app.models.review_issue import IssueSource, ReviewIssue
+from app.models.review_issue import IssueSource
 from app.models.review_job import ReviewJob
 from app.models.review_report import ReviewReport
+from app.repositories.mongodb_repository import (
+    ChunkMetadataRepository,
+    FileAnalysisResultRepository,
+    RawStaticAnalysisOutputRepository,
+    ToolCallLogRepository,
+)
+from app.repositories.report_repository import ReportRepository
+from app.repositories.review_job_repository import ReviewJobRepository
 from app.schemas.ai_trace import (
     AIToolCallTrace,
     AITraceCoverage,
@@ -48,22 +46,24 @@ class AITraceService:
     def __init__(
         self,
         *,
-        postgres_session: AsyncSession,
-        mongodb_database: AsyncIOMotorDatabase,
+        review_job_repository: ReviewJobRepository,
+        report_repository: ReportRepository,
+        file_analysis_repository: FileAnalysisResultRepository,
+        raw_static_repository: RawStaticAnalysisOutputRepository,
+        tool_call_repository: ToolCallLogRepository,
+        chunk_metadata_repository: ChunkMetadataRepository,
     ) -> None:
-        self.postgres_session = postgres_session
-        self.mongodb_database = mongodb_database
+        self.review_job_repository = review_job_repository
+        self.report_repository = report_repository
+        self.file_analysis_repository = file_analysis_repository
+        self.raw_static_repository = raw_static_repository
+        self.tool_call_repository = tool_call_repository
+        self.chunk_metadata_repository = chunk_metadata_repository
 
     async def get_trace(self, job_id: UUID) -> AITraceResponse:
         """Return the latest AI trace snapshot for a review job."""
 
-        tool_filter = {
-            "job_id": str(job_id),
-            "$or": [{"event_type": "tool"}, {"event_type": {"$exists": False}}],
-        }
-        tool_call_count = await self.mongodb_database[
-            TOOL_CALL_LOGS_COLLECTION
-        ].count_documents(tool_filter)
+        tool_call_count = await self.tool_call_repository.count_tool_events(job_id)
         events = await self._load_trace_events(job_id)
         tool_calls = [event for event in events if event.event_type == "tool"]
         issue_counts = await self._load_issue_counts(job_id)
@@ -109,33 +109,21 @@ class AITraceService:
         )
 
     async def _load_trace_events(self, job_id: UUID) -> list[AIToolCallTrace]:
-        cursor = (
-            self.mongodb_database[TOOL_CALL_LOGS_COLLECTION]
-            .find({"job_id": str(job_id)})
-            .sort([("called_at", 1), ("sequence", 1)])
+        documents = cast(
+            list[dict[str, Any]],
+            await self.tool_call_repository.find_trace_events(job_id),
         )
-        documents = cast(list[dict[str, Any]], await cursor.to_list(length=None))
         return [to_tool_call_trace(document) for document in documents]
 
     async def _load_issue_counts(self, job_id: UUID) -> dict[str, int]:
-        result = await self.postgres_session.execute(
-            select(ReviewIssue.source, func.count(ReviewIssue.id))
-            .where(ReviewIssue.job_id == job_id)
-            .group_by(ReviewIssue.source)
-        )
-        return {str(source.value): int(count) for source, count in result.all()}
+        counts = await self.report_repository.count_issues_by_source(job_id)
+        return {source.value: count for source, count in counts.items()}
 
     async def _load_job(self, job_id: UUID) -> ReviewJob | None:
-        result = await self.postgres_session.execute(
-            select(ReviewJob).where(ReviewJob.id == job_id)
-        )
-        return result.scalar_one_or_none()
+        return await self.review_job_repository.get_by_id(job_id)
 
     async def _load_report(self, job_id: UUID) -> ReviewReport | None:
-        result = await self.postgres_session.execute(
-            select(ReviewReport).where(ReviewReport.job_id == job_id)
-        )
-        return result.scalar_one_or_none()
+        return await self.report_repository.get_report_by_job_id(job_id)
 
     async def _load_coverage(
         self,
@@ -145,32 +133,23 @@ class AITraceService:
         job: ReviewJob | None,
         report: ReviewReport | None,
     ) -> AITraceCoverage:
-        job_filter = {"job_id": str(job_id)}
-        structure_document = await self.mongodb_database[
-            FILE_ANALYSIS_RESULTS_COLLECTION
-        ].find_one(job_filter, sort=[("analyzed_at", -1)])
+        structure_document = await self.file_analysis_repository.find_latest_by_job_id(
+            job_id
+        )
         static_documents = cast(
             list[dict[str, Any]],
-            await self.mongodb_database[RAW_STATIC_ANALYSIS_OUTPUTS_COLLECTION]
-            .find(job_filter)
-            .to_list(length=None),
+            await self.raw_static_repository.find_by_job_id(job_id),
         )
         read_chunk_documents = cast(
             list[dict[str, Any]],
-            await self.mongodb_database[TOOL_CALL_LOGS_COLLECTION]
-            .find(
-                {
-                    **job_filter,
-                    "tool_name": {"$in": sorted(SOURCE_TOOL_NAMES)},
-                }
-            )
-            .to_list(length=None),
+            await self.tool_call_repository.find_source_reads(
+                job_id=job_id,
+                tool_names=SOURCE_TOOL_NAMES,
+            ),
         )
         chunk_documents = cast(
             list[dict[str, Any]],
-            await self.mongodb_database[CHUNK_METADATA_COLLECTION]
-            .find(job_filter)
-            .to_list(length=None),
+            await self.chunk_metadata_repository.find_by_job_id(job_id),
         )
 
         total_reviewable_files, total_reviewable_lines = _structure_coverage(

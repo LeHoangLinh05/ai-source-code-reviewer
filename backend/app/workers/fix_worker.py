@@ -8,7 +8,7 @@ from app.db.postgres import AsyncSessionLocal, close_postgres_engine
 from app.db.redis import close_redis_client
 from app.repositories.fix_job_repository import FixJobRepository
 from app.repositories.report_repository import ReportRepository
-from app.services.fix_pipeline.service import FixPipelineService
+from app.services.fix_jobs.pipeline.service import FixPipelineService
 from app.workers.async_runtime import run_worker_coroutine
 from app.workers.celery_app import celery_app
 

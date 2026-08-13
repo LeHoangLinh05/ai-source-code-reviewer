@@ -14,15 +14,15 @@ from app.schemas.fix_job import (
     FixScenarioStatus,
     FixVerificationScenario,
 )
-from app.services.fix_pipeline import scenario_testing
-from app.services.fix_pipeline.contracts import (
+from app.services.fix_jobs.pipeline import scenario_testing
+from app.services.fix_jobs.pipeline.contracts import (
     FixEnvironmentStatus,
     FixGeneratedTest,
     FixIssueSpec,
     FixProjectEnvironment,
     FixTestFramework,
 )
-from app.services.fix_pipeline.errors import FixPipelineError
+from app.services.fix_jobs.pipeline.errors import FixPipelineError
 
 
 class _HostTestExecutor:

@@ -10,7 +10,7 @@ import pytest
 from app.core.config import Settings
 from app.models.review_job import ReviewJob, ReviewJobStatus
 from app.repositories.review_job_repository import ReviewJobRepository
-from app.services.sandbox_cleanup_service import SandboxCleanupService
+from app.services.sandbox.service import SandboxCleanupService
 
 
 class FakeReviewJobRepository:

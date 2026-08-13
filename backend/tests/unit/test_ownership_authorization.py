@@ -22,12 +22,12 @@ from app.routers.fix_jobs import stream_fix_job_progress_route
 from app.routers.notifications import stream_review_job_progress
 from app.routers.review_jobs import get_review_job_ai_trace
 from app.services.ai_trace.service import AITraceService
-from app.services.fix_job_service import FixJobService
-from app.services.job_queue_service import JobQueueService
-from app.services.job_service import ReviewJobService
+from app.services.fix_jobs.service import FixJobService
 from app.services.repo_summary.query_service import RepoSummaryQueryService
 from app.services.reporting.service import ReportService
 from app.services.repository_service import RepositoryService
+from app.services.review_jobs.queue import JobQueueService
+from app.services.review_jobs.service import ReviewJobService
 
 
 def build_users() -> tuple[SimpleNamespace, SimpleNamespace]:

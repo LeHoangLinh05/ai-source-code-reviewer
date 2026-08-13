@@ -1,0 +1,23 @@
+repos:
+  - repo: local
+    hooks:
+      - id: ruff-check
+        name: ruff check
+        entry: python scripts/run_backend_check.py ruff-check
+        language: system
+        pass_filenames: false
+      - id: ruff-format-check
+        name: ruff format check
+        entry: python scripts/run_backend_check.py ruff-format
+        language: system
+        pass_filenames: false
+      - id: mypy
+        name: mypy
+        entry: python scripts/run_backend_check.py mypy
+        language: system
+        pass_filenames: false
+      - id: pytest
+        name: pytest
+        entry: python scripts/run_backend_check.py pytest
+        language: system
+        pass_filenames: false
