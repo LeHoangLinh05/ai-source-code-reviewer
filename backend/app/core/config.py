@@ -8,6 +8,7 @@ from typing import Annotated, Literal
 
 from pydantic import AliasChoices, Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+from sqlalchemy.engine import make_url
 
 BACKEND_DIR = Path(__file__).resolve().parents[2]
 PROJECT_ROOT = BACKEND_DIR.parent
@@ -16,6 +17,15 @@ GIT_EXECUTABLE_NAME = "git"
 GIT_TERMINAL_PROMPT_ENV = "GIT_TERMINAL_PROMPT"
 DISABLED_GIT_TERMINAL_PROMPT = "0"
 MIN_JWT_SECRET_LENGTH = 32
+POSTGRES_ASYNC_DRIVER = "postgresql+psycopg"
+
+
+def normalize_postgres_url(postgres_url: str) -> str:
+    """Use psycopg's async driver while preserving provider URL options."""
+
+    parsed_url = make_url(postgres_url)
+    normalized_url = parsed_url.set(drivername=POSTGRES_ASYNC_DRIVER)
+    return normalized_url.render_as_string(hide_password=False)
 
 
 class Settings(BaseSettings):
@@ -50,7 +60,7 @@ class Settings(BaseSettings):
     postgres_user: str = "repoguard"
     postgres_password: SecretStr = SecretStr("")
     postgres_url: str = Field(
-        default="postgresql+asyncpg://repoguard@localhost:5432/repoguard_ai",
+        default="postgresql+psycopg://repoguard@localhost:5432/repoguard_ai",
         validation_alias=AliasChoices("POSTGRES_URL", "DATABASE_URL"),
     )
 
@@ -177,6 +187,13 @@ class Settings(BaseSettings):
             return False
 
         return value
+
+    @field_validator("postgres_url")
+    @classmethod
+    def normalize_postgres_driver(cls, value: str) -> str:
+        """Normalize provider URLs to SQLAlchemy's async psycopg dialect."""
+
+        return normalize_postgres_url(value)
 
     @field_validator("cors_allowed_origins", mode="before")
     @classmethod
