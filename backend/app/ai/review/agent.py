@@ -163,7 +163,7 @@ async def _build_report_context(
         }
         for issue in issues[:20]
     ]
-    return json.dumps(
+    report_context = json.dumps(
         {
             "total_issues": aggregate.total_findings,
             "total_occurrences": aggregate.total_occurrences,
@@ -175,6 +175,8 @@ async def _build_report_context(
         },
         ensure_ascii=False,
     )
+    await postgres_session.commit()
+    return report_context
 
 
 def _persisted_issue_priority(issue: ReviewIssue) -> tuple[int, int]:

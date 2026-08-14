@@ -19,6 +19,7 @@ import { z } from "zod";
 
 import { StatusBadge } from "@/components/reviews/review-badges";
 import { Button } from "@/components/ui/button";
+import { ConfirmationDialog } from "@/components/ui/confirmation-dialog";
 import {
   Card,
   CardContent,
@@ -79,6 +80,8 @@ export default function RepositoryDetailPage() {
     (state) => state.repositories,
   );
   const [isDeleting, setIsDeleting] = useState(false);
+  const [isDeleteConfirmationOpen, setIsDeleteConfirmationOpen] =
+    useState(false);
   const [isStartReviewOpen, setIsStartReviewOpen] = useState(false);
   const [isStartingReview, setIsStartingReview] = useState(false);
   const [areReviewJobsLoading, setAreReviewJobsLoading] = useState(false);
@@ -244,6 +247,7 @@ export default function RepositoryDetailPage() {
     try {
       await deleteRepository(selectedRepository.id);
       dispatch(removeRepository(selectedRepository.id));
+      setIsDeleteConfirmationOpen(false);
       toast.success("Repository deleted.");
       router.replace("/repositories");
     } catch (requestError) {
@@ -316,7 +320,7 @@ export default function RepositoryDetailPage() {
           {selectedRepository ? (
             <Button
               disabled={isDeleting || isMutating}
-              onClick={() => void handleDeleteRepository()}
+              onClick={() => setIsDeleteConfirmationOpen(true)}
               variant="destructive"
             >
               <Trash2 aria-hidden="true" />
@@ -436,6 +440,19 @@ export default function RepositoryDetailPage() {
           </Card>
         </>
       ) : null}
+
+      <ConfirmationDialog
+        description={
+          selectedRepository
+            ? `This permanently deletes “${selectedRepository.name}” and its review history. This action cannot be undone.`
+            : ""
+        }
+        isPending={isDeleting}
+        onCancel={() => setIsDeleteConfirmationOpen(false)}
+        onConfirm={() => void handleDeleteRepository()}
+        open={isDeleteConfirmationOpen && selectedRepository !== null}
+        title="Delete repository?"
+      />
 
       {isStartReviewOpen && selectedRepository ? (
         <div

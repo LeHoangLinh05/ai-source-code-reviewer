@@ -4,12 +4,24 @@ from __future__ import annotations
 
 import asyncio
 import atexit
+import sys
 from collections.abc import Coroutine
 from contextvars import copy_context
 from dataclasses import dataclass
 from typing import Any, TypeVar
 
 ResultT = TypeVar("ResultT")
+WINDOWS_PLATFORM = "win32"
+IS_WINDOWS = sys.platform == WINDOWS_PLATFORM
+
+
+def create_worker_event_loop() -> asyncio.AbstractEventLoop:
+    """Create an event loop compatible with async Psycopg on Windows."""
+
+    if IS_WINDOWS:
+        return asyncio.SelectorEventLoop()
+
+    return asyncio.new_event_loop()
 
 
 @dataclass(slots=True)
@@ -22,7 +34,7 @@ class WorkerAsyncRuntime:
         """Run a coroutine with a fresh context on the persistent loop."""
 
         if self.runner is None:
-            self.runner = asyncio.Runner()
+            self.runner = asyncio.Runner(loop_factory=create_worker_event_loop)
 
         return self.runner.run(coroutine, context=copy_context())
 

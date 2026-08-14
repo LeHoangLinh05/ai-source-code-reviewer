@@ -2,11 +2,12 @@
 
 import re
 
-MAX_EMAIL_LENGTH = 255
+MAX_EMAIL_LENGTH = 254
+MAX_EMAIL_LOCAL_PART_LENGTH = 64
+MAX_EMAIL_DOMAIN_LENGTH = 253
+MAX_EMAIL_DOMAIN_LABEL_LENGTH = 63
 MAX_PASSWORD_LENGTH = 128
 MIN_PASSWORD_LENGTH = 8
-LEGACY_TEST_LOGIN_EMAIL = "user1@gmail.com"
-LEGACY_TEST_LOGIN_PASSWORD = "12345678"  # noqa: S105 - Requested test account.
 EMAIL_PATTERN = re.compile(
     r"^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@"
     r"[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+$"
@@ -28,10 +29,20 @@ def validate_email_address(email: str) -> str:
         raise ValueError("email must be a valid address")
 
     local_part, domain = normalized_email.split("@", 1)
+    if len(local_part) > MAX_EMAIL_LOCAL_PART_LENGTH:
+        raise ValueError("email local part is too long")
+
     if local_part.startswith(".") or local_part.endswith(".") or ".." in local_part:
         raise ValueError("email local part is invalid")
 
-    if any(label.startswith("-") or label.endswith("-") for label in domain.split(".")):
+    if len(domain) > MAX_EMAIL_DOMAIN_LENGTH:
+        raise ValueError("email domain is too long")
+
+    domain_labels = domain.split(".")
+    if any(len(label) > MAX_EMAIL_DOMAIN_LABEL_LENGTH for label in domain_labels):
+        raise ValueError("email domain label is too long")
+
+    if any(label.startswith("-") or label.endswith("-") for label in domain_labels):
         raise ValueError("email domain is invalid")
 
     return normalized_email
@@ -65,9 +76,3 @@ def validate_strong_password(password: str) -> str:
         raise ValueError("password must contain a special character")
 
     return password
-
-
-def is_legacy_test_login_credentials(email: str, password: str) -> bool:
-    """Return whether credentials match the temporary project test account."""
-
-    return email == LEGACY_TEST_LOGIN_EMAIL and password == LEGACY_TEST_LOGIN_PASSWORD

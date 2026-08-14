@@ -3,14 +3,13 @@
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.models.user import UserRole
 from app.schemas.validation import (
     MAX_EMAIL_LENGTH,
     MAX_PASSWORD_LENGTH,
     MIN_PASSWORD_LENGTH,
-    is_legacy_test_login_credentials,
     validate_email_address,
     validate_strong_password,
 )
@@ -53,17 +52,6 @@ class LoginRequest(BaseModel):
         """Normalize and validate email before credential lookup."""
 
         return validate_email_address(email)
-
-    @field_validator("password")
-    @classmethod
-    def validate_password_strength(cls, password: str, info: ValidationInfo) -> str:
-        """Validate submitted passwords before credential lookup."""
-
-        email = info.data.get("email")
-        if isinstance(email, str) and is_legacy_test_login_credentials(email, password):
-            return password
-
-        return validate_strong_password(password)
 
 
 class RefreshTokenRequest(BaseModel):

@@ -3,7 +3,7 @@
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.repository import Repository, RepositoryPlatform
@@ -44,6 +44,20 @@ class RepositoryRepository:
         """Return a repository by primary key."""
 
         return await self.session.get(Repository, repository_id)
+
+    async def get_by_name_for_user(
+        self,
+        user_id: UUID,
+        name: str,
+    ) -> Repository | None:
+        """Return a repository matching a user's display name."""
+
+        statement = select(Repository).where(
+            Repository.user_id == user_id,
+            func.lower(Repository.name) == name.lower(),
+        )
+        result = await self.session.execute(statement)
+        return result.scalar_one_or_none()
 
     async def list_for_user(self, user_id: UUID) -> list[Repository]:
         """Return repositories owned by a user, newest first."""

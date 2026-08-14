@@ -3,7 +3,8 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useForm } from "react-hook-form";
+import { useEffect } from "react";
+import { useForm, useWatch } from "react-hook-form";
 import { toast } from "sonner";
 import { z } from "zod";
 
@@ -27,7 +28,7 @@ const registerSchema = z
   .object({
     email: emailSchema,
     password: strongPasswordSchema,
-    confirmPassword: strongPasswordSchema,
+    confirmPassword: z.string().min(1, "Confirm your password."),
   })
   .refine((values) => values.password === values.confirmPassword, {
     message: "Passwords do not match.",
@@ -47,8 +48,16 @@ export function RegisterForm() {
       confirmPassword: "",
     },
   });
+  const password = useWatch({ control: form.control, name: "password" });
+
+  useEffect(() => {
+    if (form.getValues("confirmPassword")) {
+      void form.trigger("confirmPassword");
+    }
+  }, [form, password]);
 
   async function onSubmit(values: RegisterFormValues) {
+    form.clearErrors("email");
     form.clearErrors("root");
 
     try {
@@ -64,17 +73,25 @@ export function RegisterForm() {
     } catch (error) {
       const errorMessage = getApiErrorMessage(error, "Unable to create account.");
 
-      form.setError("root", {
-        message: errorMessage,
-        type: "server",
-      });
+      if (errorMessage === "Email already exists") {
+        form.setError("email", { message: errorMessage, type: "server" });
+      } else {
+        form.setError("root", {
+          message: errorMessage,
+          type: "server",
+        });
+      }
       toast.error(errorMessage);
     }
   }
 
   return (
     <Form {...form}>
-      <form className="space-y-5" onSubmit={form.handleSubmit(onSubmit)}>
+      <form
+        className="space-y-5"
+        noValidate
+        onSubmit={form.handleSubmit(onSubmit)}
+      >
         <FormField
           control={form.control}
           name="email"

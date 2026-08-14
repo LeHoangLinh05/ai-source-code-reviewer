@@ -9,8 +9,6 @@ from app.schemas.user import ChangePasswordRequest
 VALID_EMAIL = "User.Example+test@example.com"
 NORMALIZED_EMAIL = "user.example+test@example.com"
 VALID_PASSWORD = "Valid@123"
-LEGACY_TEST_LOGIN_EMAIL = "user1@gmail.com"
-LEGACY_TEST_LOGIN_PASSWORD = "12345678"
 
 
 @pytest.mark.parametrize(
@@ -27,6 +25,8 @@ LEGACY_TEST_LOGIN_PASSWORD = "12345678"
         "<script>alert('XSS')</script>",
         "user@-example.com",
         "user@example-.com",
+        f"{'a' * 65}@example.com",
+        f"user@{'a' * 64}.com",
         "a" * 246 + "@example.com",
     ],
 )
@@ -73,19 +73,10 @@ def test_register_rejects_weak_or_unsafe_password(password: str) -> None:
 
 
 @pytest.mark.parametrize("password", ["12345678", "Valid @123", "Mật khẩu😀123"])
-def test_login_rejects_weak_or_unsafe_password(password: str) -> None:
-    with pytest.raises(ValidationError):
-        LoginRequest(email=VALID_EMAIL, password=password)
+def test_login_accepts_existing_password_formats(password: str) -> None:
+    payload = LoginRequest(email=VALID_EMAIL, password=password)
 
-
-def test_login_allows_legacy_test_account_password() -> None:
-    payload = LoginRequest(
-        email=LEGACY_TEST_LOGIN_EMAIL,
-        password=LEGACY_TEST_LOGIN_PASSWORD,
-    )
-
-    assert payload.email == LEGACY_TEST_LOGIN_EMAIL
-    assert payload.password == LEGACY_TEST_LOGIN_PASSWORD
+    assert payload.password == password
 
 
 def test_auth_schemas_normalize_valid_email() -> None:

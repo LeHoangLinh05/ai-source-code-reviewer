@@ -23,40 +23,17 @@ import { getApiErrorMessage } from "@/lib/api-error";
 import { publishAuthEvent } from "@/lib/auth-events";
 import {
   emailSchema,
-  isLegacyTestLoginCredentials,
-  MAX_PASSWORD_LENGTH,
-  strongPasswordSchema,
+  loginPasswordSchema,
 } from "@/lib/auth-validation";
 import { setSessionMarker } from "@/lib/session-marker";
 import { useAppDispatch } from "@/store/hooks";
 import { setCredentials } from "@/store/slices/authSlice";
 import type { AuthTokenResponse, LoginPayload } from "@/types/auth";
 
-const loginSchema = z
-  .object({
-    email: emailSchema,
-    password: z
-      .string()
-      .min(1, "Password is required.")
-      .max(MAX_PASSWORD_LENGTH, "Password is too long."),
-  })
-  .superRefine((values, context) => {
-    if (isLegacyTestLoginCredentials(values.email, values.password)) {
-      return;
-    }
-
-    const result = strongPasswordSchema.safeParse(values.password);
-    if (result.success) {
-      return;
-    }
-
-    for (const issue of result.error.issues) {
-      context.addIssue({
-        ...issue,
-        path: ["password"],
-      });
-    }
-  });
+const loginSchema = z.object({
+  email: emailSchema,
+  password: loginPasswordSchema,
+});
 
 type LoginFormValues = z.infer<typeof loginSchema>;
 
@@ -105,7 +82,11 @@ export function LoginForm() {
 
   return (
     <Form {...form}>
-      <form className="space-y-5" onSubmit={form.handleSubmit(onSubmit)}>
+      <form
+        className="space-y-5"
+        noValidate
+        onSubmit={form.handleSubmit(onSubmit)}
+      >
         <FormField
           control={form.control}
           name="email"

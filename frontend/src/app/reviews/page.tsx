@@ -7,6 +7,7 @@ import { toast } from "sonner";
 
 import { StatusBadge } from "@/components/reviews/review-badges";
 import { Button } from "@/components/ui/button";
+import { ConfirmationDialog } from "@/components/ui/confirmation-dialog";
 import {
   Card,
   CardContent,
@@ -36,6 +37,8 @@ export default function ReviewsPage() {
     (state) => state.jobs,
   );
   const [deletingJobId, setDeletingJobId] = useState<string | null>(null);
+  const [jobPendingDeletion, setJobPendingDeletion] =
+    useState<ReviewJob | null>(null);
   const [currentPage, setCurrentPage] = useState(1);
   const pagedItems = useMemo(
     () =>
@@ -104,6 +107,7 @@ export default function ReviewsPage() {
     try {
       await deleteReviewJob(job.id);
       dispatch(removeJob(job.id));
+      setJobPendingDeletion(null);
       toast.success("Review job deleted.");
     } catch (requestError) {
       toast.error(getApiErrorMessage(requestError, "Unable to delete job."));
@@ -144,7 +148,7 @@ export default function ReviewsPage() {
                 deletingJobId={deletingJobId}
                 isMutating={isMutating}
                 jobs={pagedItems}
-                onDeleteJob={handleDeleteJob}
+                onRequestDelete={setJobPendingDeletion}
               />
               <PaginationControls
                 currentPage={currentPage}
@@ -156,6 +160,23 @@ export default function ReviewsPage() {
           ) : null}
         </CardContent>
       </Card>
+
+      <ConfirmationDialog
+        description={
+          jobPendingDeletion
+            ? `This permanently deletes the review for “${jobPendingDeletion.repository_name ?? jobPendingDeletion.repository_id}” and its report. This action cannot be undone.`
+            : ""
+        }
+        isPending={deletingJobId !== null}
+        onCancel={() => setJobPendingDeletion(null)}
+        onConfirm={() => {
+          if (jobPendingDeletion) {
+            void handleDeleteJob(jobPendingDeletion);
+          }
+        }}
+        open={jobPendingDeletion !== null}
+        title="Delete review job?"
+      />
     </>
   );
 }
@@ -200,14 +221,14 @@ type JobsTableProps = {
   deletingJobId: string | null;
   isMutating: boolean;
   jobs: ReviewJob[];
-  onDeleteJob: (job: ReviewJob) => Promise<void>;
+  onRequestDelete: (job: ReviewJob) => void;
 };
 
 function JobsTable({
   deletingJobId,
   isMutating,
   jobs,
-  onDeleteJob,
+  onRequestDelete,
 }: JobsTableProps) {
   return (
     <div className="overflow-x-auto border-t border-border">
@@ -249,7 +270,7 @@ function JobsTable({
                   aria-label={`Delete ${job.repository_name ?? job.id}`}
                   className="text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
                   disabled={isMutating || deletingJobId === job.id}
-                  onClick={() => void onDeleteJob(job)}
+                  onClick={() => onRequestDelete(job)}
                   size="icon"
                   title="Delete job"
                   variant="ghost"

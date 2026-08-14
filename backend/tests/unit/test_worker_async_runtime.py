@@ -2,7 +2,9 @@
 
 import asyncio
 
+from app.workers import async_runtime
 from app.workers.async_runtime import (
+    WorkerAsyncRuntime,
     close_worker_async_runtime,
     run_worker_coroutine,
 )
@@ -37,3 +39,16 @@ def test_worker_runtime_creates_new_loop_after_shutdown() -> None:
     assert first_loop is not second_loop
     assert first_loop.is_closed()
     assert second_loop.is_closed()
+
+
+def test_worker_runtime_uses_selector_loop_on_windows(monkeypatch) -> None:
+    monkeypatch.setattr(async_runtime, "IS_WINDOWS", True)
+    runtime = WorkerAsyncRuntime()
+
+    try:
+        loop = runtime.run(_running_loop())
+    finally:
+        runtime.close()
+
+    assert isinstance(loop, asyncio.SelectorEventLoop)
+    assert loop.is_closed()

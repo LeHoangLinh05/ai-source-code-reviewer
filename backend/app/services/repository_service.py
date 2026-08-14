@@ -1,9 +1,14 @@
 """Repository management business workflows."""
 
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 from uuid import UUID
 
-from app.core.exceptions import AuthorizationError, BadRequestError, NotFoundError
+from app.core.exceptions import (
+    AuthorizationError,
+    BadRequestError,
+    ConflictError,
+    NotFoundError,
+)
 from app.models.repository import Repository, RepositoryPlatform
 from app.models.user import User
 from app.repositories.repository_repository import RepositoryRepository
@@ -13,6 +18,7 @@ ALLOWED_REPOSITORY_HOSTS = {
     "github.com": RepositoryPlatform.GITHUB,
     "gitlab.com": RepositoryPlatform.GITLAB,
 }
+MIN_REPOSITORY_PATH_SEGMENTS = 2
 
 
 class RepositoryService:
@@ -27,6 +33,13 @@ class RepositoryService:
         current_user: User,
     ) -> Repository:
         """Register a repository for the current user."""
+
+        existing_repository = await self.repository_repository.get_by_name_for_user(
+            current_user.id,
+            payload.name,
+        )
+        if existing_repository is not None:
+            raise ConflictError("A repository with this name already exists")
 
         platform = self._detect_platform(payload.url)
         try:
@@ -76,15 +89,41 @@ class RepositoryService:
             raise
 
     def _detect_platform(self, repository_url: str) -> RepositoryPlatform:
-        parsed_url = urlparse(repository_url)
-        if parsed_url.scheme not in {"http", "https"}:
-            raise BadRequestError("Repository URL must use http or https")
+        try:
+            parsed_url = urlparse(repository_url)
+            hostname = parsed_url.hostname.lower() if parsed_url.hostname else None
+            has_credentials = bool(parsed_url.username or parsed_url.password)
+            has_custom_port = parsed_url.port is not None
+        except ValueError as error:
+            raise BadRequestError("Repository URL is invalid") from error
 
-        hostname = parsed_url.hostname.lower() if parsed_url.hostname else None
+        if parsed_url.scheme != "https":
+            raise BadRequestError("Repository URL must use https")
+
+        if has_credentials:
+            raise BadRequestError("Repository URL must not contain credentials")
+
+        if has_custom_port or parsed_url.query or parsed_url.fragment:
+            raise BadRequestError(
+                "Repository URL must not contain a port, query, or fragment"
+            )
+
         if hostname not in ALLOWED_REPOSITORY_HOSTS:
             raise BadRequestError(
                 "Repository URL must point to github.com or gitlab.com"
             )
+
+        decoded_path = unquote(parsed_url.path)
+        if decoded_path != parsed_url.path:
+            raise BadRequestError("Repository URL path must not be encoded")
+
+        path_segments = [segment for segment in decoded_path.split("/") if segment]
+        if (
+            len(path_segments) < MIN_REPOSITORY_PATH_SEGMENTS
+            or any(segment in {".", ".."} for segment in path_segments)
+            or path_segments[-1].removesuffix(".git") == ""
+        ):
+            raise BadRequestError("Repository URL must include an owner and repository")
 
         return ALLOWED_REPOSITORY_HOSTS[hostname]
 

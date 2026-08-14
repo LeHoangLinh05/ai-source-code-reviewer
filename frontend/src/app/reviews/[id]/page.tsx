@@ -21,6 +21,7 @@ import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
+import { ConfirmationDialog } from "@/components/ui/confirmation-dialog";
 import {
   Card,
   CardContent,
@@ -75,6 +76,8 @@ export default function ReviewJobDetailPage() {
   const [aiTrace, setAiTrace] = useState<AITrace | null>(null);
   const [aiTraceError, setAiTraceError] = useState<string | null>(null);
   const [isCanceling, setIsCanceling] = useState(false);
+  const [isCancelConfirmationOpen, setIsCancelConfirmationOpen] =
+    useState(false);
   const [nowMs, setNowMs] = useState(() => Date.now());
 
   const loadJob = useCallback(async (isBackground = false) => {
@@ -180,6 +183,7 @@ export default function ReviewJobDetailPage() {
       await deleteReviewJob(currentJob.id);
       dispatch(removeJob(currentJob.id));
       dispatch(setCurrentJob(null));
+      setIsCancelConfirmationOpen(false);
       toast.success("Review job canceled.");
       router.push("/reviews");
     } catch (requestError) {
@@ -203,7 +207,7 @@ export default function ReviewJobDetailPage() {
           {currentJob && !TERMINAL_STATUSES.has(currentJob.status) ? (
             <Button
               disabled={isMutating || isCanceling}
-              onClick={() => void handleCancelJob()}
+              onClick={() => setIsCancelConfirmationOpen(true)}
               variant="destructive"
             >
               <Trash2 aria-hidden="true" />
@@ -214,6 +218,17 @@ export default function ReviewJobDetailPage() {
       </div>
 
       <ReviewWorkspaceTabs activeTab="overview" jobId={jobId} />
+
+      <ConfirmationDialog
+        confirmLabel="Cancel review"
+        description="This stops the active review and permanently deletes its current data. This action cannot be undone."
+        isPending={isCanceling}
+        onCancel={() => setIsCancelConfirmationOpen(false)}
+        onConfirm={() => void handleCancelJob()}
+        open={isCancelConfirmationOpen}
+        pendingLabel="Canceling..."
+        title="Cancel this review?"
+      />
 
       {isLoading && !currentJob ? <ReviewJobSkeleton /> : null}
 

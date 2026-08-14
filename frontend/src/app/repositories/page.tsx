@@ -15,6 +15,7 @@ import { toast } from "sonner";
 import { z } from "zod";
 
 import { Button } from "@/components/ui/button";
+import { ConfirmationDialog } from "@/components/ui/confirmation-dialog";
 import {
   Card,
   CardContent,
@@ -33,6 +34,7 @@ import {
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { getApiErrorMessage } from "@/lib/api-error";
+import { isSupportedRepositoryUrl } from "@/lib/repository-validation";
 import {
   createRepository,
   deleteRepository,
@@ -50,16 +52,24 @@ import {
 import type { Repository } from "@/types/repository";
 
 const repositorySchema = z.object({
-  branch: z.string().trim().min(1, "Branch is required.").max(100),
-  name: z.string().trim().min(1, "Name is required.").max(255),
+  branch: z
+    .string()
+    .trim()
+    .min(1, "Branch is required.")
+    .max(100, "Branch must be 100 characters or less."),
+  name: z
+    .string()
+    .trim()
+    .min(1, "Name is required.")
+    .max(255, "Name must be 255 characters or less."),
   url: z
     .string()
     .trim()
     .url("Enter a valid repository URL.")
-    .refine((value) => {
-      const hostname = new URL(value).hostname.toLowerCase();
-      return hostname === "github.com" || hostname === "gitlab.com";
-    }, "Only github.com and gitlab.com URLs are accepted."),
+    .refine(
+      isSupportedRepositoryUrl,
+      "Enter a full HTTPS GitHub or GitLab repository URL.",
+    ),
 });
 
 type RepositoryFormValues = z.infer<typeof repositorySchema>;
@@ -76,6 +86,8 @@ export default function RepositoriesPage() {
   const [deletingRepositoryId, setDeletingRepositoryId] = useState<string | null>(
     null,
   );
+  const [repositoryPendingDeletion, setRepositoryPendingDeletion] =
+    useState<Repository | null>(null);
   const [currentPage, setCurrentPage] = useState(1);
   const pagedItems = useMemo(
     () =>
@@ -86,6 +98,7 @@ export default function RepositoriesPage() {
     [currentPage, items],
   );
   const form = useForm<RepositoryFormValues>({
+    mode: "onChange",
     resolver: zodResolver(repositorySchema),
     defaultValues: {
       branch: "main",
@@ -126,7 +139,21 @@ export default function RepositoriesPage() {
 
   async function handleCreateRepository(values: RepositoryFormValues) {
     dispatch(setRepositoryMutating(true));
+    form.clearErrors("name");
     form.clearErrors("root");
+
+    const hasDuplicateName = items.some(
+      (repository) =>
+        repository.name.toLocaleLowerCase() === values.name.toLocaleLowerCase(),
+    );
+    if (hasDuplicateName) {
+      form.setError("name", {
+        message: "A repository with this name already exists.",
+        type: "duplicate",
+      });
+      dispatch(setRepositoryMutating(false));
+      return;
+    }
 
     try {
       const repository = await createRepository({
@@ -144,7 +171,11 @@ export default function RepositoriesPage() {
         requestError,
         "Unable to add repository.",
       );
-      form.setError("root", { message, type: "server" });
+      if (message === "A repository with this name already exists") {
+        form.setError("name", { message, type: "server" });
+      } else {
+        form.setError("root", { message, type: "server" });
+      }
       toast.error(message);
     } finally {
       dispatch(setRepositoryMutating(false));
@@ -157,6 +188,7 @@ export default function RepositoriesPage() {
     try {
       await deleteRepository(repository.id);
       dispatch(removeRepository(repository.id));
+      setRepositoryPendingDeletion(null);
       toast.success("Repository deleted.");
     } catch (requestError) {
       toast.error(
@@ -199,7 +231,7 @@ export default function RepositoriesPage() {
             <>
               <RepositoryTable
                 deletingRepositoryId={deletingRepositoryId}
-                onDeleteRepository={handleDeleteRepository}
+                onRequestDelete={setRepositoryPendingDeletion}
                 repositories={pagedItems}
               />
               <PaginationControls
@@ -241,6 +273,7 @@ export default function RepositoriesPage() {
               <Form {...form}>
                 <form
                   className="space-y-5"
+                  noValidate
                   onSubmit={form.handleSubmit(handleCreateRepository)}
                 >
                   <FormField
@@ -314,7 +347,10 @@ export default function RepositoriesPage() {
                     >
                       Cancel
                     </Button>
-                    <Button disabled={isMutating} type="submit">
+                    <Button
+                      disabled={isMutating || !form.formState.isValid}
+                      type="submit"
+                    >
                       {isMutating ? "Adding..." : "Add Repository"}
                     </Button>
                   </div>
@@ -324,6 +360,23 @@ export default function RepositoriesPage() {
           </Card>
         </div>
       ) : null}
+
+      <ConfirmationDialog
+        description={
+          repositoryPendingDeletion
+            ? `This permanently deletes “${repositoryPendingDeletion.name}” and its review history. This action cannot be undone.`
+            : ""
+        }
+        isPending={deletingRepositoryId !== null}
+        onCancel={() => setRepositoryPendingDeletion(null)}
+        onConfirm={() => {
+          if (repositoryPendingDeletion) {
+            void handleDeleteRepository(repositoryPendingDeletion);
+          }
+        }}
+        open={repositoryPendingDeletion !== null}
+        title="Delete repository?"
+      />
     </>
   );
 }
@@ -370,13 +423,13 @@ function EmptyRepositoryState({ onAdd }: EmptyRepositoryStateProps) {
 
 type RepositoryTableProps = {
   deletingRepositoryId: string | null;
-  onDeleteRepository: (repository: Repository) => Promise<void>;
+  onRequestDelete: (repository: Repository) => void;
   repositories: Repository[];
 };
 
 function RepositoryTable({
   deletingRepositoryId,
-  onDeleteRepository,
+  onRequestDelete,
   repositories,
 }: RepositoryTableProps) {
   const router = useRouter();
@@ -433,7 +486,7 @@ function RepositoryTable({
                   disabled={deletingRepositoryId === repository.id}
                   onClick={(event) => {
                     event.stopPropagation();
-                    void onDeleteRepository(repository);
+                    onRequestDelete(repository);
                   }}
                   size="icon"
                   variant="ghost"

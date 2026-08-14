@@ -12,7 +12,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { useForm, type UseFormReturn } from "react-hook-form";
+import { useForm, useWatch, type UseFormReturn } from "react-hook-form";
 import { toast } from "sonner";
 import { z } from "zod";
 
@@ -67,6 +67,10 @@ const passwordSchema = z
   .refine((values) => values.newPassword === values.confirmPassword, {
     message: "Passwords do not match.",
     path: ["confirmPassword"],
+  })
+  .refine((values) => values.newPassword !== values.currentPassword, {
+    message: "New password must be different from the current password.",
+    path: ["newPassword"],
   });
 
 type ProfileFormValues = z.infer<typeof profileSchema>;
@@ -157,6 +161,7 @@ export default function SettingsPage() {
   }
 
   async function handleChangePassword(values: PasswordFormValues) {
+    passwordForm.clearErrors(["currentPassword", "newPassword"]);
     passwordForm.clearErrors("root");
 
     try {
@@ -171,7 +176,16 @@ export default function SettingsPage() {
         requestError,
         "Unable to update password.",
       );
-      passwordForm.setError("root", { message, type: "server" });
+      if (message === "Current password is incorrect") {
+        passwordForm.setError("currentPassword", {
+          message,
+          type: "server",
+        });
+      } else if (message === "New password must be different") {
+        passwordForm.setError("newPassword", { message, type: "server" });
+      } else {
+        passwordForm.setError("root", { message, type: "server" });
+      }
       toast.error(message);
     }
   }
@@ -348,6 +362,27 @@ function PasswordPanel({
   form: UseFormReturn<PasswordFormValues>;
   onSubmit: (values: PasswordFormValues) => Promise<void>;
 }) {
+  const currentPassword = useWatch({
+    control: form.control,
+    name: "currentPassword",
+  });
+  const newPassword = useWatch({
+    control: form.control,
+    name: "newPassword",
+  });
+
+  useEffect(() => {
+    if (form.getValues("confirmPassword")) {
+      void form.trigger("confirmPassword");
+    }
+  }, [form, newPassword]);
+
+  useEffect(() => {
+    if (form.getValues("newPassword")) {
+      void form.trigger("newPassword");
+    }
+  }, [currentPassword, form]);
+
   return (
     <Card>
       <CardHeader>
@@ -360,6 +395,7 @@ function PasswordPanel({
         <Form {...form}>
           <form
             className="grid gap-5"
+            noValidate
             onSubmit={form.handleSubmit(onSubmit)}
           >
             <FormField

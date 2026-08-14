@@ -48,7 +48,11 @@ async def run_backend_directed_probe_review(
     """Run the default backend-directed review path."""
 
     report_repository = ReportRepository(postgres_session)
-    job_options = await _load_job_options(report_repository, job_id)
+    job_options = await _load_job_options(
+        report_repository,
+        postgres_session,
+        job_id,
+    )
     probes = await build_backend_probe_plan(
         job_id=job_id,
         database=mongodb_database,
@@ -148,11 +152,16 @@ async def build_backend_probe_plan(
 
 async def _load_job_options(
     report_repository: ReportRepository,
+    postgres_session: AsyncSession,
     job_id: UUID,
 ) -> dict[str, object] | None:
+    """Load options without holding a transaction during remote AI calls."""
+
     job = await report_repository.get_job_by_id(job_id)
-    options = job.options if job is not None else None
-    return options if isinstance(options, dict) else None
+    raw_options = job.options if job is not None else None
+    options = dict(raw_options) if isinstance(raw_options, dict) else None
+    await postgres_session.commit()
+    return options
 
 
 def _build_roadmap_context_without_vectorstore(
