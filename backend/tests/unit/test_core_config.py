@@ -1,5 +1,6 @@
 """Tests for centralized application configuration."""
 
+from pydantic import SecretStr
 from sqlalchemy.engine import make_url
 
 from app.core.config import POSTGRES_ASYNC_DRIVER, Settings, normalize_postgres_url
@@ -57,3 +58,34 @@ def test_settings_normalizes_postgres_url_from_deployment_alias() -> None:
     assert normalized_url.drivername == POSTGRES_ASYNC_DRIVER
     assert normalized_url.query["sslmode"] == "require"
     assert normalized_url.query["channel_binding"] == "require"
+
+
+def test_settings_allows_valid_bot_configuration() -> None:
+    settings = Settings(
+        jwt_secret_key=SecretStr(JWT_SECRET_KEY),
+        github_bot_username="repoguard-bot",
+        github_bot_token=SecretStr("ghp_1234567890"),
+    )
+
+    assert settings.github_bot_username == "repoguard-bot"
+    assert settings.github_bot_token is not None
+    assert settings.github_bot_token.get_secret_value() == "ghp_1234567890"
+
+
+def test_settings_rejects_partial_bot_configuration() -> None:
+    import pytest
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match="GITHUB_BOT_USERNAME"):
+        Settings(
+            jwt_secret_key=SecretStr(JWT_SECRET_KEY),
+            github_bot_username="repoguard-bot",
+            github_bot_token=None,
+        )
+
+    with pytest.raises(ValidationError, match="GITHUB_BOT_USERNAME"):
+        Settings(
+            jwt_secret_key=SecretStr(JWT_SECRET_KEY),
+            github_bot_username=None,
+            github_bot_token=SecretStr("ghp_1234567890"),
+        )

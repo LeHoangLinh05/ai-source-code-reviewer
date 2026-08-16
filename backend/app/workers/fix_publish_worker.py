@@ -8,9 +8,6 @@ from app.db.postgres import AsyncSessionLocal, close_postgres_engine
 from app.db.redis import close_redis_client
 from app.repositories.fix_audit_log_repository import FixAuditLogRepository
 from app.repositories.fix_job_repository import FixJobRepository
-from app.repositories.provider_installation_repository import (
-    ProviderInstallationRepository,
-)
 from app.repositories.report_repository import ReportRepository
 from app.services.fix_jobs.publish_pipeline import FixPublishPipelineService
 from app.services.git_provider.github import GitHubProvider
@@ -52,9 +49,6 @@ async def publish_fix_job_async(
             pipeline_service = FixPublishPipelineService(
                 settings=settings,
                 fix_job_repository=FixJobRepository(session),
-                provider_installation_repository=ProviderInstallationRepository(
-                    session,
-                ),
                 audit_log_repository=FixAuditLogRepository(session),
                 report_repository=ReportRepository(session),
                 github_provider=GitHubProvider(settings=settings),

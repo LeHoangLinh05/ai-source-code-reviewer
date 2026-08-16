@@ -6,6 +6,7 @@ from typing import cast
 from uuid import UUID, uuid4
 
 import pytest
+from pydantic import SecretStr
 
 from app.core.config import Settings
 from app.models.fix_audit_log import FixAuditAction
@@ -19,9 +20,6 @@ from app.models.repository import Repository, RepositoryPlatform
 from app.models.review_job import ReviewJob, ReviewJobStatus
 from app.repositories.fix_audit_log_repository import FixAuditLogRepository
 from app.repositories.fix_job_repository import FixJobRepository
-from app.repositories.provider_installation_repository import (
-    ProviderInstallationRepository,
-)
 from app.repositories.report_repository import ReportRepository
 from app.schemas.fix_job import FixIssueResult, FixIssueVerdict
 from app.services.fix_jobs import publish_pipeline as fix_publish_pipeline
@@ -30,7 +28,6 @@ from app.services.fix_jobs.publish_pipeline import FixPublishPipelineService
 from app.services.git_provider.base import (
     ForkResult,
     GitProvider,
-    InstallationAccessToken,
     PullRequestResult,
 )
 
@@ -91,7 +88,12 @@ async def test_publish_pipeline_publishes_via_fork_for_different_owner(
     audit_repository = RecordingAuditLogRepository()
     pushed_remotes: list[str] = []
     patch_workspace_side_effects(monkeypatch, pushed_remotes=pushed_remotes)
-    service = build_pipeline_service(repository, audit_repository, provider)
+    service = build_pipeline_service(
+        repository,
+        audit_repository,
+        provider,
+        bot_username="repoguard-bot",
+    )
 
     await service.run(
         fix_job_id=fix_job.id,
@@ -99,9 +101,9 @@ async def test_publish_pipeline_publishes_via_fork_for_different_owner(
     )
 
     assert fix_job.publish_status == FixPublishStatus.PUBLISHED
-    assert fix_job.fork_repository_full_name == "example-user/repo"
-    assert provider.fork_requests == [("example/repo", "example-user")]
-    assert provider.pull_request_heads == [f"example-user:{fix_job.fix_branch}"]
+    assert fix_job.fork_repository_full_name == "repoguard-bot/repo"
+    assert provider.fork_requests == [("example/repo", "repoguard-bot")]
+    assert provider.pull_request_heads == [f"repoguard-bot:{fix_job.fix_branch}"]
     assert pushed_remotes == ["fork"]
     assert audit_repository.actions == [
         FixAuditAction.BRANCH_PUSHED,
@@ -123,7 +125,7 @@ async def test_publish_pipeline_publishes_directly_for_same_owner(
         repository,
         audit_repository,
         provider,
-        account_login="example",
+        bot_username="example",
     )
 
     await service.run(
@@ -227,7 +229,7 @@ def build_pipeline_service(
     audit_repository: "RecordingAuditLogRepository",
     provider: "FakeGitProvider",
     *,
-    account_login: str = "example-user",
+    bot_username: str = "repoguard-bot",
 ) -> FixPublishPipelineService:
     return FixPublishPipelineService(
         settings=cast(
@@ -236,13 +238,11 @@ def build_pipeline_service(
                 sandbox_root=".sandbox",
                 max_repo_size_mb=500,
                 frontend_base_url="http://localhost:3000",
+                github_bot_username=bot_username,
+                github_bot_token=SecretStr("token"),
             ),
         ),
         fix_job_repository=cast(FixJobRepository, repository),
-        provider_installation_repository=cast(
-            ProviderInstallationRepository,
-            RecordingProviderInstallationRepository(account_login=account_login),
-        ),
         audit_log_repository=cast(FixAuditLogRepository, audit_repository),
         report_repository=cast(ReportRepository, RecordingReportRepository()),
         github_provider=cast(GitProvider, provider),
@@ -347,11 +347,8 @@ class FakeGitProvider:
         self.fork_requests: list[tuple[str, str]] = []
         self.pull_request_heads: list[str] = []
 
-    async def create_installation_access_token(
-        self,
-        _installation_id: str,
-    ) -> InstallationAccessToken:
-        return InstallationAccessToken(token="token", expires_at=None)
+    def get_bot_access_token(self) -> str:
+        return "token"
 
     async def get_branch_head_sha(
         self,
@@ -484,23 +481,6 @@ class RecordingAuditLogRepository:
     ) -> None:
         _ = fix_job_id, user_id, message, event_metadata
         self.actions.append(action)
-
-
-class RecordingProviderInstallationRepository:
-    def __init__(self, *, account_login: str) -> None:
-        self.account_login = account_login
-
-    async def get_primary_for_user_provider(
-        self,
-        *,
-        user_id: UUID,
-        provider: RepositoryPlatform,
-    ) -> SimpleNamespace:
-        _ = user_id, provider
-        return SimpleNamespace(
-            installation_id="123",
-            account_login=self.account_login,
-        )
 
 
 class RecordingReportRepository:

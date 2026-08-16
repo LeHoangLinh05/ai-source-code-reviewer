@@ -3,7 +3,6 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import {
   CalendarDays,
-  GitPullRequest,
   KeyRound,
   Mail,
   Save,
@@ -19,7 +18,6 @@ import { z } from "zod";
 
 import { LogoutAllButton } from "@/components/auth/logout-button";
 import { PasswordInput } from "@/components/auth/password-input";
-import { ProviderConnectionsPanel } from "@/components/providers/provider-connections-panel";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -77,7 +75,7 @@ const passwordSchema = z
 
 type ProfileFormValues = z.infer<typeof profileSchema>;
 type PasswordFormValues = z.infer<typeof passwordSchema>;
-type SettingsTab = "profile" | "connections" | "password" | "sessions";
+type SettingsTab = "profile" | "password" | "sessions";
 
 const SETTINGS_TABS: Array<{
   icon: LucideIcon;
@@ -85,7 +83,6 @@ const SETTINGS_TABS: Array<{
   label: string;
 }> = [
   { icon: UserRound, id: "profile", label: "Profile" },
-  { icon: GitPullRequest, id: "connections", label: "Connections" },
   { icon: KeyRound, id: "password", label: "Password" },
   { icon: ShieldOff, id: "sessions", label: "Sessions" },
 ];
@@ -221,8 +218,6 @@ export default function SettingsPage() {
       {activeTab === "password" ? (
         <PasswordPanel form={passwordForm} onSubmit={handleChangePassword} />
       ) : null}
-
-      {activeTab === "connections" ? <ProviderConnectionsPanel /> : null}
 
       {activeTab === "sessions" ? <SessionsPanel /> : null}
     </section>

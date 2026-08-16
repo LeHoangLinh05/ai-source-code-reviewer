@@ -1,250 +1,171 @@
 """Tests for source-control provider connection workflows."""
 
-from datetime import UTC, datetime
-from types import SimpleNamespace
-from typing import cast
 from uuid import UUID, uuid4
 
 import pytest
 from pydantic import SecretStr
 
 from app.core.config import Settings
-from app.core.exceptions import NotFoundError, ServiceUnavailableError
-from app.models.repository import RepositoryPlatform
+from app.core.exceptions import AuthorizationError, NotFoundError
+from app.models.repository import Repository, RepositoryPlatform
 from app.models.user import User, UserRole
-from app.repositories.provider_installation_repository import (
-    ProviderInstallationRepository,
+from app.services.provider_service import (
+    GITHUB_BOT_NOT_CONFIGURED_MESSAGE,
+    GITHUB_BOT_READY_MESSAGE_TEMPLATE,
+    GITHUB_PROVIDER_NOT_SUPPORTED_MESSAGE,
+    ProviderService,
 )
-from app.repositories.repository_repository import RepositoryRepository
-from app.schemas.provider import GitHubInstallationSyncRequest
-from app.services.git_provider.base import GitProvider, ProviderInstallationDetails
-from app.services.provider_service import ProviderService
 
 JWT_SECRET_KEY = SecretStr("x" * 32)
-GITHUB_APP_INSTALL_URL = "https://github.com/apps/repoguard-ai/installations/new"
+BOT_USERNAME = "repoguard-bot"
+BOT_TOKEN = SecretStr("ghp_testtoken123")
 
 
 @pytest.mark.asyncio
-async def test_get_github_install_url_returns_configured_install_url() -> None:
+async def test_get_repository_provider_status_ready_when_bot_configured() -> None:
+    user = build_user()
+    repository = build_repository(user_id=user.id, platform=RepositoryPlatform.GITHUB)
     service = build_provider_service(
-        Settings(
-            jwt_secret_key=JWT_SECRET_KEY,
-            github_app_install_url=GITHUB_APP_INSTALL_URL,
-        ),
-    )
-
-    response = await service.get_github_install_url()
-
-    assert response.install_url == GITHUB_APP_INSTALL_URL
-
-
-@pytest.mark.asyncio
-async def test_get_github_install_url_rejects_missing_configuration() -> None:
-    service = build_provider_service(
-        Settings(jwt_secret_key=JWT_SECRET_KEY, github_app_install_url=None),
-    )
-
-    with pytest.raises(ServiceUnavailableError, match="GITHUB_APP_INSTALL_URL"):
-        await service.get_github_install_url()
-
-
-@pytest.mark.asyncio
-async def test_sync_github_installation_uses_github_provider_details() -> None:
-    github_provider = RecordingGitHubProvider()
-    installation_repository = RecordingProviderInstallationRepository()
-    service = ProviderService(
         settings=Settings(
             jwt_secret_key=JWT_SECRET_KEY,
-            github_app_install_url=GITHUB_APP_INSTALL_URL,
+            github_bot_username=BOT_USERNAME,
+            github_bot_token=BOT_TOKEN,
         ),
-        provider_installation_repository=cast(
-            ProviderInstallationRepository,
-            installation_repository,
-        ),
-        repository_repository=cast(RepositoryRepository, SimpleNamespace()),
-        github_provider=cast(GitProvider, github_provider),
-    )
-    current_user = User(
-        id=uuid4(),
-        email="user@example.com",
-        hashed_password="hashed",
-        full_name=None,
-        is_active=True,
-        role=UserRole.USER,
+        repository=repository,
     )
 
-    response = await service.sync_github_installation(
-        GitHubInstallationSyncRequest(installation_id="12345"),
-        current_user,
-    )
+    status = await service.get_repository_provider_status(repository.id, user)
 
-    assert github_provider.requested_installation_ids == ["12345"]
-    assert installation_repository.upserts == [
-        {
-            "user_id": current_user.id,
-            "provider": "github",
-            "installation_id": "12345",
-            "account_login": "LeHoangLinh05",
-            "account_type": "User",
-            "repository_selection": "all",
-            "permissions": {"metadata": "read"},
-        }
-    ]
-    assert response.account_login == "LeHoangLinh05"
+    assert status.is_connected is True
+    assert status.can_publish is True
+    assert status.account_login == BOT_USERNAME
+    assert status.provider == RepositoryPlatform.GITHUB
+    assert status.message == GITHUB_BOT_READY_MESSAGE_TEMPLATE.format(
+        bot_username=BOT_USERNAME
+    )
 
 
 @pytest.mark.asyncio
-async def test_disconnect_provider_deletes_connection_owned_by_user() -> None:
-    current_user = User(
-        id=uuid4(),
-        email="user@example.com",
-        hashed_password="hashed",
-        full_name=None,
-        is_active=True,
-        role=UserRole.USER,
-    )
-    connection = SimpleNamespace(id=uuid4(), user_id=current_user.id)
-    installation_repository = RecordingDisconnectRepository(connection)
-    service = ProviderService(
-        settings=Settings(jwt_secret_key=JWT_SECRET_KEY),
-        provider_installation_repository=cast(
-            ProviderInstallationRepository,
-            installation_repository,
+async def test_get_repository_provider_status_unready_when_bot_not_configured() -> None:
+    user = build_user()
+    repository = build_repository(user_id=user.id, platform=RepositoryPlatform.GITHUB)
+    service = build_provider_service(
+        settings=Settings(
+            jwt_secret_key=JWT_SECRET_KEY,
+            github_bot_username=None,
+            github_bot_token=None,
         ),
-        repository_repository=cast(RepositoryRepository, SimpleNamespace()),
+        repository=repository,
     )
 
-    await service.disconnect_provider(connection.id, current_user)
+    status = await service.get_repository_provider_status(repository.id, user)
 
-    assert installation_repository.lookups == [
-        {
-            "connection_id": connection.id,
-            "user_id": current_user.id,
-        }
-    ]
-    assert installation_repository.deleted == [connection]
+    assert status.is_connected is False
+    assert status.can_publish is False
+    assert status.account_login is None
+    assert status.provider == RepositoryPlatform.GITHUB
+    assert status.message == GITHUB_BOT_NOT_CONFIGURED_MESSAGE
 
 
 @pytest.mark.asyncio
-async def test_disconnect_provider_hides_connections_not_owned_by_user() -> None:
-    current_user = User(
+async def test_get_repository_provider_status_unsupported_for_non_github() -> None:
+    user = build_user()
+    repository = build_repository(user_id=user.id, platform=RepositoryPlatform.OTHER)
+    service = build_provider_service(
+        settings=Settings(
+            jwt_secret_key=JWT_SECRET_KEY,
+            github_bot_username=BOT_USERNAME,
+            github_bot_token=BOT_TOKEN,
+        ),
+        repository=repository,
+    )
+
+    status = await service.get_repository_provider_status(repository.id, user)
+
+    assert status.is_connected is False
+    assert status.can_publish is False
+    assert status.provider == RepositoryPlatform.OTHER
+    assert status.message == GITHUB_PROVIDER_NOT_SUPPORTED_MESSAGE
+
+
+@pytest.mark.asyncio
+async def test_get_repository_provider_status_rejects_unowned_repository() -> None:
+    user = build_user()
+    other_user_id = uuid4()
+    repository = build_repository(
+        user_id=other_user_id, platform=RepositoryPlatform.GITHUB
+    )
+    service = build_provider_service(
+        settings=Settings(
+            jwt_secret_key=JWT_SECRET_KEY,
+            github_bot_username=BOT_USERNAME,
+            github_bot_token=BOT_TOKEN,
+        ),
+        repository=repository,
+    )
+
+    with pytest.raises(AuthorizationError, match="restricted to its owner"):
+        await service.get_repository_provider_status(repository.id, user)
+
+
+@pytest.mark.asyncio
+async def test_get_repository_provider_status_rejects_missing_repository() -> None:
+    user = build_user()
+    service = build_provider_service(
+        settings=Settings(
+            jwt_secret_key=JWT_SECRET_KEY,
+            github_bot_username=BOT_USERNAME,
+            github_bot_token=BOT_TOKEN,
+        ),
+        repository=None,
+    )
+
+    with pytest.raises(NotFoundError, match="Repository not found"):
+        await service.get_repository_provider_status(uuid4(), user)
+
+
+def build_user() -> User:
+    return User(
         id=uuid4(),
         email="user@example.com",
         hashed_password="hashed",
-        full_name=None,
+        full_name="Test User",
         is_active=True,
         role=UserRole.USER,
     )
-    installation_repository = RecordingDisconnectRepository(None)
-    service = ProviderService(
-        settings=Settings(jwt_secret_key=JWT_SECRET_KEY),
-        provider_installation_repository=cast(
-            ProviderInstallationRepository,
-            installation_repository,
-        ),
-        repository_repository=cast(RepositoryRepository, SimpleNamespace()),
+
+
+def build_repository(
+    *,
+    user_id: UUID,
+    platform: RepositoryPlatform = RepositoryPlatform.GITHUB,
+) -> Repository:
+    return Repository(
+        id=uuid4(),
+        user_id=user_id,
+        name="test-repo",
+        url="https://github.com/example/test-repo.git",
+        platform=platform,
+        default_branch="main",
     )
 
-    with pytest.raises(NotFoundError, match="Provider connection not found"):
-        await service.disconnect_provider(uuid4(), current_user)
 
-    assert installation_repository.deleted == []
+class RecordingRepositoryRepository:
+    def __init__(self, repository: Repository | None) -> None:
+        self.repository = repository
+
+    async def get_by_id(self, repository_id: UUID) -> Repository | None:
+        if self.repository and self.repository.id == repository_id:
+            return self.repository
+        return None
 
 
-def build_provider_service(settings: Settings) -> ProviderService:
+def build_provider_service(
+    settings: Settings,
+    repository: Repository | None = None,
+) -> ProviderService:
+    repo_repo = RecordingRepositoryRepository(repository)
     return ProviderService(
         settings=settings,
-        provider_installation_repository=cast(
-            ProviderInstallationRepository,
-            SimpleNamespace(),
-        ),
-        repository_repository=cast(RepositoryRepository, SimpleNamespace()),
+        repository_repository=repo_repo,  # type: ignore[arg-type]
     )
-
-
-class RecordingGitHubProvider:
-    def __init__(self) -> None:
-        self.requested_installation_ids: list[str] = []
-
-    async def get_installation_details(
-        self,
-        installation_id: str,
-    ) -> ProviderInstallationDetails:
-        self.requested_installation_ids.append(installation_id)
-        return ProviderInstallationDetails(
-            installation_id=installation_id,
-            account_login="LeHoangLinh05",
-            account_type="User",
-            repository_selection="all",
-            permissions={"metadata": "read"},
-        )
-
-
-class RecordingProviderInstallationRepository:
-    def __init__(self) -> None:
-        self.upserts: list[dict[str, object]] = []
-
-    async def upsert(
-        self,
-        *,
-        user_id: UUID,
-        provider: RepositoryPlatform,
-        installation_id: str,
-        account_login: str,
-        account_type: str | None,
-        repository_selection: str | None,
-        permissions: dict[str, object] | None,
-    ) -> SimpleNamespace:
-        self.upserts.append(
-            {
-                "user_id": user_id,
-                "provider": provider.value if hasattr(provider, "value") else provider,
-                "installation_id": installation_id,
-                "account_login": account_login,
-                "account_type": account_type,
-                "repository_selection": repository_selection,
-                "permissions": permissions,
-            }
-        )
-        return SimpleNamespace(
-            id=uuid4(),
-            user_id=user_id,
-            provider=provider,
-            installation_id=installation_id,
-            account_login=account_login,
-            account_type=account_type,
-            repository_selection=repository_selection,
-            permissions=permissions,
-            created_at=datetime.now(UTC),
-            updated_at=datetime.now(UTC),
-        )
-
-    async def rollback(self) -> None:
-        return None
-
-
-class RecordingDisconnectRepository:
-    def __init__(self, connection: SimpleNamespace | None) -> None:
-        self.connection = connection
-        self.deleted: list[SimpleNamespace] = []
-        self.lookups: list[dict[str, UUID]] = []
-
-    async def get_by_id_for_user(
-        self,
-        *,
-        connection_id: UUID,
-        user_id: UUID,
-    ) -> SimpleNamespace | None:
-        self.lookups.append(
-            {
-                "connection_id": connection_id,
-                "user_id": user_id,
-            }
-        )
-        return self.connection
-
-    async def delete(self, connection: SimpleNamespace) -> None:
-        self.deleted.append(connection)
-
-    async def rollback(self) -> None:
-        return None

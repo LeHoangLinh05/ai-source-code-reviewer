@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   canPublishFix,
+  formatFixPublishStatus,
   formatFixStatus,
   getFixProgressMessage,
   getUnresolvedFixResults,
@@ -80,6 +81,13 @@ describe("fix job view helpers", () => {
       "Reviewing cross-file patch logic.",
     );
     expect(formatFixStatus("VALIDATING")).toBe("logic review");
+  });
+
+  it("formats publish status as not published when not requested", () => {
+    expect(formatFixPublishStatus("NOT_REQUESTED")).toBe("not published");
+    expect(formatFixPublishStatus("PUBLISHED")).toBe("published");
+    expect(formatFixPublishStatus("PUBLISHING")).toBe("publishing");
+    expect(formatFixPublishStatus("FAILED")).toBe("failed");
   });
 
   it("requires an explicit override and names failed verification accurately", () => {

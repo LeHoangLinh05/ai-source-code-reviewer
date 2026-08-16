@@ -183,6 +183,10 @@ export function formatFixStatus(status: FixJobStatus) {
 }
 
 export function formatFixPublishStatus(status: FixPublishStatus) {
+  if (status === "NOT_REQUESTED") {
+    return "not published";
+  }
+
   return status.replaceAll("_", " ").toLowerCase();
 }
 

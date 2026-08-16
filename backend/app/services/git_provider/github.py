@@ -1,14 +1,12 @@
-"""GitHub App provider implementation for publishing pull requests."""
+"""GitHub provider implementation for publishing pull requests using a bot account."""
 
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime, timedelta
 from typing import Any
 from urllib.parse import quote, urlparse
 
 import httpx
-from jose import jwt
 from pydantic import SecretStr
 
 from app.core.config import Settings
@@ -18,19 +16,14 @@ from app.services.git_provider.base import (
     GitProviderConfigurationError,
     GitProviderPermissionError,
     GitProviderPublishError,
-    InstallationAccessToken,
-    ProviderInstallationDetails,
     PullRequestResult,
 )
 
 GITHUB_ACCEPT_HEADER = "application/vnd.github+json"
-GITHUB_APP_JWT_ALGORITHM = "RS256"
-GITHUB_APP_JWT_TTL_SECONDS = 9 * 60
-GITHUB_APP_JWT_CLOCK_SKEW_SECONDS = 60
 GITHUB_HTTP_TIMEOUT_SECONDS = 15.0
 GITHUB_FORK_READY_ATTEMPTS = 5
 GITHUB_FORK_READY_DELAY_SECONDS = 1.0
-GITHUB_APP_AUTH_USERNAME = "x-access-token"
+GITHUB_AUTH_USERNAME = "x-access-token"
 GITHUB_REPOSITORY_PATH_PART_COUNT = 2
 HTTP_STATUS_UNAUTHORIZED = 401
 HTTP_STATUS_FORBIDDEN = 403
@@ -41,7 +34,7 @@ HTTP_STATUS_ACCEPTED = 202
 
 
 class GitHubProvider:
-    """GitHub REST integration authenticated as a GitHub App installation."""
+    """GitHub REST integration authenticated via a centralized bot PAT."""
 
     def __init__(
         self,
@@ -52,28 +45,17 @@ class GitHubProvider:
         self.settings = settings
         self.http_client = http_client
 
-    async def create_installation_access_token(
-        self,
-        installation_id: str,
-    ) -> InstallationAccessToken:
-        """Create a short-lived installation token from GitHub App credentials."""
+    def get_bot_access_token(self) -> str:
+        """Return the configured bot access token."""
 
-        app_jwt = self._build_app_jwt()
-        response = await self._request(
-            "POST",
-            f"/app/installations/{installation_id}/access_tokens",
-            token=app_jwt,
-            auth_scheme="Bearer",
-        )
-        payload = self._json_object(response)
-        token = _string_payload(payload, "token")
-        if token is None:
-            raise GitProviderAuthenticationError(
-                "GitHub did not return an installation token"
+        bot_username = self.settings.github_bot_username
+        token = _secret_value(self.settings.github_bot_token)
+        if not bot_username or not token:
+            raise GitProviderConfigurationError(
+                "GitHub bot username and token are required for publishing"
             )
 
-        expires_at = _parse_optional_datetime(_string_payload(payload, "expires_at"))
-        return InstallationAccessToken(token=token, expires_at=expires_at)
+        return token
 
     async def get_branch_head_sha(
         self,
@@ -168,55 +150,6 @@ class GitHubProvider:
             token=token,
         )
 
-    async def get_installation_details(
-        self,
-        installation_id: str,
-    ) -> ProviderInstallationDetails:
-        """Return GitHub App installation metadata for the setup callback."""
-
-        app_jwt = self._build_app_jwt()
-        response = await self._request(
-            "GET",
-            f"/app/installations/{installation_id}",
-            token=app_jwt,
-            auth_scheme="Bearer",
-        )
-        payload = self._json_object(response)
-        account = payload.get("account")
-        if not isinstance(account, dict):
-            raise GitProviderPublishError(
-                "GitHub installation response did not include account details"
-            )
-
-        account_login = _string_payload(account, "login")
-        if account_login is None:
-            raise GitProviderPublishError(
-                "GitHub installation response did not include an account login"
-            )
-
-        account_type = _string_payload(account, "type")
-        repository_selection = _string_payload(payload, "repository_selection")
-        permissions = payload.get("permissions")
-        if not isinstance(permissions, dict):
-            permissions = None
-
-        resolved_installation_id = installation_id
-        installation_value = payload.get("id")
-        if isinstance(installation_value, int) and not isinstance(
-            installation_value, bool
-        ):
-            resolved_installation_id = str(installation_value)
-        elif isinstance(installation_value, str) and installation_value.strip():
-            resolved_installation_id = installation_value.strip()
-
-        return ProviderInstallationDetails(
-            installation_id=resolved_installation_id,
-            account_login=account_login,
-            account_type=account_type,
-            repository_selection=repository_selection,
-            permissions=permissions,
-        )
-
     async def _get_existing_fork(
         self,
         *,
@@ -263,27 +196,6 @@ class GitHubProvider:
             return ForkResult(full_name=fork_full_name, clone_url=clone_url)
 
         raise GitProviderPublishError("GitHub fork was not ready for publishing")
-
-    def _build_app_jwt(self) -> str:
-        app_id = self.settings.github_app_id
-        private_key = _secret_value(self.settings.github_app_private_key)
-        if app_id is None or private_key is None:
-            raise GitProviderConfigurationError(
-                "GitHub App ID and private key are required for publishing"
-            )
-
-        now = datetime.now(UTC)
-        issued_at = now - timedelta(seconds=GITHUB_APP_JWT_CLOCK_SKEW_SECONDS)
-        expires_at = now + timedelta(seconds=GITHUB_APP_JWT_TTL_SECONDS)
-        return jwt.encode(
-            {
-                "iat": int(issued_at.timestamp()),
-                "exp": int(expires_at.timestamp()),
-                "iss": app_id,
-            },
-            private_key,
-            algorithm=GITHUB_APP_JWT_ALGORITHM,
-        )
 
     async def _request(
         self,
@@ -385,13 +297,13 @@ def build_github_https_url(repository_full_name: str) -> str:
 
 
 def build_authenticated_github_url(repository_url: str, token: str) -> str:
-    """Return a Git HTTPS URL authenticated with an installation token."""
+    """Return a Git HTTPS URL authenticated with a token."""
 
     parsed_url = urlparse(repository_url)
     if parsed_url.scheme != "https" or parsed_url.hostname != "github.com":
         raise GitProviderPublishError("GitHub publish requires an HTTPS repository URL")
 
-    netloc = f"{GITHUB_APP_AUTH_USERNAME}:{quote(token, safe='')}@{parsed_url.hostname}"
+    netloc = f"{GITHUB_AUTH_USERNAME}:{quote(token, safe='')}@{parsed_url.hostname}"
     return parsed_url._replace(netloc=netloc).geturl()
 
 
@@ -423,16 +335,6 @@ def _string_payload(payload: dict[str, Any], key: str) -> str | None:
         return value.strip()
 
     return None
-
-
-def _parse_optional_datetime(value: str | None) -> datetime | None:
-    if value is None:
-        return None
-
-    try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return None
 
 
 def _build_fork_full_name(

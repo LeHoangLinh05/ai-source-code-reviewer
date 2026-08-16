@@ -30,9 +30,6 @@ from app.repositories.mongodb_repository import (
     RepoSummaryResultRepository,
     ToolCallLogRepository,
 )
-from app.repositories.provider_installation_repository import (
-    ProviderInstallationRepository,
-)
 from app.repositories.refresh_token_repository import RefreshTokenRepository
 from app.repositories.report_repository import ReportRepository
 from app.repositories.repository_repository import RepositoryRepository
@@ -44,7 +41,6 @@ from app.services.fix_jobs.publish_queue import FixPublishQueueService
 from app.services.fix_jobs.publish_service import FixPublishService
 from app.services.fix_jobs.queue import FixJobQueueService
 from app.services.fix_jobs.service import FixJobService
-from app.services.git_provider.github import GitHubProvider
 from app.services.health_service import HealthService
 from app.services.provider_service import ProviderService
 from app.services.repo_summary.query_service import RepoSummaryQueryService
@@ -185,9 +181,7 @@ async def get_provider_service(
 
     return ProviderService(
         settings=settings,
-        provider_installation_repository=ProviderInstallationRepository(session),
         repository_repository=RepositoryRepository(session),
-        github_provider=GitHubProvider(settings=settings),
     )
 
 

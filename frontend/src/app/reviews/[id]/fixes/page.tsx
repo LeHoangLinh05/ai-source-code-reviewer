@@ -56,11 +56,7 @@ import {
   publishFixJob,
   retryFixPublish,
 } from "@/lib/fix-jobs";
-import {
-  buildGitHubInstallUrl,
-  getGitHubInstallUrl,
-  getRepositoryProviderStatus,
-} from "@/lib/providers";
+import { getRepositoryProviderStatus } from "@/lib/providers";
 import { getReviewJob } from "@/lib/review-jobs";
 import type {
   FixDiff,
@@ -86,7 +82,7 @@ export default function ReviewFixesPage() {
     useState<RepositoryProviderStatus | null>(null);
   const [reviewJob, setReviewJob] = useState<ReviewJob | null>(null);
   const [pendingAction, setPendingAction] = useState<
-    "publish" | "fork" | "retry" | "cancel" | "connect" | null
+    "publish" | "fork" | "retry" | "cancel" | null
   >(null);
   const [selectedFixId, setSelectedFixId] = useState<string | null>(null);
   const [isOverrideOpen, setIsOverrideOpen] = useState(false);
@@ -316,24 +312,6 @@ export default function ReviewFixesPage() {
     }
   }
 
-  async function connectGitHubApp() {
-    setPendingAction("connect");
-    try {
-      const response = await getGitHubInstallUrl();
-      window.location.assign(
-        buildGitHubInstallUrl(
-          response.install_url,
-          `/reviews/${jobId}/fixes`,
-        ),
-      );
-    } catch (requestError) {
-      toast.error(
-        getApiErrorMessage(requestError, "Unable to open GitHub App install URL."),
-      );
-      setPendingAction(null);
-    }
-  }
-
   return (
     <>
       <div className="flex items-center">
@@ -430,12 +408,10 @@ export default function ReviewFixesPage() {
                     diff={diff}
                     fix={selectedFix}
                     isActionPending={pendingAction !== null}
-                    isConnectPending={pendingAction === "connect"}
                     isDiffLoading={isDiffLoading}
                     jobId={jobId}
                     onCancelPublish={() => void cancelSelectedPublish()}
                     providerStatus={providerStatus}
-                    onConnectGithub={() => void connectGitHubApp()}
                     onPublishViaFork={() => void publishSelectedFix()}
                     onRetryPublish={() => void retrySelectedPublish()}
                     progressEvent={progressEvent}
@@ -459,12 +435,10 @@ function FixDetails({
   diff,
   fix,
   isActionPending,
-  isConnectPending,
   isDiffLoading,
   jobId,
   onCancelPublish,
   providerStatus,
-  onConnectGithub,
   onPublishViaFork,
   onRetryPublish,
   progressEvent,
@@ -473,12 +447,10 @@ function FixDetails({
   diff: FixDiff | null;
   fix: FixJob;
   isActionPending: boolean;
-  isConnectPending: boolean;
   isDiffLoading: boolean;
   jobId: string;
   onCancelPublish: () => void;
   providerStatus: RepositoryProviderStatus | null;
-  onConnectGithub: () => void;
   onPublishViaFork: () => void;
   onRetryPublish: () => void;
   progressEvent: FixJobProgressEvent | null;
@@ -498,11 +470,9 @@ function FixDetails({
       <PublishStatusCard
         fix={fix}
         isActionPending={isActionPending}
-        isConnectPending={isConnectPending}
         jobId={jobId}
         onCancelPublish={onCancelPublish}
         providerStatus={providerStatus}
-        onConnectGithub={onConnectGithub}
         onPublishViaFork={onPublishViaFork}
         onRetryPublish={onRetryPublish}
       />
@@ -512,11 +482,6 @@ function FixDetails({
           <CardTitle>Patch Preview</CardTitle>
         </CardHeader>
         <CardContent className="grid gap-4">
-          <div className="grid gap-3 rounded-md border border-border bg-background p-4 sm:grid-cols-2">
-            <Metric label="Status" value={formatFixStatus(fix.status)} />
-            <Metric label="Changed files" value={fix.changed_files?.length ?? 0} />
-          </div>
-
           {failureReason ? (
             <p className="rounded-md border border-destructive/30 bg-destructive/10 p-4 text-sm text-destructive">
               <AlertTriangle aria-hidden="true" className="mr-2 inline size-4" />
@@ -526,7 +491,9 @@ function FixDetails({
 
           {fix.changed_files?.length ? (
             <div className="grid gap-2">
-              <p className="text-sm font-semibold">Changed Files</p>
+              <p className="text-sm font-semibold">
+                Changed Files ({fix.changed_files.length})
+              </p>
               <div className="flex flex-wrap gap-2">
                 {fix.changed_files.map((filePath) => (
                   <span
@@ -743,21 +710,17 @@ function IssueVerificationResults({ results }: { results: FixIssueResult[] }) {
 function PublishStatusCard({
   fix,
   isActionPending,
-  isConnectPending,
   jobId,
   onCancelPublish,
   providerStatus,
-  onConnectGithub,
   onPublishViaFork,
   onRetryPublish,
 }: {
   fix: FixJob;
   isActionPending: boolean;
-  isConnectPending: boolean;
   jobId: string;
   onCancelPublish: () => void;
   providerStatus: RepositoryProviderStatus | null;
-  onConnectGithub: () => void;
   onPublishViaFork: () => void;
   onRetryPublish: () => void;
 }) {
@@ -769,7 +732,7 @@ function PublishStatusCard({
         <CardTitle>Publish</CardTitle>
       </CardHeader>
       <CardContent className="grid gap-4">
-        <div className="grid gap-3 rounded-md border border-border bg-background p-4 sm:grid-cols-3">
+        <div className="grid gap-3 rounded-md border border-border bg-background p-4 sm:grid-cols-2">
           <Metric
             label="Publish status"
             value={formatFixPublishStatus(fix.publish_status)}
@@ -778,17 +741,13 @@ function PublishStatusCard({
             label="Published branch"
             value={fix.published_branch ?? fix.fix_branch}
           />
-          <Metric
-            label="Provider"
-            value={formatProviderValue(fix, providerStatus)}
-          />
         </div>
 
         <div className="flex flex-wrap gap-2">
           {canPublishViaFork(fix) ? (
             <Button disabled={isActionPending} onClick={onPublishViaFork}>
               <GitPullRequest aria-hidden="true" />
-              Publish via fork
+              Publish
             </Button>
           ) : null}
           {canRetryPublish(fix) ? (
@@ -847,20 +806,11 @@ function PublishStatusCard({
           </p>
         ) : null}
 
-        {shouldShowGitHubConnect(fix, providerStatus) ? (
-          <Button
-            className="w-fit"
-            disabled={isConnectPending}
-            onClick={onConnectGithub}
-            variant="secondary"
-          >
-            {isConnectPending ? (
-              <Loader2 aria-hidden="true" className="animate-spin" />
-            ) : (
-              <GitPullRequest aria-hidden="true" />
-            )}
-            Connect GitHub App
-          </Button>
+        {providerStatus && !providerStatus.can_publish ? (
+          <p className="rounded-md border border-amber-400/40 bg-amber-400/10 p-4 text-sm text-amber-900 dark:text-amber-100">
+            <AlertTriangle aria-hidden="true" className="mr-2 inline size-4" />
+            {providerStatus.message}
+          </p>
         ) : null}
 
       </CardContent>
@@ -1024,44 +974,6 @@ function getIssueVerdictTone(verdict: FixIssueResult["verdict"]) {
   }
 
   return "border-amber-400/40 bg-amber-400/10 text-amber-800 dark:text-amber-100";
-}
-
-function shouldShowGitHubConnect(
-  fix: FixJob,
-  providerStatus: RepositoryProviderStatus | null,
-) {
-  if (providerStatus?.provider && providerStatus.provider !== "github") {
-    return false;
-  }
-
-  if (providerStatus?.is_connected) {
-    return false;
-  }
-
-  const publishError = fix.publish_error?.toLowerCase() ?? "";
-  return (
-    providerStatus?.provider === "github" ||
-    publishError.includes("github app connection") ||
-    publishError.includes("github app id") ||
-    publishError.includes("installation")
-  );
-}
-
-function formatProviderValue(
-  fix: FixJob,
-  providerStatus: RepositoryProviderStatus | null,
-) {
-  if (providerStatus?.is_connected) {
-    return providerStatus.account_login
-      ? `GitHub connected as ${providerStatus.account_login}`
-      : "GitHub connected";
-  }
-
-  if (providerStatus?.provider === "github") {
-    return "GitHub";
-  }
-
-  return fix.provider ?? "not selected";
 }
 
 function formatTimestamp(value: string) {
