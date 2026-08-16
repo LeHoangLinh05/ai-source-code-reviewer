@@ -1,7 +1,6 @@
 """Provider abstractions shared by Git publish integrations."""
 
 from dataclasses import dataclass
-from datetime import datetime
 from typing import Protocol
 
 
@@ -26,14 +25,6 @@ class GitProviderPublishError(GitProviderError):
 
 
 @dataclass(slots=True)
-class InstallationAccessToken:
-    """Short-lived provider token scoped to an installation."""
-
-    token: str
-    expires_at: datetime | None
-
-
-@dataclass(slots=True)
 class ForkResult:
     """Provider fork metadata used for fork pull requests."""
 
@@ -48,25 +39,11 @@ class PullRequestResult:
     url: str
 
 
-@dataclass(slots=True)
-class ProviderInstallationDetails:
-    """Provider installation metadata collected from the source-control API."""
-
-    installation_id: str
-    account_login: str
-    account_type: str | None
-    repository_selection: str | None
-    permissions: dict[str, object] | None
-
-
 class GitProvider(Protocol):
     """Minimum source-control provider contract for publishing fixes."""
 
-    async def create_installation_access_token(
-        self,
-        installation_id: str,
-    ) -> InstallationAccessToken:
-        """Return a short-lived installation access token."""
+    def get_bot_access_token(self) -> str:
+        """Return the configured bot access token."""
 
     async def get_branch_head_sha(
         self,
@@ -97,9 +74,3 @@ class GitProvider(Protocol):
         token: str,
     ) -> ForkResult:
         """Create or reuse a fork repository for contributor publishing."""
-
-    async def get_installation_details(
-        self,
-        installation_id: str,
-    ) -> ProviderInstallationDetails:
-        """Return installation metadata for syncing a connected account."""

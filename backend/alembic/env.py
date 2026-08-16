@@ -71,8 +71,15 @@ def run_migrations_online() -> None:
     """Run migrations against the configured PostgreSQL database."""
 
     import asyncio
+    import sys
 
-    asyncio.run(run_async_migrations())
+    if sys.platform == "win32":
+        asyncio.run(
+            run_async_migrations(),
+            loop_factory=asyncio.SelectorEventLoop,
+        )
+    else:
+        asyncio.run(run_async_migrations())
 
 
 if context.is_offline_mode():

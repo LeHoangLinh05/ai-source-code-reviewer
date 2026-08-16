@@ -251,7 +251,7 @@ terminal event. Redis uses channel `job:{job_id}:progress` and snapshot key
 ## Demo flow
 
 1. Register and log in as a normal user.
-2. Add a GitHub or GitLab repository and select its branch.
+2. Add a GitHub repository and select its branch.
 3. Start a review from the Reviews page.
 4. Open the job detail page to see the progress card and live connection state.
 5. Wait for `completed` (or inspect a `failed` terminal event), then open the

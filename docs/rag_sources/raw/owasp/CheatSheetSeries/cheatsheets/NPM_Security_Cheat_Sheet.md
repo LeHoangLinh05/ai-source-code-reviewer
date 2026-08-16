@@ -110,7 +110,7 @@ Hosting your own registry was never so easy! Let’s check the most important fe
 
 - It supports the npm registry format including private package features, scope support, package access control and authenticated users in the web interface.
 - It provides capabilities to hook remote registries and the power to route dependencies to different registries and cache their tarballs. To reduce duplicate downloads and save bandwidth in your local development and CI servers, you should proxy all dependencies.
-- As an authentication provider it uses htpasswd security by default, but also supports GitLab, Bitbucket, and LDAP. You can also use your own.
+- As an authentication provider it uses htpasswd security by default, but also supports Bitbucket and LDAP. You can also use your own.
 - It’s easy to scale using a different storage provider.
 - If your project is based in Docker, using the official image is the best choice.
 - It enables really fast bootstrap for testing environments, and is handy for testing big mono-repo projects.
@@ -232,7 +232,7 @@ To protect against slopsquatting:
 
 ## 11) Use trusted publishers for secure package publishing
 
-Traditional npm publishing relies on long-lived tokens that can be compromised or accidentally exposed. Trusted publishing with OpenID Connect (OIDC) provides a more secure alternative by using short-lived, workflow-specific credentials that are automatically generated during CI/CD processes. Trusted publishing currently supports GitHub Actions and GitLab CI/CD Pipelines.
+Traditional npm publishing relies on long-lived tokens that can be compromised or accidentally exposed. Trusted publishing with OpenID Connect (OIDC) provides a more secure alternative by using short-lived, workflow-specific credentials that are automatically generated during CI/CD processes. Trusted publishing supports GitHub Actions.
 
 ### How trusted publishing works
 

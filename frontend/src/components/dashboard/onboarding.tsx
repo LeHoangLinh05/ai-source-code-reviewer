@@ -8,7 +8,7 @@ const STEPS = [
   {
     icon: GitFork,
     title: "Connect a repository",
-    description: "Add a public GitHub or GitLab repository to review.",
+    description: "Add a public GitHub repository to review.",
   },
   {
     icon: ScanSearch,

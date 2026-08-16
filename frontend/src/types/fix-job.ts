@@ -152,7 +152,7 @@ export type FixJob = {
   publish_override_reason: string | null;
   published_branch: string | null;
   published_commit_sha: string | null;
-  provider: "github" | "gitlab" | "other" | null;
+  provider: "github" | "other" | null;
   publish_started_at: string | null;
   publish_completed_at: string | null;
   fork_repository_full_name: string | null;

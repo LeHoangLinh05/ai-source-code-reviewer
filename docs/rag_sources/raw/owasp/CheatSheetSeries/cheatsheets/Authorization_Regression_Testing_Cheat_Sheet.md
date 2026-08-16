@@ -91,7 +91,7 @@ Authorization tests must live alongside functional tests in the developer's stan
 
 The value of an authorization regression suite is only realized if it prevents vulnerable code from merging. The [OWASP CI/CD Security Cheat Sheet](CI_CD_Security_Cheat_Sheet.md) describes broader pipeline hardening; the recommendations below focus specifically on authorization gates.
 
-- **Blocking PR Builds:** The authorization test suite must be a required check in the CI/CD pipeline (e.g., [GitHub Actions](https://docs.github.com/en/actions), GitLab CI). If an authorization test fails, the Pull Request cannot be merged.
+- **Blocking PR Builds:** The authorization test suite must be a required check in the CI/CD pipeline (e.g., [GitHub Actions](https://docs.github.com/en/actions)). If an authorization test fails, the Pull Request cannot be merged.
 - **Dedicated Test Suites:** Tag or group authorization tests distinctly (e.g., `@pytest.mark.authz` or a dedicated `authz-tests` npm script). This allows developers to run them quickly and independently during local development.
 - **Monitoring in Lower Environments:** Configure CI environments to flag unusual volumes of [`401 Unauthorized`](https://www.rfc-editor.org/rfc/rfc9110#section-15.5.2) or [`403 Forbidden`](https://www.rfc-editor.org/rfc/rfc9110#section-15.5.4) responses during integration testing, which may indicate that a developer's functional changes are colliding with existing security controls.
 

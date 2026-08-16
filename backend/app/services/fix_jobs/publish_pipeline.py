@@ -19,9 +19,6 @@ from app.models.fix_job import (
 from app.models.repository import RepositoryPlatform
 from app.repositories.fix_audit_log_repository import FixAuditLogRepository
 from app.repositories.fix_job_repository import FixJobRepository
-from app.repositories.provider_installation_repository import (
-    ProviderInstallationRepository,
-)
 from app.repositories.report_repository import ReportRepository
 from app.schemas.fix_job import (
     FixIssueResult,
@@ -55,8 +52,8 @@ logger = logging.getLogger(__name__)
 PUBLISH_SANDBOX_DIR = "fix-publishes"
 ORIGIN_REMOTE_NAME = "origin"
 FORK_REMOTE_NAME = "fork"
-GITHUB_PROVIDER_REQUIRED_MESSAGE = (
-    "GitHub App connection is required before publishing pull requests."
+GITHUB_BOT_REQUIRED_MESSAGE = (
+    "GitHub bot is not configured. Set GITHUB_BOT_USERNAME and GITHUB_BOT_TOKEN."
 )
 GITHUB_ONLY_PUBLISH_MESSAGE = "Only GitHub publishing is supported in this version."
 STALE_BASE_MESSAGE_TEMPLATE = (
@@ -90,14 +87,12 @@ class FixPublishPipelineService:
         *,
         settings: Settings,
         fix_job_repository: FixJobRepository,
-        provider_installation_repository: ProviderInstallationRepository,
         audit_log_repository: FixAuditLogRepository,
         report_repository: ReportRepository,
         github_provider: GitProvider,
     ) -> None:
         self.settings = settings
         self.fix_job_repository = fix_job_repository
-        self.provider_installation_repository = provider_installation_repository
         self.audit_log_repository = audit_log_repository
         self.report_repository = report_repository
         self.github_provider = github_provider
@@ -163,23 +158,20 @@ class FixPublishPipelineService:
         if source_repository.platform != RepositoryPlatform.GITHUB:
             raise FixPipelineError(GITHUB_ONLY_PUBLISH_MESSAGE)
 
-        installation = (
-            await self.provider_installation_repository.get_primary_for_user_provider(
-                user_id=fix_job.user_id,
-                provider=RepositoryPlatform.GITHUB,
-            )
-        )
-        if installation is None:
-            raise FixPipelineError(GITHUB_PROVIDER_REQUIRED_MESSAGE)
+        bot_username = self.settings.github_bot_username
+        if not bot_username:
+            raise FixPipelineError(GITHUB_BOT_REQUIRED_MESSAGE)
 
-        access_token = await self.github_provider.create_installation_access_token(
-            installation.installation_id,
-        )
+        try:
+            bot_token = self.github_provider.get_bot_access_token()
+        except GitProviderError as error:
+            raise FixPipelineError(str(error)) from error
+
         repository_full_name = parse_github_repository_full_name(source_repository.url)
         remote_head_sha = await self.github_provider.get_branch_head_sha(
             repository_full_name=repository_full_name,
             branch=fix_job.target_branch,
-            token=access_token.token,
+            token=bot_token,
         )
         if remote_head_sha != fix_job.base_commit_sha:
             await self._mark_stale_base(
@@ -190,7 +182,7 @@ class FixPublishPipelineService:
 
         clone_url = build_authenticated_github_url(
             source_repository.url,
-            access_token.token,
+            bot_token,
         )
         prepare_fix_workspace(
             repository_url=source_repository.url,
@@ -213,13 +205,13 @@ class FixPublishPipelineService:
         await self._ensure_not_canceled(fix_job.id)
 
         repository_owner = _get_repository_owner(repository_full_name)
-        if repository_owner.casefold() == installation.account_login.casefold():
+        if repository_owner.casefold() == bot_username.casefold():
             outcome = await self._publish_to_origin(
                 fix_job=fix_job,
                 sandbox_path=sandbox_path,
                 repository_full_name=repository_full_name,
                 repository_url=source_repository.url,
-                token=access_token.token,
+                token=bot_token,
                 commit_sha=commit_sha,
             )
         else:
@@ -227,8 +219,8 @@ class FixPublishPipelineService:
                 fix_job=fix_job,
                 sandbox_path=sandbox_path,
                 repository_full_name=repository_full_name,
-                fork_owner=installation.account_login,
-                token=access_token.token,
+                fork_owner=bot_username,
+                token=bot_token,
                 commit_sha=commit_sha,
             )
 

@@ -4,9 +4,9 @@ import os
 import shutil
 from functools import lru_cache
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Literal, Self
 
-from pydantic import AliasChoices, Field, SecretStr, field_validator
+from pydantic import AliasChoices, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 from sqlalchemy.engine import make_url
 
@@ -98,9 +98,8 @@ class Settings(BaseSettings):
     fix_executor_cpu_limit: float = Field(default=1.0, ge=0.25, le=8.0)
     fix_executor_pids_limit: int = Field(default=256, ge=32, le=2048)
 
-    github_app_id: str | None = None
-    github_app_private_key: SecretStr | None = None
-    github_app_install_url: str | None = None
+    github_bot_username: str | None = None
+    github_bot_token: SecretStr | None = None
     github_api_base_url: str = "https://api.github.com"
     github_api_version: str = "2026-03-10"
 
@@ -213,8 +212,7 @@ class Settings(BaseSettings):
 
     @field_validator(
         "frontend_base_url",
-        "github_app_id",
-        "github_app_install_url",
+        "github_bot_username",
         "fix_executor_docker_executable",
         "fix_executor_workspace_volume",
         mode="before",
@@ -229,19 +227,23 @@ class Settings(BaseSettings):
         stripped_value = value.strip()
         return stripped_value or None
 
-    @field_validator("github_app_private_key", mode="before")
-    @classmethod
-    def normalize_github_app_private_key(cls, value: object) -> object:
-        """Accept PEM values with escaped newlines from environment files."""
+    @model_validator(mode="after")
+    def validate_bot_credentials(self) -> Self:
+        """Ensure both bot username and token are configured together if set."""
 
-        if not isinstance(value, str):
-            return value
+        has_username = bool(
+            self.github_bot_username and self.github_bot_username.strip()
+        )
+        has_token = bool(
+            self.github_bot_token and self.github_bot_token.get_secret_value().strip()
+        )
+        if has_username != has_token:
+            raise ValueError(
+                "Both GITHUB_BOT_USERNAME and GITHUB_BOT_TOKEN "
+                "must be configured together",
+            )
 
-        stripped_value = value.strip()
-        if not stripped_value:
-            return None
-
-        return stripped_value.replace("\\n", "\n")
+        return self
 
     @field_validator("jwt_secret_key")
     @classmethod

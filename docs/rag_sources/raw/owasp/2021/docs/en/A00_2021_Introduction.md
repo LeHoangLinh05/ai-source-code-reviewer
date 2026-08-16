@@ -98,7 +98,6 @@ The following organizations (along with some anonymous donors) kindly donated da
 - AppSec Labs
 - Cobalt.io
 - Contrast Security
-- GitLab
 - HackerOne
 - HCL Technologies
 - Micro Focus
