@@ -22,9 +22,7 @@ def upgrade() -> None:
     """Create all PostgreSQL tables used by Phase 1 auth and Phase 3 models."""
 
     user_role = sa.Enum("user", "admin", name="user_role")
-    repository_platform = sa.Enum(
-        "github", "gitlab", "other", name="repository_platform"
-    )
+    repository_platform = sa.Enum("github", "other", name="repository_platform")
     review_job_status = sa.Enum(
         "PENDING",
         "CLONING",

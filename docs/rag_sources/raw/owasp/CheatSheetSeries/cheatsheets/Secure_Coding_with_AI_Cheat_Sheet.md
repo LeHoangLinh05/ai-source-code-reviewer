@@ -244,7 +244,6 @@ AI coding agents modify not just application code but also build scripts, CI/CD 
 - Review AI changes to the following files with heightened scrutiny -- treat them as security-critical:
     - `package.json` (scripts section: postinstall, preinstall, prepare, prebuild)
     - `.github/workflows/*.yml` (GitHub Actions)
-    - `.gitlab-ci.yml`
     - `Dockerfile`, `docker-compose.yml`
     - `Makefile`, `Rakefile`, `Taskfile`
     - `setup.py`, `pyproject.toml` (build scripts)

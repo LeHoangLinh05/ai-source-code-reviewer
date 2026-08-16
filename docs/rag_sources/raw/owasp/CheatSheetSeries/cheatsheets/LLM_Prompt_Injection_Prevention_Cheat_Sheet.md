@@ -503,5 +503,4 @@ For advanced red teaming, see [Microsoft's AI red team best practices](https://w
 
 **Recent Research:**
 
-- [GitLab Duo Remote Prompt Injection Research](https://www.legitsecurity.com/blog/remote-prompt-injection-in-gitlab-duo)
 - [Synthetic Recollections: ReAct Agent Prompt Injection](https://labs.withsecure.com/publications/llm-agent-prompt-injection)

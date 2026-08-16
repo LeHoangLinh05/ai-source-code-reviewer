@@ -16,7 +16,6 @@ from app.schemas.repository import RepositoryCreate
 
 ALLOWED_REPOSITORY_HOSTS = {
     "github.com": RepositoryPlatform.GITHUB,
-    "gitlab.com": RepositoryPlatform.GITLAB,
 }
 MIN_REPOSITORY_PATH_SEGMENTS = 2
 
@@ -109,9 +108,7 @@ class RepositoryService:
             )
 
         if hostname not in ALLOWED_REPOSITORY_HOSTS:
-            raise BadRequestError(
-                "Repository URL must point to github.com or gitlab.com"
-            )
+            raise BadRequestError("Repository URL must point to github.com")
 
         decoded_path = unquote(parsed_url.path)
         if decoded_path != parsed_url.path:

@@ -36,6 +36,25 @@ export async function getProviderConnections() {
   return response.data;
 }
 
+export async function disconnectProviderConnection(connectionId: string) {
+  await api.delete(`/providers/connections/${connectionId}`);
+}
+
+export function buildGitHubInstallationManageUrl(
+  connection: Pick<
+    ProviderConnection,
+    "account_login" | "account_type" | "installation_id"
+  >,
+) {
+  const installationId = encodeURIComponent(connection.installation_id);
+  if (connection.account_type?.toLowerCase() === "organization") {
+    const accountLogin = encodeURIComponent(connection.account_login);
+    return `https://github.com/organizations/${accountLogin}/settings/installations/${installationId}`;
+  }
+
+  return `https://github.com/settings/installations/${installationId}`;
+}
+
 export async function getRepositoryProviderStatus(repositoryId: string) {
   const response = await api.get<RepositoryProviderStatus>(
     `/repositories/${repositoryId}/provider-status`,

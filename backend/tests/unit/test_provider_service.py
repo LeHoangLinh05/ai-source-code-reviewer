@@ -9,7 +9,7 @@ import pytest
 from pydantic import SecretStr
 
 from app.core.config import Settings
-from app.core.exceptions import ServiceUnavailableError
+from app.core.exceptions import NotFoundError, ServiceUnavailableError
 from app.models.repository import RepositoryPlatform
 from app.models.user import User, UserRole
 from app.repositories.provider_installation_repository import (
@@ -93,6 +93,64 @@ async def test_sync_github_installation_uses_github_provider_details() -> None:
     assert response.account_login == "LeHoangLinh05"
 
 
+@pytest.mark.asyncio
+async def test_disconnect_provider_deletes_connection_owned_by_user() -> None:
+    current_user = User(
+        id=uuid4(),
+        email="user@example.com",
+        hashed_password="hashed",
+        full_name=None,
+        is_active=True,
+        role=UserRole.USER,
+    )
+    connection = SimpleNamespace(id=uuid4(), user_id=current_user.id)
+    installation_repository = RecordingDisconnectRepository(connection)
+    service = ProviderService(
+        settings=Settings(jwt_secret_key=JWT_SECRET_KEY),
+        provider_installation_repository=cast(
+            ProviderInstallationRepository,
+            installation_repository,
+        ),
+        repository_repository=cast(RepositoryRepository, SimpleNamespace()),
+    )
+
+    await service.disconnect_provider(connection.id, current_user)
+
+    assert installation_repository.lookups == [
+        {
+            "connection_id": connection.id,
+            "user_id": current_user.id,
+        }
+    ]
+    assert installation_repository.deleted == [connection]
+
+
+@pytest.mark.asyncio
+async def test_disconnect_provider_hides_connections_not_owned_by_user() -> None:
+    current_user = User(
+        id=uuid4(),
+        email="user@example.com",
+        hashed_password="hashed",
+        full_name=None,
+        is_active=True,
+        role=UserRole.USER,
+    )
+    installation_repository = RecordingDisconnectRepository(None)
+    service = ProviderService(
+        settings=Settings(jwt_secret_key=JWT_SECRET_KEY),
+        provider_installation_repository=cast(
+            ProviderInstallationRepository,
+            installation_repository,
+        ),
+        repository_repository=cast(RepositoryRepository, SimpleNamespace()),
+    )
+
+    with pytest.raises(NotFoundError, match="Provider connection not found"):
+        await service.disconnect_provider(uuid4(), current_user)
+
+    assert installation_repository.deleted == []
+
+
 def build_provider_service(settings: Settings) -> ProviderService:
     return ProviderService(
         settings=settings,
@@ -160,6 +218,33 @@ class RecordingProviderInstallationRepository:
             created_at=datetime.now(UTC),
             updated_at=datetime.now(UTC),
         )
+
+    async def rollback(self) -> None:
+        return None
+
+
+class RecordingDisconnectRepository:
+    def __init__(self, connection: SimpleNamespace | None) -> None:
+        self.connection = connection
+        self.deleted: list[SimpleNamespace] = []
+        self.lookups: list[dict[str, UUID]] = []
+
+    async def get_by_id_for_user(
+        self,
+        *,
+        connection_id: UUID,
+        user_id: UUID,
+    ) -> SimpleNamespace | None:
+        self.lookups.append(
+            {
+                "connection_id": connection_id,
+                "user_id": user_id,
+            }
+        )
+        return self.connection
+
+    async def delete(self, connection: SimpleNamespace) -> None:
+        self.deleted.append(connection)
 
     async def rollback(self) -> None:
         return None

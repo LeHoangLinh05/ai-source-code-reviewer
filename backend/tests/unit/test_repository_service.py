@@ -63,16 +63,16 @@ def test_repository_url_rejects_unsafe_or_incomplete_urls(url: str) -> None:
 
 
 @pytest.mark.parametrize(
-    ("url", "platform"),
+    "url",
     [
-        ("https://github.com/example/backend-api", "github"),
-        ("https://gitlab.com/example/team/backend-api.git", "gitlab"),
+        "https://github.com/example/backend-api",
+        "https://github.com/example/backend-api.git",
     ],
 )
-def test_repository_url_accepts_supported_https_urls(url: str, platform: str) -> None:
+def test_repository_url_accepts_github_https_urls(url: str) -> None:
     service = RepositoryService(cast(RepositoryRepository, SimpleNamespace()))
 
-    assert service._detect_platform(url).value == platform
+    assert service._detect_platform(url).value == "github"
 
 
 def build_payload(*, name: str) -> RepositoryCreate:

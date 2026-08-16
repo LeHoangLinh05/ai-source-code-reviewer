@@ -48,7 +48,6 @@ def upgrade() -> None:
     )
     repository_platform = postgresql.ENUM(
         "github",
-        "gitlab",
         "other",
         name="repository_platform",
         create_type=False,

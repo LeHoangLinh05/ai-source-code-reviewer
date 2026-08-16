@@ -77,6 +77,21 @@ class ProviderInstallationRepository:
         result = await self.session.execute(statement)
         return list(result.scalars().all())
 
+    async def get_by_id_for_user(
+        self,
+        *,
+        connection_id: UUID,
+        user_id: UUID,
+    ) -> ProviderInstallation | None:
+        """Return one provider connection owned by a user."""
+
+        statement = select(ProviderInstallation).where(
+            ProviderInstallation.id == connection_id,
+            ProviderInstallation.user_id == user_id,
+        )
+        result = await self.session.execute(statement)
+        return result.scalar_one_or_none()
+
     async def get_primary_for_user_provider(
         self,
         *,
@@ -96,6 +111,12 @@ class ProviderInstallationRepository:
         )
         result = await self.session.execute(statement)
         return result.scalar_one_or_none()
+
+    async def delete(self, installation: ProviderInstallation) -> None:
+        """Delete a local provider connection."""
+
+        await self.session.delete(installation)
+        await self.session.commit()
 
     async def rollback(self) -> None:
         """Discard staged provider installation changes."""

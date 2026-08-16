@@ -6,7 +6,6 @@ describe("repository URL validation", () => {
   it.each([
     "https://github.com/example/backend-api",
     "https://github.com/example/backend-api.git",
-    "https://gitlab.com/example/team/backend-api",
   ])("accepts a full supported URL: %s", (url) => {
     expect(isSupportedRepositoryUrl(url)).toBe(true);
   });

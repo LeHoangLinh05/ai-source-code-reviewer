@@ -1,4 +1,4 @@
-export type RepositoryPlatform = "github" | "gitlab" | "other";
+export type RepositoryPlatform = "github" | "other";
 
 export type Repository = {
   id: string;

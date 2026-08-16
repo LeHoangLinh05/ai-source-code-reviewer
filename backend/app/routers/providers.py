@@ -2,7 +2,7 @@
 
 from uuid import UUID
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Response, status
 
 from app.core.dependencies import CurrentUserDep, ProviderServiceDep
 from app.schemas.provider import (
@@ -55,6 +55,22 @@ async def list_provider_connections(
     """Return provider installations connected by the current user."""
 
     return await provider_service.list_connections(current_user)
+
+
+@router.delete(
+    "/providers/connections/{connection_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Disconnect a provider installation",
+)
+async def disconnect_provider(
+    connection_id: UUID,
+    current_user: CurrentUserDep,
+    provider_service: ProviderServiceDep,
+) -> Response:
+    """Remove a local provider connection without uninstalling the provider app."""
+
+    await provider_service.disconnect_provider(connection_id, current_user)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get(

@@ -41,7 +41,7 @@ Beyond these general principles, some specific guideline relevant to CI/CD confi
 
 CI/CD environments allow for code to be pushed to a repository and then deployed to a production environment with little to no manual intervention. However, this benefit can quickly become an attack vector if it allows untrusted, potentially malicious code to be deployed directly to a production system. Proper configuration of the SCM system can help mitigate this risk. Best practices include:
 
-- Avoid the use of auto-merge rules in platforms such as [Gitlab](https://docs.gitlab.com/ee/user/project/merge_requests/merge_when_pipeline_succeeds.html), [Github](https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/incorporating-changes-from-a-pull-request/automatically-merging-a-pull-request), or Bitbucket.
+- Avoid the use of auto-merge rules in platforms such as [GitHub](https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/incorporating-changes-from-a-pull-request/automatically-merging-a-pull-request) or Bitbucket.
 - Require pull requests to be reviewed before merging and ensure this review step cannot be bypassed.
 - Leverage [protected branches](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/about-protected-branches).
 - Require commits to be signed
@@ -52,7 +52,7 @@ CI/CD environments allow for code to be pushed to a repository and then deployed
 - Limit the option to change repository visibility to public.
 You can find a wide variety of additional policies in this [documentation](https://policies.legitify.dev/).
 
-To help navigate SCM configuration challenges, there are tools available, such as [Legitify](https://github.com/Legit-Labs/legitify), an open-source tool by [Legit security](https://www.legitsecurity.com/). Legitify scans SCM assets and identifies misconfigurations and security issues, including policies for all the above best practices (available for GitHub and GitLab).
+To help navigate SCM configuration challenges, there are tools available, such as [Legitify](https://github.com/Legit-Labs/legitify), an open-source tool by [Legit security](https://www.legitsecurity.com/). Legitify scans SCM assets and identifies misconfigurations and security issues, including policies for all the above best practices available for GitHub.
 
 ### Pipeline and Execution Environment
 

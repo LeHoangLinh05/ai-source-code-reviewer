@@ -68,7 +68,7 @@ const repositorySchema = z.object({
     .url("Enter a valid repository URL.")
     .refine(
       isSupportedRepositoryUrl,
-      "Enter a full HTTPS GitHub or GitLab repository URL.",
+      "Enter a full HTTPS GitHub repository URL.",
     ),
 });
 
@@ -256,7 +256,7 @@ export default function RepositoriesPage() {
               <div>
                 <CardTitle>Add Repository</CardTitle>
                 <CardDescription>
-                  Connect a public GitHub or GitLab repository.
+                  Connect a public GitHub repository.
                 </CardDescription>
               </div>
               <Button
@@ -411,7 +411,7 @@ function EmptyRepositoryState({ onAdd }: EmptyRepositoryStateProps) {
         No repositories yet
       </h2>
       <p className="mt-2 max-w-md text-[15px] leading-6 text-muted-foreground">
-        Connect a GitHub or GitLab repository to start building review history.
+        Connect a GitHub repository to start building review history.
       </p>
       <Button className="mt-5" onClick={onAdd}>
         <Plus aria-hidden="true" />

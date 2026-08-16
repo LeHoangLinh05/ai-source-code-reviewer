@@ -13,7 +13,7 @@ export function isSupportedRepositoryUrl(value: string) {
       repositoryUrl.password === "" &&
       repositoryUrl.search === "" &&
       repositoryUrl.hash === "" &&
-      (hostname === "github.com" || hostname === "gitlab.com") &&
+      hostname === "github.com" &&
       decodedPath === repositoryUrl.pathname &&
       pathSegments.length >= 2 &&
       repositoryName !== undefined &&

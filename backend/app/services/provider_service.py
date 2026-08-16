@@ -104,6 +104,26 @@ class ProviderService:
             for installation in installations
         ]
 
+    async def disconnect_provider(
+        self,
+        connection_id: UUID,
+        current_user: User,
+    ) -> None:
+        """Remove a user's local provider link without uninstalling the app."""
+
+        installation = await self.provider_installation_repository.get_by_id_for_user(
+            connection_id=connection_id,
+            user_id=current_user.id,
+        )
+        if installation is None:
+            raise NotFoundError("Provider connection not found")
+
+        try:
+            await self.provider_installation_repository.delete(installation)
+        except Exception:
+            await self.provider_installation_repository.rollback()
+            raise
+
     async def get_repository_provider_status(
         self,
         repository_id: UUID,

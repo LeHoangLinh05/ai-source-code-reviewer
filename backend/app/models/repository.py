@@ -22,7 +22,6 @@ class RepositoryPlatform(StrEnum):
     """Supported source hosting platforms."""
 
     GITHUB = "github"
-    GITLAB = "gitlab"
     OTHER = "other"
 
 

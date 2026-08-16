@@ -225,7 +225,7 @@ The following libraries are either no longer maintained or cannot be used safely
 - **[fastjson < v1.2.68](https://github.com/alibaba/fastjson)** (JSON) - these versions allows deserialization of any class
 ([see documentation](https://github.com/alibaba/fastjson/wiki/enable_autotype))
 - **[XMLDecoder in the JDK](https://docs.oracle.com/javase/8/docs/api/java/beans/XMLDecoder.html)** (XML) - *"close to impossible to securely deserialize Java objects in this format from untrusted inputs"*
-("Red Hat Defensive Coding Guide", [end of section 2.6.5](https://redhat-crypto.gitlab.io/defensive-coding-guide/#sect-Defensive_Coding-Tasks-Serialization-XML))
+("Red Hat Defensive Coding Guide", end of section 2.6.5)
 - **[XStream < v1.4.17](https://x-stream.github.io/)** (JSON and XML) - these versions allows deserialization of any class (see [documentation](https://x-stream.github.io/security.html#explicit))
 - **[YamlBeans < v1.16](https://github.com/EsotericSoftware/yamlbeans)** (YAML) - these versions allows deserialization of any class
 (see [this document](https://github.com/Contrast-Security-OSS/yamlbeans/blob/main/SECURITY.md))
