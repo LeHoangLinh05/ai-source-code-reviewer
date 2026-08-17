@@ -1,0 +1,48 @@
+# Production Dockerfile for RepoGuard AI backend
+# Reuses the same runtime dependencies as the development Dockerfile but is
+# explicitly targeted at production builds (no dev/test dependencies, no reload).
+#
+# The review pipeline requires: git, node/npm (for eslint/typescript analyzers),
+# ruff, bandit, and docker-cli (for fix executor orchestration).
+# These are all retained.
+
+FROM node:20-slim AS node-runtime
+
+FROM python:3.12-slim AS runtime
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    NODE_PATH=/usr/local/lib/node_modules
+
+WORKDIR /app
+
+# System dependencies: git (repo cloning), docker-cli (fix executor)
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends git docker-cli \
+    && rm -rf /var/lib/apt/lists/*
+
+# Node.js runtime (required by eslint/typescript analyzers in the pipeline)
+COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node
+COPY --from=node-runtime /usr/local/lib/node_modules /usr/local/lib/node_modules
+RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
+    && ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
+
+# Python dependencies (runtime only — requirements.txt, not requirements-dev.txt)
+COPY requirements.txt .
+RUN python -m pip install --no-compile --upgrade pip \
+    && python -m pip install --no-compile -r requirements.txt \
+    && python -m pip install --no-compile ruff bandit \
+    && npm install --global eslint @eslint/js typescript typescript-eslint \
+    && npm cache clean --force \
+    && rm -rf /root/.cache /root/.npm \
+    && find /usr/local/lib/python3.12/site-packages \
+        -type d -name __pycache__ -prune -exec rm -rf '{}' +
+
+# Application source
+COPY . .
+
+EXPOSE 8000
+
+# Production server — no --reload
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

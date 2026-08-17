@@ -20,9 +20,11 @@ depends_on: str | Sequence[str] | None = None
 def upgrade() -> None:
     """Add KB issue source and remove obsolete roadmap report data."""
 
+    # Use ::text cast to avoid UnsafeNewEnumValueUsage error when the enum
+    # value was added in a previous migration within the same transaction.
     op.execute(
         "DELETE FROM review_issues "
-        "WHERE source = 'roadmap_rule' "
+        "WHERE source::text = 'roadmap_rule' "
         "OR file_path IS NULL OR line_start IS NULL OR line_end IS NULL"
     )
     op.execute("ALTER TYPE issue_source RENAME TO issue_source_legacy")

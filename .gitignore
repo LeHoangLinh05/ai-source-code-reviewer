@@ -1,6 +1,7 @@
 .env
 .env.*
 !.env.example
+!.env.production.example
 backend/.env
 backend/.env.*
 !backend/.env.example
@@ -8,6 +9,7 @@ backend/.env.*
 *.md
 !/AGENTS.md
 !/README.md
+
 *.docx
 
 __pycache__/
