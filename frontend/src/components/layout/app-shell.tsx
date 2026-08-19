@@ -162,7 +162,7 @@ function ShellBrand({
       )}
     >
       <Link
-        aria-label="RepoReview dashboard"
+        aria-label="RepoReview home"
         className={cn(
           "flex min-w-0 items-center gap-3",
           isCollapsed && "justify-center",

@@ -151,7 +151,7 @@ export function RegisterForm() {
         ) : null}
         <Button
           className="w-full"
-          disabled={form.formState.isSubmitting || !form.formState.isValid}
+          disabled={form.formState.isSubmitting}
           type="submit"
         >
           {form.formState.isSubmitting ? "Creating account..." : "Create account"}

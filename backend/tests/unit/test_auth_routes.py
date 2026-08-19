@@ -55,7 +55,11 @@ async def test_login_route_returns_token_pair_and_sets_cookies() -> None:
     set_cookie_headers = set_cookie_values(response)
     assert any("accessToken=access-token" in header for header in set_cookie_headers)
     assert any("refreshToken=refresh-token" in header for header in set_cookie_headers)
-    assert all("HttpOnly" in header for header in set_cookie_headers)
+    assert all(
+        "HttpOnly" in header
+        for header in set_cookie_headers
+        if "repoguard_session" not in header
+    )
 
 
 @pytest.mark.asyncio
@@ -95,6 +99,7 @@ def build_settings():
     return SimpleNamespace(
         access_cookie_name="accessToken",
         refresh_cookie_name="refreshToken",
+        session_marker_cookie_name="repoguard_session",
         refresh_cookie_secure=False,
         refresh_cookie_samesite="lax",
         jwt_access_token_expire_minutes=15,

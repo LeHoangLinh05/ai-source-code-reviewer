@@ -129,7 +129,7 @@ export function LoginForm() {
         ) : null}
         <Button
           className="w-full"
-          disabled={form.formState.isSubmitting || !form.formState.isValid}
+          disabled={form.formState.isSubmitting}
           type="submit"
         >
           {form.formState.isSubmitting ? "Signing in..." : "Sign in"}
@@ -137,7 +137,7 @@ export function LoginForm() {
         <p className="text-center text-sm text-muted-foreground">
           New to RepoGuard AI?{" "}
           <Link className="font-medium text-primary hover:underline" href="/register">
-            Create an account
+            Sign up
           </Link>
         </p>
       </form>

@@ -3,22 +3,20 @@
 import { AlertCircle } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
-import { ActiveReviews } from "@/components/dashboard/active-reviews";
+import { ActionCenter } from "@/components/dashboard/action-center";
+import { ActivityTimeline } from "@/components/dashboard/activity-timeline";
+import { CodebaseHealthCard } from "@/components/dashboard/codebase-health";
 import { DashboardOnboarding } from "@/components/dashboard/onboarding";
 import { DashboardSkeleton } from "@/components/dashboard/dashboard-skeleton";
-import { LatestReportSummaryCard } from "@/components/dashboard/latest-report-summary";
-import { NeedsAttention } from "@/components/dashboard/needs-attention";
-import { RecentActivity } from "@/components/dashboard/recent-activity";
-import { RepositoryOverview } from "@/components/dashboard/repository-overview";
+import { QuickStatsRow } from "@/components/dashboard/quick-stats";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { getApiErrorMessage } from "@/lib/api-error";
 import {
-  buildActiveReviews,
-  buildLatestReportSummary,
+  buildActivityTimeline,
+  buildCodebaseHealth,
   buildNeedsAttention,
-  buildRecentReviews,
-  buildRepositoryOverview,
+  buildQuickStats,
   selectRecentCompletedJobs,
   type DashboardData,
 } from "@/lib/dashboard";
@@ -91,11 +89,10 @@ export default function DashboardPage() {
 
   const derived = useMemo(
     () => ({
+      quickStats: buildQuickStats(data),
       needsAttention: buildNeedsAttention(data),
-      activeReviews: buildActiveReviews(data),
-      recentReviews: buildRecentReviews(data),
-      repositoryOverview: buildRepositoryOverview(data),
-      latestReport: buildLatestReportSummary(data),
+      codebaseHealth: buildCodebaseHealth(data),
+      activityTimeline: buildActivityTimeline(data),
     }),
     [data],
   );
@@ -104,20 +101,20 @@ export default function DashboardPage() {
   const showOnboarding = !isLoading && !error && !hasRepositories;
 
   return (
-    <>
+    <div className="flex flex-col gap-6">
       {error ? (
-        <Card className="border-destructive/40">
+        <Card className="border-border bg-card">
           <CardContent className="flex flex-col gap-4 p-5 sm:flex-row sm:items-center sm:justify-between">
             <div className="flex items-start gap-3">
               <AlertCircle
                 aria-hidden="true"
-                className="mt-0.5 size-5 shrink-0 text-destructive"
+                className="mt-0.5 size-5 shrink-0 text-slate-400"
               />
               <div>
                 <p className="text-[15px] font-semibold text-foreground">
                   Something went wrong
                 </p>
-                <p className="mt-1 text-[15px] text-muted-foreground">{error}</p>
+                <p className="mt-1 text-sm text-muted-foreground">{error}</p>
               </div>
             </div>
             <Button
@@ -137,21 +134,24 @@ export default function DashboardPage() {
       {showOnboarding ? <DashboardOnboarding /> : null}
 
       {!isLoading && !error && hasRepositories ? (
-        <div className="grid min-w-0 gap-4 xl:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)] xl:items-start">
-          <div className="grid min-w-0 gap-4">
-            <NeedsAttention items={derived.needsAttention} />
-            <ActiveReviews reviews={derived.activeReviews} />
-            <RecentActivity reviews={derived.recentReviews} />
+        <div className="flex flex-col gap-6">
+          {/* Row 1: Quick Stats */}
+          <QuickStatsRow stats={derived.quickStats} />
+
+          {/* Row 2: Action Center + Codebase Health (Equal Height) */}
+          <div className="grid grid-cols-1 gap-6 lg:grid-cols-12 items-stretch">
+            <div className="flex flex-col min-w-0 lg:col-span-7 xl:col-span-7">
+              <ActionCenter items={derived.needsAttention} />
+            </div>
+            <div className="flex flex-col min-w-0 lg:col-span-5 xl:col-span-5">
+              <CodebaseHealthCard health={derived.codebaseHealth} />
+            </div>
           </div>
 
-          <div className="grid min-w-0 gap-4">
-            {derived.latestReport ? (
-              <LatestReportSummaryCard summary={derived.latestReport} />
-            ) : null}
-            <RepositoryOverview repositories={derived.repositoryOverview} />
-          </div>
+          {/* Row 3: Activity Timeline */}
+          <ActivityTimeline groups={derived.activityTimeline} />
         </div>
       ) : null}
-    </>
+    </div>
   );
 }

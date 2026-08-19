@@ -70,6 +70,7 @@ async def login(
     token_pair = await auth_service.login(payload)
     _set_access_cookie(response, token_pair.access_token, settings)
     _set_refresh_cookie(response, token_pair.refresh_token, settings)
+    _set_session_marker_cookie(response, settings)
     _delete_legacy_access_cookie(response)
     return token_pair
 
@@ -97,6 +98,7 @@ async def refresh(
     token_pair = await auth_service.refresh(refresh_token)
     _set_access_cookie(response, token_pair.access_token, settings)
     _set_refresh_cookie(response, token_pair.refresh_token, settings)
+    _set_session_marker_cookie(response, settings)
     _delete_legacy_access_cookie(response)
     return token_pair
 
@@ -123,6 +125,7 @@ async def logout(
     await auth_service.logout(access_token, refresh_token)
     _delete_access_cookie(response, settings)
     _delete_refresh_cookie(response, settings)
+    _delete_session_marker_cookie(response, settings)
     _delete_legacy_access_cookie(response)
     return LogoutResponse(message=f"User {current_user.email} logged out")
 
@@ -144,6 +147,7 @@ async def logout_all(
     await auth_service.logout_all(access_token, current_user)
     _delete_access_cookie(response, settings)
     _delete_refresh_cookie(response, settings)
+    _delete_session_marker_cookie(response, settings)
     _delete_legacy_access_cookie(response)
     return LogoutResponse(message=f"All sessions for {current_user.email} logged out")
 
@@ -210,6 +214,30 @@ def _delete_refresh_cookie(response: Response, settings: Settings) -> None:
         key=settings.refresh_cookie_name,
         path=REFRESH_COOKIE_PATH,
         httponly=True,
+        secure=settings.refresh_cookie_secure,
+        samesite=settings.refresh_cookie_samesite,
+    )
+
+
+def _set_session_marker_cookie(response: Response, settings: Settings) -> None:
+    """Set a non-HTTP-only marker cookie for the frontend middleware."""
+
+    response.set_cookie(
+        key=settings.session_marker_cookie_name,
+        value="1",
+        max_age=settings.jwt_refresh_token_expire_days * SECONDS_PER_DAY,
+        path=ACCESS_COOKIE_PATH,
+        httponly=False,
+        secure=settings.refresh_cookie_secure,
+        samesite=settings.refresh_cookie_samesite,
+    )
+
+
+def _delete_session_marker_cookie(response: Response, settings: Settings) -> None:
+    response.delete_cookie(
+        key=settings.session_marker_cookie_name,
+        path=ACCESS_COOKIE_PATH,
+        httponly=False,
         secure=settings.refresh_cookie_secure,
         samesite=settings.refresh_cookie_samesite,
     )

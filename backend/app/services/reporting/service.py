@@ -32,7 +32,6 @@ from app.services.reporting.generation import build_top_risky_files
 from app.services.reporting.issue_presenter import (
     _group_issues,
     _group_matches_filters,
-    _has_source_context,
     _issue_group_key,
     _issue_group_response,
     _sort_issue_groups,
@@ -183,9 +182,24 @@ class ReportService:
 
     async def _issue_with_source_context(self, issue: ReviewIssue) -> IssueResponse:
         response = IssueResponse.model_validate(issue)
-        if _has_source_context(response.raw_output):
+        raw_output = response.raw_output or {}
+
+        # Already has top-level source context
+        if isinstance(raw_output.get("source_context"), dict):
             return response
 
+        # Promote source context from probe_review to top-level
+        probe_review = raw_output.get("probe_review")
+        if isinstance(probe_review, dict) and isinstance(
+            probe_review.get("source_context"), dict
+        ):
+            response.raw_output = {
+                **raw_output,
+                "source_context": probe_review["source_context"],
+            }
+            return response
+
+        # Fallback: look up chunk metadata from MongoDB
         chunk = await self.chunk_metadata_repository.find_containing_line(
             job_id=issue.job_id,
             file_path=issue.file_path,
@@ -199,7 +213,7 @@ class ReportService:
         )
         if source_context is not None:
             response.raw_output = {
-                **(response.raw_output or {}),
+                **raw_output,
                 "source_context": source_context,
             }
         return response

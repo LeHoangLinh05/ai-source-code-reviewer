@@ -1,0 +1,353 @@
+# Production Docker Compose for RepoGuard AI
+# Usage:
+#   cp .env.production.example .env.production
+#   # Fill in secrets
+#   docker compose --env-file .env.production -f docker-compose.prod.yml up -d --build
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+x-backend-env: &backend-env
+  APP_NAME: ${APP_NAME:-RepoGuard AI}
+  ENVIRONMENT: production
+  DEBUG: "false"
+  API_PREFIX: /api
+  # PostgreSQL
+  POSTGRES_HOST: postgres
+  POSTGRES_PORT: "5432"
+  POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB is required}
+  POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required}
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+  POSTGRES_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+  # Redis
+  REDIS_HOST: redis
+  REDIS_PORT: "6379"
+  REDIS_DB: ${REDIS_DB:-0}
+  REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+  REDIS_URL: redis://redis:6379/${REDIS_DB:-0}
+  CELERY_BROKER_URL: redis://redis:6379/${REDIS_DB:-0}
+  CELERY_RESULT_BACKEND: redis://redis:6379/${REDIS_DB:-0}
+  REDIS_MAX_CONNECTIONS: ${REDIS_MAX_CONNECTIONS:-10}
+  REDIS_SOCKET_CONNECT_TIMEOUT_SECONDS: ${REDIS_SOCKET_CONNECT_TIMEOUT_SECONDS:-5.0}
+  REDIS_SOCKET_TIMEOUT_SECONDS: ${REDIS_SOCKET_TIMEOUT_SECONDS:-5.0}
+  REDIS_HEALTH_CHECK_INTERVAL_SECONDS: ${REDIS_HEALTH_CHECK_INTERVAL_SECONDS:-30}
+  # MongoDB
+  MONGODB_HOST: mongodb
+  MONGODB_PORT: "27017"
+  MONGODB_DB: ${MONGODB_DB:?MONGODB_DB is required}
+  MONGODB_USER: ${MONGODB_USER:?MONGODB_USER is required}
+  MONGODB_PASSWORD: ${MONGODB_PASSWORD:?MONGODB_PASSWORD is required}
+  MONGODB_URL: mongodb://${MONGODB_USER}:${MONGODB_PASSWORD}@mongodb:27017/${MONGODB_DB}?authSource=admin
+  # Auth
+  JWT_SECRET_KEY: ${JWT_SECRET_KEY:?JWT_SECRET_KEY is required}
+  JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
+  ACCESS_TOKEN_EXPIRE: ${ACCESS_TOKEN_EXPIRE:-15}
+  REFRESH_TOKEN_EXPIRE: ${REFRESH_TOKEN_EXPIRE:-7}
+  JWT_ACCESS_TOKEN_EXPIRE_MINUTES: ${JWT_ACCESS_TOKEN_EXPIRE_MINUTES:-15}
+  JWT_REFRESH_TOKEN_EXPIRE_DAYS: ${JWT_REFRESH_TOKEN_EXPIRE_DAYS:-7}
+  ACCESS_COOKIE_NAME: ${ACCESS_COOKIE_NAME:-accessToken}
+  REFRESH_COOKIE_NAME: ${REFRESH_COOKIE_NAME:-refreshToken}
+  REFRESH_COOKIE_SECURE: ${REFRESH_COOKIE_SECURE:-false}
+  REFRESH_COOKIE_SAMESITE: ${REFRESH_COOKIE_SAMESITE:-lax}
+  # CORS
+  CORS_ORIGINS: ${CORS_ORIGINS:-}
+  CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-}
+  CORS_ALLOWED_ORIGIN_REGEX: ${CORS_ALLOWED_ORIGIN_REGEX:-}
+  # GitHub Bot
+  GITHUB_BOT_USERNAME: ${GITHUB_BOT_USERNAME:-}
+  GITHUB_BOT_TOKEN: ${GITHUB_BOT_TOKEN:-}
+  GITHUB_API_BASE_URL: ${GITHUB_API_BASE_URL:-https://api.github.com}
+  GITHUB_API_VERSION: ${GITHUB_API_VERSION:-2026-03-10}
+  # LLM
+  LLM_PROVIDER: ${LLM_PROVIDER:-openai}
+  OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+  OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
+  OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
+  OPENAI_MAX_RETRIES: ${OPENAI_MAX_RETRIES:-6}
+  OPENAI_MIN_REQUEST_INTERVAL_SECONDS: ${OPENAI_MIN_REQUEST_INTERVAL_SECONDS:-1.5}
+  PROBE_JUDGE_MAX_CONCURRENCY: ${PROBE_JUDGE_MAX_CONCURRENCY:-1}
+  PROBE_JUDGE_MAX_PROBES_PER_BATCH: ${PROBE_JUDGE_MAX_PROBES_PER_BATCH:-8}
+  PROBE_JUDGE_MAX_CHUNKS_PER_BATCH: ${PROBE_JUDGE_MAX_CHUNKS_PER_BATCH:-24}
+  PROBE_RETRIEVAL_MAX_CHUNKS: ${PROBE_RETRIEVAL_MAX_CHUNKS:-256}
+  LLM_JOB_CALL_BUDGET: ${LLM_JOB_CALL_BUDGET:-96}
+  LLM_RATE_LIMIT_FAILURE_BUDGET: ${LLM_RATE_LIMIT_FAILURE_BUDGET:-1}
+  MISTRAL_API_KEY: ${MISTRAL_API_KEY:-}
+  MISTRAL_BASE_URL: ${MISTRAL_BASE_URL:-https://api.mistral.ai/v1}
+  OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+  OPENROUTER_BASE_URL: ${OPENROUTER_BASE_URL:-https://openrouter.ai/api/v1}
+  # RAG
+  RAG_CHROMA_PATH: /data/rag/chroma
+  RAG_EMBEDDING_MODEL: ${RAG_EMBEDDING_MODEL:-sentence-transformers/all-MiniLM-L6-v2}
+  CODE_EMBEDDING_PROVIDER: ${CODE_EMBEDDING_PROVIDER:-mistral}
+  CODE_EMBEDDING_MODEL: ${CODE_EMBEDDING_MODEL:-codestral-embed-2505}
+  CODE_EMBEDDING_DIMENSION: ${CODE_EMBEDDING_DIMENSION:-1536}
+  CODE_EMBEDDING_BATCH_SIZE: ${CODE_EMBEDDING_BATCH_SIZE:-16}
+  PROBE_SEMANTIC_QUERY_BATCH_SIZE: ${PROBE_SEMANTIC_QUERY_BATCH_SIZE:-16}
+  PROBE_SEMANTIC_MAX_QUERY_TOKENS: ${PROBE_SEMANTIC_MAX_QUERY_TOKENS:-64}
+  PROBE_DEFECT_MAX_CHUNKS: ${PROBE_DEFECT_MAX_CHUNKS:-120}
+  PROBE_COVERAGE_MAX_CHUNKS: ${PROBE_COVERAGE_MAX_CHUNKS:-24}
+  PROBE_ROADMAP_MAX_CHUNKS: ${PROBE_ROADMAP_MAX_CHUNKS:-120}
+  CODE_EMBEDDING_MAX_ITEM_TOKENS: ${CODE_EMBEDDING_MAX_ITEM_TOKENS:-1500}
+  CODE_EMBEDDING_MAX_BATCH_TOKENS: ${CODE_EMBEDDING_MAX_BATCH_TOKENS:-12000}
+  CODE_EMBEDDING_MAX_CONCURRENCY: ${CODE_EMBEDDING_MAX_CONCURRENCY:-2}
+  CODE_EMBEDDING_MAX_PENDING_BATCHES: ${CODE_EMBEDDING_MAX_PENDING_BATCHES:-4}
+  CODE_CHUNK_PARSE_CONCURRENCY: ${CODE_CHUNK_PARSE_CONCURRENCY:-4}
+  MONGODB_CHUNK_BATCH_SIZE: ${MONGODB_CHUNK_BATCH_SIZE:-500}
+  CODE_EMBEDDING_MAX_RETRIES: ${CODE_EMBEDDING_MAX_RETRIES:-4}
+  CODE_EMBEDDING_RETRY_BASE_DELAY_SECONDS: ${CODE_EMBEDDING_RETRY_BASE_DELAY_SECONDS:-2.0}
+  ENABLE_CODE_SEMANTIC_SEARCH: ${ENABLE_CODE_SEMANTIC_SEARCH:-true}
+  # Sandbox / Fix executor
+  SANDBOX_ROOT: /data/sandbox
+  SANDBOX_TTL_HOURS: ${SANDBOX_TTL_HOURS:-1}
+  FIX_EXECUTOR_DOCKER_EXECUTABLE: docker
+  FIX_EXECUTOR_IMAGE: ${FIX_EXECUTOR_IMAGE:-repoguard-fix-executor:latest}
+  FIX_EXECUTOR_WORKSPACE_VOLUME: ${COMPOSE_PROJECT_NAME:-ai-source-code-reviewer}_sandbox_data
+  FIX_EXECUTOR_NETWORK: ${FIX_EXECUTOR_NETWORK:-none}
+  FIX_EXECUTOR_MEMORY_MB: ${FIX_EXECUTOR_MEMORY_MB:-1024}
+  FIX_EXECUTOR_CPU_LIMIT: ${FIX_EXECUTOR_CPU_LIMIT:-1.0}
+  FIX_EXECUTOR_PIDS_LIMIT: ${FIX_EXECUTOR_PIDS_LIMIT:-256}
+
+services:
+  # ─── Infrastructure ───────────────────────────────────────────────────────────
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB is required}
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    logging: *default-logging
+    networks:
+      - internal
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    logging: *default-logging
+    networks:
+      - internal
+
+  mongodb:
+    image: mongo:7
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGODB_USER:?MONGODB_USER is required}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGODB_PASSWORD:?MONGODB_PASSWORD is required}
+      MONGO_INITDB_DATABASE: ${MONGODB_DB:?MONGODB_DB is required}
+    volumes:
+      - mongodb_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    logging: *default-logging
+    networks:
+      - internal
+
+  # ─── Migration (one-shot) ─────────────────────────────────────────────────────
+
+  migrate:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.prod
+    restart: "no"
+    command: ["alembic", "upgrade", "head"]
+    environment:
+      <<: *backend-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    logging: *default-logging
+    networks:
+      - internal
+
+  # ─── Application ──────────────────────────────────────────────────────────────
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.prod
+    restart: unless-stopped
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]
+    environment:
+      <<: *backend-env
+    volumes:
+      - rag_data:/data/rag
+      - model_cache:/root/.cache
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      mongodb:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    logging: *default-logging
+    networks:
+      - internal
+
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.prod
+    restart: unless-stopped
+    command: ["celery", "-A", "app.worker.celery_app", "worker", "--loglevel=info", "--concurrency=1"]
+    environment:
+      <<: *backend-env
+    volumes:
+      - rag_data:/data/rag
+      - model_cache:/root/.cache
+      - sandbox_data:/data/sandbox
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      mongodb:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      fix-executor-image:
+        condition: service_completed_successfully
+    logging: *default-logging
+    networks:
+      - internal
+
+  beat:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.prod
+    restart: unless-stopped
+    command: ["celery", "-A", "app.worker.celery_app", "beat", "--loglevel=info"]
+    environment:
+      <<: *backend-env
+    volumes:
+      - rag_data:/data/rag
+      - model_cache:/root/.cache
+    depends_on:
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    logging: *default-logging
+    networks:
+      - internal
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        API_PROXY_TARGET: http://backend:8000
+    restart: unless-stopped
+    environment:
+      API_PROXY_TARGET: http://backend:8000
+      NEXT_PUBLIC_API_URL: /api
+      NEXT_PUBLIC_API_BASE_URL: /api
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:3000"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    logging: *default-logging
+    networks:
+      - internal
+
+  nginx:
+    image: nginx:alpine
+    restart: unless-stopped
+    ports:
+      - "${NGINX_HOST_PORT:-80}:80"
+    volumes:
+      - ./nginx/nginx.prod.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      frontend:
+        condition: service_healthy
+      backend:
+        condition: service_healthy
+    logging: *default-logging
+    networks:
+      - internal
+
+  # ─── Fix Executor Image (build-only) ──────────────────────────────────────────
+
+  fix-executor-image:
+    build:
+      context: ./docker
+      dockerfile: fix-executor.Dockerfile
+    image: ${FIX_EXECUTOR_IMAGE:-repoguard-fix-executor:latest}
+    restart: "no"
+    command: ["echo", "fix-executor image built"]
+    logging: *default-logging
+    networks:
+      - internal
+
+  # ─── RAG Seed (optional, run with --profile setup) ────────────────────────────
+
+  rag-seed:
+    profiles: ["setup"]
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.prod
+    restart: "no"
+    command: ["sh", "-c", "PYTHONPATH=/app python /app/scripts/seed_rag.py --skip-smoke"]
+    environment:
+      <<: *backend-env
+    volumes:
+      - rag_data:/data/rag
+      - model_cache:/root/.cache
+      - ./docs/rag_sources:/app/docs/rag_sources:ro
+      - ./scripts:/app/scripts:ro
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    logging: *default-logging
+    networks:
+      - internal
+
+volumes:
+  postgres_data:
+  redis_data:
+  mongodb_data:
+  rag_data:
+  model_cache:
+  sandbox_data:
+
+networks:
+  internal:
+    driver: bridge

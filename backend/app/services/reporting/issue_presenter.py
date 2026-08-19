@@ -29,8 +29,13 @@ AI_REVIEW_SOURCES = frozenset({IssueSource.AI_REVIEW, IssueSource.KB})
 
 
 def _has_source_context(raw_output: dict[str, object] | None) -> bool:
-    return isinstance(raw_output, dict) and isinstance(
-        raw_output.get("source_context"), dict
+    if not isinstance(raw_output, dict):
+        return False
+    if isinstance(raw_output.get("source_context"), dict):
+        return True
+    probe_review = raw_output.get("probe_review")
+    return isinstance(probe_review, dict) and isinstance(
+        probe_review.get("source_context"), dict
     )
 
 

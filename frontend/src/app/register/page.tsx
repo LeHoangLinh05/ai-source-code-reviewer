@@ -6,7 +6,7 @@ export default function RegisterPage() {
   return (
     <GuestOnly>
       <AuthCard
-        title="Create account"
+        title="Sign up"
         description="Start a protected session for source code review."
       >
         <RegisterForm />

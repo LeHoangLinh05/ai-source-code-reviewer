@@ -11,7 +11,7 @@ type PasswordInputProps = Omit<ComponentProps<typeof Input>, "type"> & {
 };
 
 export const PasswordInput = forwardRef<HTMLInputElement, PasswordInputProps>(
-  ({ className, toggleLabel = "Toggle password visibility", ...props }, ref) => {
+  ({ className, toggleLabel = "Toggle visibility", ...props }, ref) => {
     const [isVisible, setIsVisible] = useState(false);
     const Icon = isVisible ? EyeOff : Eye;
 

@@ -121,6 +121,7 @@ class Settings(BaseSettings):
     )
     access_cookie_name: str = "accessToken"
     refresh_cookie_name: str = "refreshToken"
+    session_marker_cookie_name: str = "repoguard_session"
     refresh_cookie_secure: bool = False
     refresh_cookie_samesite: Literal["lax", "strict", "none"] = "lax"
 
