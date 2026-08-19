@@ -1,0 +1,43 @@
+FROM node:20-slim AS node-runtime
+
+FROM python:3.12-slim AS runtime
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    NODE_PATH=/usr/local/lib/node_modules \
+    PYTHONPATH=/app/backend
+
+WORKDIR /app/backend
+
+# Git dùng để clone repository.
+# docker-cli dùng để worker gọi fix-executor.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends git docker-cli \
+    && rm -rf /var/lib/apt/lists/*
+
+# Node.js cho ESLint / TypeScript analyzer.
+COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node
+COPY --from=node-runtime /usr/local/lib/node_modules /usr/local/lib/node_modules
+
+RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
+    && ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
+
+# Python dependencies.
+COPY backend/requirements.txt /app/backend/requirements.txt
+
+RUN python -m pip install --no-compile --upgrade pip \
+    && python -m pip install --no-compile -r requirements.txt \
+    && python -m pip install --no-compile ruff bandit \
+    && npm install --global eslint @eslint/js typescript typescript-eslint \
+    && npm cache clean --force \
+    && rm -rf /root/.cache /root/.npm
+
+# Backend source.
+COPY backend/ /app/backend/
+
+# RAG seed script cần cấu trúc /app/scripts + /app/docs.
+COPY scripts/ /app/scripts/
+COPY docs/rag_sources/ /app/docs/rag_sources/
+
+CMD ["celery", "-A", "app.worker", "worker", "--loglevel=info", "--pool=solo"]

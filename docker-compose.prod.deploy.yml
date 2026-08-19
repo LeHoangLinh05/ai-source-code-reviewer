@@ -1,0 +1,110 @@
+name: repoguard-worker-prod
+
+services:
+  worker:
+    image: ${WORKER_IMAGE:?WORKER_IMAGE is required}
+
+    container_name: repoguard-worker
+
+    restart: unless-stopped
+
+    env_file:
+      - .env.prod
+
+    environment:
+      ENVIRONMENT: production
+      DEBUG: "false"
+
+      RAG_CHROMA_PATH: /data/rag/chroma
+      SANDBOX_ROOT: /data/sandbox
+
+      FIX_EXECUTOR_IMAGE: ${FIX_EXECUTOR_IMAGE:?FIX_EXECUTOR_IMAGE is required}
+      FIX_EXECUTOR_WORKSPACE_VOLUME: repoguard-worker-sandbox
+
+      TOKENIZERS_PARALLELISM: "false"
+      OMP_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+
+    command:
+      [
+        "celery",
+        "-A",
+        "app.worker",
+        "worker",
+        "--loglevel=info",
+        "--pool=solo"
+      ]
+
+    volumes:
+      - sandbox_data:/data/sandbox
+      - rag_data:/data/rag
+      - model_cache:/root/.cache
+
+      # Worker cần điều khiển Docker host để chạy fix-executor.
+      - /var/run/docker.sock:/var/run/docker.sock
+
+
+  beat:
+    image: ${WORKER_IMAGE:?WORKER_IMAGE is required}
+
+    container_name: repoguard-beat
+
+    restart: unless-stopped
+
+    env_file:
+      - .env.prod
+
+    environment:
+      ENVIRONMENT: production
+      DEBUG: "false"
+
+    command:
+      [
+        "celery",
+        "-A",
+        "app.worker",
+        "beat",
+        "--loglevel=info"
+      ]
+
+    volumes:
+      - model_cache:/root/.cache
+
+
+  rag-seed:
+    image: ${WORKER_IMAGE:?WORKER_IMAGE is required}
+
+    profiles:
+      - setup
+
+    env_file:
+      - .env.prod
+
+    environment:
+      ENVIRONMENT: production
+      DEBUG: "false"
+      RAG_CHROMA_PATH: /data/rag/chroma
+
+    command:
+      [
+        "python",
+        "/app/scripts/seed_rag.py",
+        "--skip-smoke"
+      ]
+
+    volumes:
+      - rag_data:/data/rag
+      - model_cache:/root/.cache
+
+    restart: "no"
+
+
+volumes:
+  sandbox_data:
+    name: repoguard-worker-sandbox
+
+  rag_data:
+    name: repoguard-worker-rag
+
+  model_cache:
+    name: repoguard-worker-model-cache
