@@ -22,13 +22,18 @@ GENERIC_CLAIM_TYPES = {
 CONTEXTUAL_OTP_WEAK_RANDOMNESS_CLAIMS = {
     "cryptographically_insecure_randomness",
     "insecure_otp_generation",
+    "insecure_otp_randomness",
     "insecure_randomness",
     "non_cryptographic_otp_generation",
     "non_cryptographic_randomness",
+    "otp_generated_using_non_cryptographic_random_function",
+    "otp_random_module",
+    "otp_using_random_module",
     "predictable_otp_generation",
     "predictable_randomness",
     "weak_cryptographic_practice",
     "weak_otp_generation",
+    "weak_random_number_generator_for_otp",
     "weak_randomness",
 }
 CONTEXTUAL_PASSWORD_HASH_CLAIMS = {
@@ -53,6 +58,7 @@ CLAIM_TYPE_ALIASES: dict[str, str] = {
     "insecure_deserialization": "unsafe_deserialization",
     "insecure_deserialization_via_pickle": "unsafe_deserialization",
     "insecure_default_admin_credentials": "insecure_default_credentials",
+    "insecure_otp_randomness": "otp_weak_randomness",
     "missing_authorization_check": "missing_object_level_authorization",
     "missing_authorization_check_in_delete": "missing_object_level_authorization",
     "missing_otp_authentication": "otp_missing_authentication",
@@ -61,10 +67,16 @@ CLAIM_TYPE_ALIASES: dict[str, str] = {
     "os_command_injection": "command_injection",
     "otp_brute_force": "otp_missing_rate_limit",
     "otp_disclosure": "otp_exposure",
+    "otp_exposed_in_api_response": "otp_exposure",
+    "otp_exposed_in_response": "otp_exposure",
+    "otp_generated_using_non_cryptographic_random_function": "otp_weak_randomness",
+    "otp_in_api_response": "otp_exposure",
     "otp_leakage": "otp_exposure",
     "otp_no_expiration": "otp_lifecycle",
     "otp_plaintext_persistence": "otp_plaintext_storage",
     "otp_predictable_generation": "otp_weak_randomness",
+    "otp_random_module": "otp_weak_randomness",
+    "otp_using_random_module": "otp_weak_randomness",
     "password_logged_in_plaintext": "sensitive_data_logging",
     "performance_n_plus_one": "n_plus_one_query",
     "pickle_deserialization": "unsafe_deserialization",
@@ -73,6 +85,7 @@ CLAIM_TYPE_ALIASES: dict[str, str] = {
     "server_side_request_forgery": "ssrf",
     "ssrf_external_calls": "ssrf",
     "unsafe_deserialization_via_pickle": "unsafe_deserialization",
+    "weak_random_number_generator_for_otp": "otp_weak_randomness",
 }
 
 PROBE_CLAIM_TYPES: dict[str, str] = {
@@ -112,7 +125,28 @@ STATIC_RULE_CLAIM_TYPES: dict[str, str] = {
 }
 
 TITLE_CLAIM_PATTERNS: tuple[tuple[tuple[str, ...], str], ...] = (
-    (("otp leakage", "otp exposed", "debug_otp"), "otp_exposure"),
+    (
+        (
+            "otp leakage",
+            "otp exposed",
+            "otp exposed in api",
+            "otp in api response",
+            "otp exposed in response",
+            "debug_otp",
+        ),
+        "otp_exposure",
+    ),
+    (
+        (
+            "otp generated using non-cryptographic",
+            "weak random number generator for otp",
+            "otp using random",
+            "otp with random",
+            "non-cryptographic random otp",
+            "insecure random otp",
+        ),
+        "otp_weak_randomness",
+    ),
     (
         ("default admin credential", "default credential"),
         "insecure_default_credentials",
@@ -149,8 +183,17 @@ CLAIM_TOKEN_PATTERNS: tuple[tuple[tuple[str, ...], str], ...] = (
     (("otp", "plain", "storage"), "otp_plaintext_storage"),
     (("otp", "exposure"), "otp_exposure"),
     (("otp", "disclosure"), "otp_exposure"),
+    (("otp", "exposed"), "otp_exposure"),
+    (("otp", "api", "response"), "otp_exposure"),
     (("otp", "weak", "random"), "otp_weak_randomness"),
     (("otp", "predictable"), "otp_weak_randomness"),
+    (("otp", "non", "cryptographic"), "otp_weak_randomness"),
+    (("otp", "random", "function"), "otp_weak_randomness"),
+    (("otp", "random", "generator"), "otp_weak_randomness"),
+    (("otp", "random", "module"), "otp_weak_randomness"),
+    (("otp", "generated", "random"), "otp_weak_randomness"),
+    (("weak", "random", "otp"), "otp_weak_randomness"),
+    (("non", "cryptographic", "otp"), "otp_weak_randomness"),
     (("otp", "expiry"), "otp_lifecycle"),
     (("otp", "reuse"), "otp_lifecycle"),
     (("default", "admin", "credential"), "insecure_default_credentials"),

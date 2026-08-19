@@ -6,7 +6,6 @@ import {
   CardContent,
   CardDescription,
   CardHeader,
-  CardTitle,
 } from "@/components/ui/card";
 
 type AuthCardProps = {
@@ -23,7 +22,9 @@ export function AuthCard({ title, description, children }: AuthCardProps) {
       </div>
       <Card className="w-full max-w-md shadow-2xl shadow-foreground/10">
         <CardHeader>
-          <CardTitle>{title}</CardTitle>
+          <h1 className="text-2xl font-semibold leading-none tracking-tight">
+            {title}
+          </h1>
           <CardDescription>{description}</CardDescription>
         </CardHeader>
         <CardContent>{children}</CardContent>

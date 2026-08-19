@@ -603,3 +603,320 @@ export function formatRelativeTime(value: string) {
 
   return formatter.format(-Math.round(diffMinutes / 525600), "year");
 }
+
+// ============================================================================
+// Quick Stats
+// ============================================================================
+
+export type QuickStats = {
+  repositories: {
+    total: number;
+    reviewed: number;
+    href: string;
+  };
+  reviews: {
+    total: number;
+    active: number;
+    href: string;
+  };
+  openIssues: {
+    total: number;
+    trend: "up" | "down" | "stable" | "unknown";
+    href: string;
+  };
+  criticalIssues: {
+    total: number;
+    trend: "up" | "down" | "stable" | "unknown";
+    href: string;
+  };
+};
+
+export function buildQuickStats(data: DashboardData): QuickStats {
+  const { repositories, jobs, reports } = data;
+
+  const reviewedRepos = repositories.filter(
+    (repo) => repo.last_reviewed_at !== null,
+  ).length;
+
+  const activeReviews = jobs.filter((job) =>
+    ACTIVE_STATUSES.has(job.status),
+  ).length;
+
+  const totalIssues = sumReports(reports, "total_findings");
+  const criticalCount = sumReports(reports, "critical_count");
+
+  // Simple trend calculation: compare latest report vs previous
+  const sortedReports = [...reports].sort(
+    (a, b) =>
+      new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
+  );
+
+  let issueTrend: QuickStats["openIssues"]["trend"] = "unknown";
+  let criticalTrend: QuickStats["criticalIssues"]["trend"] = "unknown";
+
+  if (sortedReports.length >= 2) {
+    const latest = sortedReports[0];
+    const previous = sortedReports[1];
+
+    if (latest.total_findings > previous.total_findings) {
+      issueTrend = "up";
+    } else if (latest.total_findings < previous.total_findings) {
+      issueTrend = "down";
+    } else {
+      issueTrend = "stable";
+    }
+
+    if (latest.critical_count > previous.critical_count) {
+      criticalTrend = "up";
+    } else if (latest.critical_count < previous.critical_count) {
+      criticalTrend = "down";
+    } else {
+      criticalTrend = "stable";
+    }
+  }
+
+  return {
+    repositories: {
+      total: repositories.length,
+      reviewed: reviewedRepos,
+      href: "/repositories",
+    },
+    reviews: {
+      total: jobs.length,
+      active: activeReviews,
+      href: "/reviews",
+    },
+    openIssues: {
+      total: totalIssues,
+      trend: issueTrend,
+      href: "/reviews",
+    },
+    criticalIssues: {
+      total: criticalCount,
+      trend: criticalTrend,
+      href: "/reviews",
+    },
+  };
+}
+
+// ============================================================================
+// Codebase Health
+// ============================================================================
+
+export type HealthStatus = "healthy" | "warning" | "critical" | "unknown";
+
+export type CodebaseHealth = {
+  score: number; // 0-100
+  status: HealthStatus;
+  statusLabel: string;
+  severityBreakdown: Array<{ key: SeverityKey; value: number }>;
+  reposCovered: number;
+  totalRepos: number;
+  lastReviewAt: string | null;
+};
+
+export function buildCodebaseHealth(data: DashboardData): CodebaseHealth {
+  const { repositories, reports } = data;
+
+  const totalRepos = repositories.length;
+  const reposCovered = repositories.filter(
+    (repo) => repo.last_reviewed_at !== null,
+  ).length;
+
+  const criticalCount = sumReports(reports, "critical_count");
+  const highCount = sumReports(reports, "high_count");
+  const mediumCount = sumReports(reports, "medium_count");
+  const lowCount = sumReports(reports, "low_count");
+  const infoCount = sumReports(reports, "info_count");
+
+  // Find latest review date
+  const latestReview = [...data.jobs]
+    .filter((job) => job.status === "COMPLETED")
+    .sort(compareReviewJobsByLatest)[0];
+
+  const lastReviewAt = latestReview?.completed_at ?? null;
+
+  // Calculate health score (0-100)
+  // Start at 100, deduct based on issues
+  let score = 100;
+
+  // Coverage penalty: up to 20 points for uncovered repos
+  if (totalRepos > 0) {
+    const coverageRatio = reposCovered / totalRepos;
+    score -= Math.round((1 - coverageRatio) * 20);
+  }
+
+  // Issue penalties
+  score -= criticalCount * 15; // Critical: -15 each
+  score -= highCount * 8; // High: -8 each
+  score -= mediumCount * 3; // Medium: -3 each
+  score -= lowCount * 1; // Low: -1 each
+
+  score = Math.max(0, Math.min(100, score));
+
+  // Determine status
+  let status: HealthStatus;
+  let statusLabel: string;
+
+  if (reports.length === 0) {
+    status = "unknown";
+    statusLabel = "No data yet";
+  } else if (criticalCount > 0 || score < 40) {
+    status = "critical";
+    statusLabel = "Needs immediate attention";
+  } else if (highCount > 0 || score < 70) {
+    status = "warning";
+    statusLabel = "Needs attention";
+  } else {
+    status = "healthy";
+    statusLabel = "Healthy";
+  }
+
+  return {
+    score,
+    status,
+    statusLabel,
+    severityBreakdown: [
+      { key: "critical", value: criticalCount },
+      { key: "high", value: highCount },
+      { key: "medium", value: mediumCount },
+      { key: "low", value: lowCount },
+      { key: "info", value: infoCount },
+    ],
+    reposCovered,
+    totalRepos,
+    lastReviewAt,
+  };
+}
+
+// ============================================================================
+// Activity Timeline
+// ============================================================================
+
+export type TimelineEventType =
+  | "review_completed"
+  | "review_failed"
+  | "review_running"
+  | "review_queued";
+
+export type TimelineEvent = {
+  id: string;
+  type: TimelineEventType;
+  repositoryName: string;
+  branch: string;
+  timestamp: string;
+  href: string;
+  findings?: number;
+  criticalFindings?: number;
+  errorMessage?: string;
+};
+
+export type ActivityGroup = {
+  label: string;
+  events: TimelineEvent[];
+};
+
+export function buildActivityTimeline(
+  data: DashboardData,
+  limit = 8,
+): ActivityGroup[] {
+  const { jobs, reports } = data;
+  const reportByJob = new Map(reports.map((report) => [report.job_id, report]));
+
+  const events: TimelineEvent[] = [];
+
+  for (const job of jobs) {
+    const report = reportByJob.get(job.id);
+    const repositoryName = job.repository_name ?? job.repository_id;
+    const branch = job.branch ?? "main";
+
+    if (job.status === "COMPLETED") {
+      events.push({
+        id: job.id,
+        type: "review_completed",
+        repositoryName,
+        branch,
+        timestamp: job.completed_at ?? job.created_at,
+        href: report ? `/reviews/${job.id}/report` : `/reviews/${job.id}`,
+        findings: report?.total_findings ?? 0,
+        criticalFindings: report?.critical_count ?? 0,
+      });
+    } else if (job.status === "FAILED") {
+      events.push({
+        id: job.id,
+        type: "review_failed",
+        repositoryName,
+        branch,
+        timestamp: job.completed_at ?? job.created_at,
+        href: `/reviews/${job.id}`,
+        errorMessage: job.error_message ?? undefined,
+      });
+    } else if (ACTIVE_STATUSES.has(job.status)) {
+      events.push({
+        id: job.id,
+        type: job.status === "PENDING" ? "review_queued" : "review_running",
+        repositoryName,
+        branch,
+        timestamp: job.started_at ?? job.created_at,
+        href: `/reviews/${job.id}`,
+      });
+    }
+  }
+
+  // Sort by timestamp descending
+  events.sort(
+    (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime(),
+  );
+
+  // Group by day
+  const groups: ActivityGroup[] = [];
+  const today = new Date();
+  const yesterday = new Date(today);
+  yesterday.setDate(yesterday.getDate() - 1);
+
+  const isToday = (dateStr: string) => {
+    const date = new Date(dateStr);
+    return (
+      date.getDate() === today.getDate() &&
+      date.getMonth() === today.getMonth() &&
+      date.getFullYear() === today.getFullYear()
+    );
+  };
+
+  const isYesterday = (dateStr: string) => {
+    const date = new Date(dateStr);
+    return (
+      date.getDate() === yesterday.getDate() &&
+      date.getMonth() === yesterday.getMonth() &&
+      date.getFullYear() === yesterday.getFullYear()
+    );
+  };
+
+  let currentLabel = "";
+  let currentGroup: ActivityGroup | null = null;
+
+  for (const event of events.slice(0, limit)) {
+    let label: string;
+    if (isToday(event.timestamp)) {
+      label = "Today";
+    } else if (isYesterday(event.timestamp)) {
+      label = "Yesterday";
+    } else {
+      label = new Intl.DateTimeFormat("en", {
+        weekday: "short",
+        month: "short",
+        day: "numeric",
+      }).format(new Date(event.timestamp));
+    }
+
+    if (label !== currentLabel) {
+      currentLabel = label;
+      currentGroup = { label, events: [] };
+      groups.push(currentGroup);
+    }
+
+    currentGroup!.events.push(event);
+  }
+
+  return groups;
+}

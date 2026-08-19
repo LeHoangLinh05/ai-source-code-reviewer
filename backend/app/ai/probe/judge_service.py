@@ -235,9 +235,22 @@ class ProbeJudgeService:
                     task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
 
+        deduplicated_issues = _deduplicate_issues(pending_issues)
+        summary = ProbeJudgeSummary(
+            judged_batches=summary.judged_batches,
+            reported_issues=summary.reported_issues,
+            created_issues=len(deduplicated_issues),
+            rejected_issues=(
+                summary.rejected_issues
+                + (len(pending_issues) - len(deduplicated_issues))
+            ),
+            no_issue_results=summary.no_issue_results,
+            uncertain_results=summary.uncertain_results,
+        )
+
         await self.report_repository.replace_ai_issues(
             job_id=job_id,
-            issues=pending_issues,
+            issues=deduplicated_issues,
         )
 
         return summary
@@ -539,6 +552,75 @@ def _candidate_claim_context(
     context_parts = [candidate.description or "", candidate.suggestion or ""]
     context_parts.extend(chunk.content for chunk in evidence_chunks)
     return "\n".join(context_parts)
+
+
+def _deduplicate_issues(issues: list[ReviewIssue]) -> list[ReviewIssue]:
+    """Remove duplicate issues with same finding_key and overlapping lines."""
+
+    if not issues:
+        return []
+
+    # Group by finding_key
+    by_finding_key: dict[str, list[ReviewIssue]] = {}
+    for issue in issues:
+        raw_output = issue.raw_output if isinstance(issue.raw_output, dict) else {}
+        finding_key = raw_output.get(FINDING_KEY_FIELD, "")
+        if not isinstance(finding_key, str) or not finding_key:
+            finding_key = f"{issue.file_path}:{issue.title}"
+        by_finding_key.setdefault(finding_key, []).append(issue)
+
+    deduplicated: list[ReviewIssue] = []
+    for finding_key, group in by_finding_key.items():
+        # Within each finding_key group, dedupe by file_path + line overlap
+        deduplicated.extend(_dedupe_overlapping_issues(group))
+
+    return deduplicated
+
+
+def _dedupe_overlapping_issues(issues: list[ReviewIssue]) -> list[ReviewIssue]:
+    """Keep one issue per file_path when line ranges overlap."""
+
+    if len(issues) <= 1:
+        return issues
+
+    # Group by file_path
+    by_file: dict[str, list[ReviewIssue]] = {}
+    for issue in issues:
+        by_file.setdefault(issue.file_path, []).append(issue)
+
+    result: list[ReviewIssue] = []
+    for file_path, file_issues in by_file.items():
+        # Sort by line_start, then by confidence descending
+        sorted_issues = sorted(
+            file_issues,
+            key=lambda i: (
+                i.line_start,
+                -(i.confidence or 0),
+            ),
+        )
+        kept: list[ReviewIssue] = []
+        for issue in sorted_issues:
+            # Check if this issue overlaps with any kept issue
+            overlaps = any(
+                _lines_overlap(issue, kept_issue) for kept_issue in kept
+            )
+            if not overlaps:
+                kept.append(issue)
+            else:
+                # If overlaps, keep the one with higher confidence
+                for i, kept_issue in enumerate(kept):
+                    if _lines_overlap(issue, kept_issue):
+                        if (issue.confidence or 0) > (kept_issue.confidence or 0):
+                            kept[i] = issue
+                        break
+        result.extend(kept)
+
+    return result
+
+
+def _lines_overlap(a: ReviewIssue, b: ReviewIssue) -> bool:
+    """Check if two issues have overlapping line ranges."""
+    return a.line_start <= b.line_end and b.line_start <= a.line_end
 
 
 def _probe_verdict_contract(

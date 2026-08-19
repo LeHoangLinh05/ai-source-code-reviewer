@@ -42,7 +42,6 @@ import {
   getRepository,
   getRepositorySummary,
 } from "@/lib/repositories";
-import { getReport } from "@/lib/reports";
 import { createReviewJob, getReviewJobs } from "@/lib/review-jobs";
 import { useAppDispatch, useAppSelector } from "@/store/hooks";
 import {
@@ -54,7 +53,6 @@ import {
   upsertRepository,
 } from "@/store/slices/repositorySlice";
 import type { ReviewJob, ReviewJobStatus } from "@/types/review-job";
-import type { ReviewReport } from "@/types/report";
 import type { RepoSummary } from "@/types/repository";
 
 const startReviewSchema = z.object({
@@ -87,11 +85,6 @@ export default function RepositoryDetailPage() {
   const [areReviewJobsLoading, setAreReviewJobsLoading] = useState(false);
   const [reviewJobs, setReviewJobs] = useState<ReviewJob[]>([]);
   const [reviewJobsError, setReviewJobsError] = useState<string | null>(null);
-  const [latestReport, setLatestReport] = useState<ReviewReport | null>(null);
-  const [latestReportError, setLatestReportError] = useState<string | null>(
-    null,
-  );
-  const [isLatestReportLoading, setIsLatestReportLoading] = useState(false);
   const [repoSummary, setRepoSummary] = useState<RepoSummary | null>(null);
   const [isRepoSummaryLoading, setIsRepoSummaryLoading] = useState(false);
   const [repoSummaryError, setRepoSummaryError] = useState<string | null>(null);
@@ -108,10 +101,6 @@ export default function RepositoryDetailPage() {
 
     return getLatestCompletedReviewJob(reviewJobs)?.completed_at ?? null;
   }, [reviewJobs, selectedRepository?.last_reviewed_at]);
-  const latestCompletedReviewJob = useMemo(
-    () => getLatestCompletedReviewJob(reviewJobs),
-    [reviewJobs],
-  );
   const hasActiveReviewJobs = useMemo(
     () => reviewJobs.some((job) => !TERMINAL_REVIEW_STATUSES.has(job.status)),
     [reviewJobs],
@@ -135,40 +124,6 @@ export default function RepositoryDetailPage() {
     }
   }, [dispatch, repositoryId]);
 
-  const loadLatestReport = useCallback(async (
-    jobs: ReviewJob[],
-    isBackground = false,
-  ) => {
-    if (!isBackground) {
-      setLatestReport(null);
-      setLatestReportError(null);
-      setIsLatestReportLoading(false);
-    }
-
-    const completedJob = getLatestCompletedReviewJob(jobs);
-    if (!completedJob) {
-      return;
-    }
-
-    if (!isBackground) {
-      setIsLatestReportLoading(true);
-    }
-
-    try {
-      setLatestReport(await getReport(completedJob.id));
-    } catch (requestError) {
-      if (!isBackground) {
-        setLatestReportError(
-          getApiErrorMessage(requestError, "Unable to load latest report."),
-        );
-      }
-    } finally {
-      if (!isBackground) {
-        setIsLatestReportLoading(false);
-      }
-    }
-  }, []);
-
   const loadReviewJobs = useCallback(async (isBackground = false) => {
     if (!isBackground) {
       setAreReviewJobsLoading(true);
@@ -178,20 +133,18 @@ export default function RepositoryDetailPage() {
     try {
       const jobs = await getReviewJobs({ repository_id: repositoryId });
       setReviewJobs(jobs);
-      void loadLatestReport(jobs, isBackground);
     } catch (requestError) {
       if (!isBackground) {
         setReviewJobsError(
           getApiErrorMessage(requestError, "Unable to load review history."),
         );
-        setLatestReport(null);
       }
     } finally {
       if (!isBackground) {
         setAreReviewJobsLoading(false);
       }
     }
-  }, [loadLatestReport, repositoryId]);
+  }, [repositoryId]);
 
   const loadRepositorySummary = useCallback(async () => {
     setIsRepoSummaryLoading(true);
@@ -234,7 +187,6 @@ export default function RepositoryDetailPage() {
       window.clearInterval(intervalId);
     };
   }, [hasActiveReviewJobs, loadReviewJobs]);
-
 
   async function handleDeleteRepository() {
     if (!selectedRepository) {
@@ -387,41 +339,22 @@ export default function RepositoryDetailPage() {
             </CardContent>
           </Card>
 
-          <section className="grid gap-4 xl:grid-cols-[0.85fr_1.15fr]">
-            <Card>
-              <CardHeader>
-                <CardTitle>Latest Report Summary</CardTitle>
-                <CardDescription>
-                  Latest completed review signal for this repository.
-                </CardDescription>
-              </CardHeader>
-              <CardContent>
-                <LatestReportSummary
-                  error={latestReportError}
-                  isLoading={isLatestReportLoading}
-                  latestJob={latestCompletedReviewJob}
-                  report={latestReport}
-                />
-              </CardContent>
-            </Card>
-
-            <Card>
-              <CardHeader>
-                <CardTitle>Project Overview</CardTitle>
-                <CardDescription>
-                  Project overview generated from repository structure and setup
-                  files.
-                </CardDescription>
-              </CardHeader>
-              <CardContent>
-                <RepositorySummaryCard
-                  error={repoSummaryError}
-                  isLoading={isRepoSummaryLoading}
-                  summary={repoSummary}
-                />
-              </CardContent>
-            </Card>
-          </section>
+          <Card>
+            <CardHeader>
+              <CardTitle>Project Overview</CardTitle>
+              <CardDescription>
+                Project overview generated from repository structure and setup
+                files.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <RepositorySummaryCard
+                error={repoSummaryError}
+                isLoading={isRepoSummaryLoading}
+                summary={repoSummary}
+              />
+            </CardContent>
+          </Card>
 
           <Card>
             <CardHeader>
@@ -549,83 +482,6 @@ function DetailRow({ label, value }: DetailRowProps) {
     <div className="grid gap-2 border-b border-border pb-4 last:border-b-0 last:pb-0 sm:grid-cols-[180px_1fr]">
       <dt className="text-[15px] text-muted-foreground">{label}</dt>
       <dd className="min-w-0 text-[15px] text-foreground">{value}</dd>
-    </div>
-  );
-}
-
-type LatestReportSummaryProps = {
-  error: string | null;
-  isLoading: boolean;
-  latestJob: ReviewJob | null;
-  report: ReviewReport | null;
-};
-
-function LatestReportSummary({
-  error,
-  isLoading,
-  latestJob,
-  report,
-}: LatestReportSummaryProps) {
-  if (isLoading) {
-    return <LatestReportSummarySkeleton />;
-  }
-
-  if (error !== null) {
-    return <p className="text-sm text-destructive">{error}</p>;
-  }
-
-  if (report === null || latestJob === null) {
-    return (
-      <div className="rounded-md border border-dashed border-border bg-background px-6 py-8 text-center">
-        <h2 className="text-lg font-semibold tracking-normal">
-          No completed report yet
-        </h2>
-        <p className="mx-auto mt-2 max-w-md text-[15px] leading-6 text-muted-foreground">
-          Start a review and this panel will show the latest confirmed findings.
-        </p>
-      </div>
-    );
-  }
-
-  return (
-    <div className="grid gap-5">
-      <div className="grid gap-3 sm:grid-cols-3">
-        <ReportMetric label="Total findings" value={report.total_findings} />
-        <ReportMetric label="Critical" value={report.critical_count} />
-        <ReportMetric label="High" value={report.high_count} />
-      </div>
-      <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border pt-4">
-        <p className="text-sm text-muted-foreground">
-          Completed {formatOptionalDate(latestJob.completed_at)}
-        </p>
-        <Button asChild size="sm" variant="secondary">
-          <Link href={`/reviews/${latestJob.id}/report`}>Open report</Link>
-        </Button>
-      </div>
-    </div>
-  );
-}
-
-function ReportMetric({ label, value }: { label: string; value: number }) {
-  return (
-    <div className="rounded-md border border-border bg-background p-3">
-      <p className="text-xs font-medium uppercase text-muted-foreground">
-        {label}
-      </p>
-      <p className="mt-1 text-2xl font-extrabold tracking-normal">{value}</p>
-    </div>
-  );
-}
-
-function LatestReportSummarySkeleton() {
-  return (
-    <div className="grid gap-4">
-      <div className="h-14 animate-pulse rounded bg-muted" />
-      <div className="grid gap-3 sm:grid-cols-3">
-        {Array.from({ length: 3 }).map((_, index) => (
-          <div className="h-20 animate-pulse rounded bg-muted" key={index} />
-        ))}
-      </div>
     </div>
   );
 }
@@ -848,10 +704,6 @@ function formatDateTime(value: string) {
     dateStyle: "medium",
     timeStyle: "short",
   }).format(new Date(value));
-}
-
-function formatOptionalDate(value: string | null) {
-  return value === null ? "Not available" : formatDateTime(value);
 }
 
 function getLatestCompletedReviewJob(jobs: ReviewJob[]) {
