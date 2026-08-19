@@ -32,7 +32,6 @@ from app.services.reporting.generation import build_top_risky_files
 from app.services.reporting.issue_presenter import (
     _group_issues,
     _group_matches_filters,
-    _has_source_context,
     _issue_group_key,
     _issue_group_response,
     _sort_issue_groups,

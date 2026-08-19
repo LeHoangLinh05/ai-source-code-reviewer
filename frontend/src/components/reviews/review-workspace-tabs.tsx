@@ -40,6 +40,7 @@ export function ReviewWorkspaceTabs({
     <nav
       aria-label="Review workspace"
       className="overflow-x-auto border-b border-border"
+      role="tablist"
     >
       <div className="flex min-w-max gap-1">
         {TABS.map((tab) => {
@@ -49,6 +50,7 @@ export function ReviewWorkspaceTabs({
           return (
             <Link
               aria-current={isActive ? "page" : undefined}
+              aria-selected={isActive}
               className={cn(
                 "inline-flex h-11 items-center gap-2 border-b-2 px-3 text-sm font-semibold transition-colors",
                 isActive
@@ -57,6 +59,7 @@ export function ReviewWorkspaceTabs({
               )}
               href={getTabHref(jobId, tab.id)}
               key={tab.id}
+              role="tab"
             >
               <Icon aria-hidden="true" className="size-4" />
               {tab.label}

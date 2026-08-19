@@ -181,12 +181,16 @@ export default function SettingsPage() {
           message,
           type: "server",
         });
+        // Avoid duplicating the error message in a toast so tests can locate
+        // the field error without a strict-mode conflict.
+        toast.error("Password update failed. Please check your current password.");
       } else if (message === "New password must be different") {
         passwordForm.setError("newPassword", { message, type: "server" });
+        toast.error("Password update failed. New password must be different.");
       } else {
         passwordForm.setError("root", { message, type: "server" });
+        toast.error(message);
       }
-      toast.error(message);
     }
   }
 
@@ -277,6 +281,9 @@ function ProfilePanel({
   onSubmit: (values: ProfileFormValues) => Promise<void>;
   user: User | null;
 }) {
+  // Watch display name so the submit button re-reacts to dirty/valid state
+  // when Playwright fills the input programmatically.
+  form.watch("fullName");
   return (
     <Card>
       <CardHeader>

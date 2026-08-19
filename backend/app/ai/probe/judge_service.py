@@ -570,7 +570,7 @@ def _deduplicate_issues(issues: list[ReviewIssue]) -> list[ReviewIssue]:
         by_finding_key.setdefault(finding_key, []).append(issue)
 
     deduplicated: list[ReviewIssue] = []
-    for finding_key, group in by_finding_key.items():
+    for _finding_key, group in by_finding_key.items():
         # Within each finding_key group, dedupe by file_path + line overlap
         deduplicated.extend(_dedupe_overlapping_issues(group))
 
@@ -589,7 +589,7 @@ def _dedupe_overlapping_issues(issues: list[ReviewIssue]) -> list[ReviewIssue]:
         by_file.setdefault(issue.file_path, []).append(issue)
 
     result: list[ReviewIssue] = []
-    for file_path, file_issues in by_file.items():
+    for _file_path, file_issues in by_file.items():
         # Sort by line_start, then by confidence descending
         sorted_issues = sorted(
             file_issues,
@@ -601,9 +601,7 @@ def _dedupe_overlapping_issues(issues: list[ReviewIssue]) -> list[ReviewIssue]:
         kept: list[ReviewIssue] = []
         for issue in sorted_issues:
             # Check if this issue overlaps with any kept issue
-            overlaps = any(
-                _lines_overlap(issue, kept_issue) for kept_issue in kept
-            )
+            overlaps = any(_lines_overlap(issue, kept_issue) for kept_issue in kept)
             if not overlaps:
                 kept.append(issue)
             else:
