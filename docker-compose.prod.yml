@@ -15,6 +15,7 @@ x-backend-env: &backend-env
   ENVIRONMENT: production
   DEBUG: "false"
   API_PREFIX: /api
+
   # PostgreSQL
   POSTGRES_HOST: postgres
   POSTGRES_PORT: "5432"
@@ -22,18 +23,16 @@ x-backend-env: &backend-env
   POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required}
   POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
   POSTGRES_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
-  # Redis
-  REDIS_HOST: redis
-  REDIS_PORT: "6379"
-  REDIS_DB: ${REDIS_DB:-0}
-  REDIS_PASSWORD: ${REDIS_PASSWORD:-}
-  REDIS_URL: redis://redis:6379/${REDIS_DB:-0}
-  CELERY_BROKER_URL: redis://redis:6379/${REDIS_DB:-0}
-  CELERY_RESULT_BACKEND: redis://redis:6379/${REDIS_DB:-0}
+
+  # Redis / Upstash
+  REDIS_URL: ${REDIS_URL:?REDIS_URL is required}
+  CELERY_BROKER_URL: ${REDIS_URL:?REDIS_URL is required}
+  CELERY_RESULT_BACKEND: ${REDIS_URL:?REDIS_URL is required}
   REDIS_MAX_CONNECTIONS: ${REDIS_MAX_CONNECTIONS:-10}
   REDIS_SOCKET_CONNECT_TIMEOUT_SECONDS: ${REDIS_SOCKET_CONNECT_TIMEOUT_SECONDS:-5.0}
   REDIS_SOCKET_TIMEOUT_SECONDS: ${REDIS_SOCKET_TIMEOUT_SECONDS:-5.0}
   REDIS_HEALTH_CHECK_INTERVAL_SECONDS: ${REDIS_HEALTH_CHECK_INTERVAL_SECONDS:-30}
+
   # MongoDB
   MONGODB_HOST: mongodb
   MONGODB_PORT: "27017"
@@ -41,6 +40,7 @@ x-backend-env: &backend-env
   MONGODB_USER: ${MONGODB_USER:?MONGODB_USER is required}
   MONGODB_PASSWORD: ${MONGODB_PASSWORD:?MONGODB_PASSWORD is required}
   MONGODB_URL: mongodb://${MONGODB_USER}:${MONGODB_PASSWORD}@mongodb:27017/${MONGODB_DB}?authSource=admin
+
   # Auth
   JWT_SECRET_KEY: ${JWT_SECRET_KEY:?JWT_SECRET_KEY is required}
   JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
@@ -52,15 +52,18 @@ x-backend-env: &backend-env
   REFRESH_COOKIE_NAME: ${REFRESH_COOKIE_NAME:-refreshToken}
   REFRESH_COOKIE_SECURE: ${REFRESH_COOKIE_SECURE:-false}
   REFRESH_COOKIE_SAMESITE: ${REFRESH_COOKIE_SAMESITE:-lax}
+
   # CORS
   CORS_ORIGINS: ${CORS_ORIGINS:-}
   CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-}
   CORS_ALLOWED_ORIGIN_REGEX: ${CORS_ALLOWED_ORIGIN_REGEX:-}
+
   # GitHub Bot
   GITHUB_BOT_USERNAME: ${GITHUB_BOT_USERNAME:-}
   GITHUB_BOT_TOKEN: ${GITHUB_BOT_TOKEN:-}
   GITHUB_API_BASE_URL: ${GITHUB_API_BASE_URL:-https://api.github.com}
   GITHUB_API_VERSION: ${GITHUB_API_VERSION:-2026-03-10}
+
   # LLM
   LLM_PROVIDER: ${LLM_PROVIDER:-openai}
   OPENAI_API_KEY: ${OPENAI_API_KEY:-}
@@ -78,6 +81,7 @@ x-backend-env: &backend-env
   MISTRAL_BASE_URL: ${MISTRAL_BASE_URL:-https://api.mistral.ai/v1}
   OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
   OPENROUTER_BASE_URL: ${OPENROUTER_BASE_URL:-https://openrouter.ai/api/v1}
+
   # RAG
   RAG_CHROMA_PATH: /data/rag/chroma
   RAG_EMBEDDING_MODEL: ${RAG_EMBEDDING_MODEL:-sentence-transformers/all-MiniLM-L6-v2}
@@ -99,6 +103,7 @@ x-backend-env: &backend-env
   CODE_EMBEDDING_MAX_RETRIES: ${CODE_EMBEDDING_MAX_RETRIES:-4}
   CODE_EMBEDDING_RETRY_BASE_DELAY_SECONDS: ${CODE_EMBEDDING_RETRY_BASE_DELAY_SECONDS:-2.0}
   ENABLE_CODE_SEMANTIC_SEARCH: ${ENABLE_CODE_SEMANTIC_SEARCH:-true}
+
   # Sandbox / Fix executor
   SANDBOX_ROOT: /data/sandbox
   SANDBOX_TTL_HOURS: ${SANDBOX_TTL_HOURS:-1}
@@ -128,22 +133,6 @@ services:
       timeout: 5s
       retries: 5
       start_period: 10s
-    logging: *default-logging
-    networks:
-      - internal
-
-  redis:
-    image: redis:7-alpine
-    restart: unless-stopped
-    command: redis-server --appendonly yes
-    volumes:
-      - redis_data:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 5s
     logging: *default-logging
     networks:
       - internal
@@ -191,7 +180,17 @@ services:
       context: ./backend
       dockerfile: Dockerfile.prod
     restart: unless-stopped
-    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]
+    command:
+      [
+        "uvicorn",
+        "app.main:app",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8000",
+        "--workers",
+        "2"
+      ]
     environment:
       <<: *backend-env
     volumes:
@@ -200,14 +199,18 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      redis:
-        condition: service_healthy
       mongodb:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"
+        ]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -221,7 +224,15 @@ services:
       context: ./backend
       dockerfile: Dockerfile.prod
     restart: unless-stopped
-    command: ["celery", "-A", "app.worker.celery_app", "worker", "--loglevel=info", "--concurrency=1"]
+    command:
+      [
+        "celery",
+        "-A",
+        "app.worker.celery_app",
+        "worker",
+        "--loglevel=info",
+        "--concurrency=1"
+      ]
     environment:
       <<: *backend-env
     volumes:
@@ -231,8 +242,6 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       postgres:
-        condition: service_healthy
-      redis:
         condition: service_healthy
       mongodb:
         condition: service_healthy
@@ -249,15 +258,20 @@ services:
       context: ./backend
       dockerfile: Dockerfile.prod
     restart: unless-stopped
-    command: ["celery", "-A", "app.worker.celery_app", "beat", "--loglevel=info"]
+    command:
+      [
+        "celery",
+        "-A",
+        "app.worker.celery_app",
+        "beat",
+        "--loglevel=info"
+      ]
     environment:
       <<: *backend-env
     volumes:
       - rag_data:/data/rag
       - model_cache:/root/.cache
     depends_on:
-      redis:
-        condition: service_healthy
       migrate:
         condition: service_completed_successfully
     logging: *default-logging
@@ -279,7 +293,15 @@ services:
       backend:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:3000"]
+      test:
+        [
+          "CMD",
+          "wget",
+          "--no-verbose",
+          "--tries=1",
+          "--spider",
+          "http://127.0.0.1:3000"
+        ]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -325,7 +347,12 @@ services:
       context: ./backend
       dockerfile: Dockerfile.prod
     restart: "no"
-    command: ["sh", "-c", "PYTHONPATH=/app python /app/scripts/seed_rag.py --skip-smoke"]
+    command:
+      [
+        "sh",
+        "-c",
+        "PYTHONPATH=/app python /app/scripts/seed_rag.py --skip-smoke"
+      ]
     environment:
       <<: *backend-env
     volumes:
@@ -342,7 +369,6 @@ services:
 
 volumes:
   postgres_data:
-  redis_data:
   mongodb_data:
   rag_data:
   model_cache:
