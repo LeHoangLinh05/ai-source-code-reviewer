@@ -213,7 +213,7 @@ async function getAllReportIssues(jobId: string) {
   const firstPage = await getReportIssues(jobId, {
     page: 1,
     per_page: REPORT_ISSUES_PAGE_SIZE,
-    sort: "-created_at",
+    sort: "severity",
   });
   const totalPages = Math.ceil(firstPage.total / REPORT_ISSUES_PAGE_SIZE);
   if (totalPages <= 1) {
@@ -225,7 +225,7 @@ async function getAllReportIssues(jobId: string) {
       getReportIssues(jobId, {
         page: index + 2,
         per_page: REPORT_ISSUES_PAGE_SIZE,
-        sort: "-created_at",
+        sort: "severity",
       }),
     ),
   );

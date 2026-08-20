@@ -330,7 +330,6 @@ function JobProgressCard({
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <CardTitle>Review progress</CardTitle>
-            <CardDescription>Realtime updates for this review job.</CardDescription>
           </div>
           <span
             className={`inline-flex items-center gap-2 rounded-md border px-2.5 py-1 text-xs font-semibold ${connection.className}`}
@@ -352,8 +351,7 @@ function JobProgressCard({
           tone={isTerminal && job.status === "FAILED" ? "bg-destructive" : "bg-sky-400"}
           value={progress}
         />
-        <div className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
-          <span>{event?.status ?? job.status.replaceAll("_", " ")}</span>
+        <div className="flex items-center justify-end gap-3 text-xs text-muted-foreground">
           <span className={isWorking ? "animate-pulse" : undefined}>
             {isWorking ? "Processing" : isTerminal ? "Finished" : "Waiting"}
           </span>

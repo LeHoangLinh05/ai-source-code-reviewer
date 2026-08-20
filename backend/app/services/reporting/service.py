@@ -35,7 +35,7 @@ from app.services.reporting.issue_presenter import (
     _issue_group_key,
     _issue_group_response,
     _sort_issue_groups,
-    _source_context_from_chunk,
+    _source_context_from_chunks,
     _to_normalized_issue,
 )
 
@@ -199,15 +199,17 @@ class ReportService:
             }
             return response
 
-        # Fallback: look up chunk metadata from MongoDB
-        chunk = await self.chunk_metadata_repository.find_containing_line(
+        # Fallback: look up chunk metadata from MongoDB. Use every overlapping
+        # chunk so findings that span chunk boundaries still render a complete,
+        # continuous code snippet instead of a truncated one.
+        chunks = await self.chunk_metadata_repository.find_containing_chunks(
             job_id=issue.job_id,
             file_path=issue.file_path,
             line_start=issue.line_start,
             line_end=issue.line_end,
         )
-        source_context = _source_context_from_chunk(
-            chunk,
+        source_context = _source_context_from_chunks(
+            chunks,
             line_start=issue.line_start,
             line_end=issue.line_end,
         )

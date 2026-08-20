@@ -62,7 +62,12 @@ export type IssueFilters = {
   source: IssueSource | null;
 };
 
-export type IssueSort = "-created_at" | "created_at" | "severity" | "file_path";
+export type IssueSort =
+  | "severity"
+  | "file_path"
+  | "-file_path"
+  | "-created_at"
+  | "created_at";
 
 export type IssueListResponse = {
   total: number;

@@ -52,9 +52,9 @@ def test_ai_review_batch_progress_uses_reserved_range() -> None:
         calculate_ai_review_progress(completed, 10) for completed in range(1, 11)
     ]
 
-    assert progress_updates == [89, 89, 89, 90, 91, 91, 92, 92, 93, 94]
-    assert calculate_ai_review_progress(0, 10) == 88
-    assert calculate_ai_review_progress(12, 10) == 94
+    assert progress_updates == [54, 58, 62, 66, 71, 75, 79, 83, 87, 92]
+    assert calculate_ai_review_progress(0, 10) == 50
+    assert calculate_ai_review_progress(12, 10) == 92
 
 
 @pytest.mark.asyncio
@@ -87,7 +87,7 @@ async def test_ai_review_batch_progress_publishes_realtime_payload(
             "progress_update",
             {
                 "status": ReviewJobStatus.AI_REVIEWING.value,
-                "progress": 91,
+                "progress": 71,
                 "message": "AI review batch 5 of 10 completed",
                 "data": {"completed_batches": 5, "total_batches": 10},
             },
@@ -503,7 +503,7 @@ async def test_generate_repo_summary_persists_document_and_publishes_progress(
             "status_change",
             {
                 "status": ReviewJobStatus.GENERATING_SUMMARY.value,
-                "progress": 50,
+                "progress": 20,
                 "message": "Generating repository summary",
             },
         ),
@@ -512,7 +512,7 @@ async def test_generate_repo_summary_persists_document_and_publishes_progress(
             "status_change",
             {
                 "status": ReviewJobStatus.GENERATING_SUMMARY.value,
-                "progress": 55,
+                "progress": 25,
                 "message": "Repository summary generated",
             },
         ),

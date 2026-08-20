@@ -27,7 +27,7 @@ const initialIssueFilters: IssueTableFilters = {
   page: 1,
   perPage: 10,
   severity: null,
-  sort: "-created_at",
+  sort: "severity",
   source: null,
 };
 

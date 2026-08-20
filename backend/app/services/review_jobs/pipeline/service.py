@@ -60,8 +60,8 @@ from app.services.sandbox.workspace import validate_repository_size
 
 logger = logging.getLogger(__name__)
 
-AI_REVIEW_PROGRESS_START = 88
-AI_REVIEW_PROGRESS_END = 94
+AI_REVIEW_PROGRESS_START = 50
+AI_REVIEW_PROGRESS_END = 92
 
 __all__ = [
     "ReviewJobCanceled",
@@ -196,7 +196,7 @@ class ReviewPipelineService:
         await self._transition(
             review_job,
             ReviewJobStatus.CLONING,
-            10,
+            5,
             "Cloning repository",
         )
         clone_repository(review_job, sandbox_path)
@@ -213,7 +213,7 @@ class ReviewPipelineService:
         await self._publish_status(
             updated_job,
             ReviewJobStatus.CLONING,
-            20,
+            10,
             "Repository cloned",
         )
         return updated_job
@@ -281,7 +281,7 @@ class ReviewPipelineService:
         await self._transition(
             review_job,
             ReviewJobStatus.ANALYZING_STRUCTURE,
-            35,
+            12,
             "Analyzing project structure",
         )
         structure = analyze_structure(sandbox_path, filtered_files)
@@ -297,7 +297,7 @@ class ReviewPipelineService:
         await self._publish_status(
             review_job,
             ReviewJobStatus.ANALYZING_STRUCTURE,
-            45,
+            18,
             "Project structure analyzed",
         )
         return structure
@@ -310,7 +310,7 @@ class ReviewPipelineService:
         await self._transition(
             review_job,
             ReviewJobStatus.GENERATING_SUMMARY,
-            50,
+            20,
             "Generating repository summary",
         )
         try:
@@ -336,7 +336,7 @@ class ReviewPipelineService:
             await self._publish_status(
                 review_job,
                 ReviewJobStatus.GENERATING_SUMMARY,
-                55,
+                25,
                 "Repository summary generation failed; continuing review",
             )
             return
@@ -344,7 +344,7 @@ class ReviewPipelineService:
         await self._publish_status(
             review_job,
             ReviewJobStatus.GENERATING_SUMMARY,
-            55,
+            25,
             "Repository summary generated",
         )
 
@@ -357,7 +357,7 @@ class ReviewPipelineService:
         await self._transition(
             review_job,
             ReviewJobStatus.RUNNING_STATIC_ANALYSIS,
-            60,
+            28,
             "Running static analyzers",
         )
         runs = build_static_analysis_runs(
@@ -373,7 +373,7 @@ class ReviewPipelineService:
         await self._publish_status(
             review_job,
             ReviewJobStatus.RUNNING_STATIC_ANALYSIS,
-            75,
+            38,
             "Static analyzers complete",
         )
         return [issue for analysis_run in runs for issue in analysis_run.issues]
@@ -388,7 +388,7 @@ class ReviewPipelineService:
         await self._transition(
             review_job,
             ReviewJobStatus.CHUNKING_CODE,
-            80,
+            40,
             "Chunking source files",
         )
         await self.code_indexing_service.index(
@@ -400,7 +400,7 @@ class ReviewPipelineService:
         await self._publish_status(
             review_job,
             ReviewJobStatus.CHUNKING_CODE,
-            84,
+            48,
             "Source chunks ready",
         )
 

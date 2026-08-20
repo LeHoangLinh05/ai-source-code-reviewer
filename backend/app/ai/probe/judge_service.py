@@ -14,7 +14,7 @@ from app.ai.probe.candidate_validation import (
     _candidate_references,
     _candidate_rule_id,
     _dependency_manifest_contradicts_candidate,
-    _source_context,
+    _source_context_from_chunks,
     _supporting_bundle_chunks,
 )
 from app.ai.probe.judging import (
@@ -63,6 +63,7 @@ class _CandidatePersistenceContext:
     line_start: int
     line_end: int
     evidence_chunk: ProbeCandidateChunk
+    evidence_chunks: tuple[ProbeCandidateChunk, ...]
     category: IssueCategory
     severity: IssueSeverity
     rule_id: str | None
@@ -457,6 +458,7 @@ class ProbeJudgeService:
             line_start=line_start,
             line_end=line_end,
             evidence_chunk=evidence_chunks[0],
+            evidence_chunks=tuple(evidence_chunks),
             category=category,
             severity=_probe_issue_severity(candidate.probe_id, candidate.severity),
             rule_id=rule_id,
@@ -539,7 +541,16 @@ class ProbeJudgeService:
                         item.model_dump(mode="json")
                         for item in candidate.contradicting_evidence
                     ],
-                    "source_context": _source_context(context.evidence_chunk),
+                    "source_context": _source_context_from_chunks(
+                        list(context.evidence_chunks),
+                        line_start=context.line_start,
+                        line_end=context.line_end,
+                    )
+                    or _source_context_from_chunks(
+                        [context.evidence_chunk],
+                        line_start=context.line_start,
+                        line_end=context.line_end,
+                    ),
                 },
             },
         )

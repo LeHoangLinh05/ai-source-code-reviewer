@@ -365,9 +365,53 @@ def _candidate_references(
 
 
 def _source_context(chunk: ProbeCandidateChunk) -> dict[str, object]:
+    """Build a source snippet from one evidence chunk."""
+
     return {
         "file_path": chunk.file_path,
         "chunk_index": chunk.chunk_index,
         "start_line": chunk.line_start,
         "lines": chunk.content.splitlines(),
+    }
+
+
+def _source_context_from_chunks(
+    chunks: list[ProbeCandidateChunk],
+    *,
+    line_start: int,
+    line_end: int,
+    context_radius: int = 3,
+) -> dict[str, object] | None:
+    """Merge overlapping evidence chunks into one continuous source snippet.
+
+    The probe judge may reference several chunks that together cover the
+    finding's line range. Merging them produces a complete, continuous snippet
+    instead of only the first chunk's lines.
+    """
+
+    if not chunks:
+        return None
+
+    line_map: dict[int, str] = {}
+    for chunk in chunks:
+        for offset, line in enumerate(chunk.content.splitlines()):
+            line_map[chunk.line_start + offset] = line
+
+    if not line_map:
+        return None
+
+    all_line_numbers = sorted(line_map)
+    first_available = all_line_numbers[0]
+    last_available = all_line_numbers[-1]
+    first_line = max(first_available, line_start - context_radius)
+    last_line = min(last_available, line_end + context_radius)
+    merged_lines = [
+        line_map.get(line_number, "")
+        for line_number in range(first_line, last_line + 1)
+    ]
+    return {
+        "file_path": chunks[0].file_path,
+        "chunk_index": chunks[0].chunk_index,
+        "start_line": first_line,
+        "lines": merged_lines,
     }

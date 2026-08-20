@@ -207,6 +207,36 @@ class ChunkMetadataRepository(MongoDocumentRepository[ChunkMetadataDocument]):
             return None
         return self._normalize_mongo_id(cast(dict[str, object], document))
 
+    async def find_containing_chunks(
+        self,
+        *,
+        job_id: UUID,
+        file_path: str,
+        line_start: int,
+        line_end: int,
+    ) -> list[dict[str, object]]:
+        """Return every persisted source chunk overlapping the requested line range.
+
+        Unlike ``find_containing_line`` (which requires one chunk to fully
+        contain the whole range), this returns all chunks that share any line
+        with the requested range, so multi-chunk findings can still render a
+        continuous code snippet.
+        """
+
+        cursor = self.collection.find(
+            {
+                "job_id": str(job_id),
+                "file_path": file_path,
+                "line_start": {"$lte": line_end},
+                "line_end": {"$gte": line_start},
+            }
+        ).sort([("chunk_index", 1), ("line_start", 1)])
+        documents = cast(
+            list[dict[str, object]],
+            await cursor.to_list(length=None),
+        )
+        return [self._normalize_mongo_id(document) for document in documents]
+
 
 class CodeIndexManifestRepository(MongoDocumentRepository[CodeIndexManifestDocument]):
     """MongoDB access for immutable semantic index generation manifests."""

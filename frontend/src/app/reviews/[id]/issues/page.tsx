@@ -86,15 +86,27 @@ const CATEGORIES: IssueCategory[] = [
   "bug",
   "requirement",
 ];
-const SORT_OPTIONS: IssueSort[] = ["-created_at", "created_at", "severity", "file_path"];
+const SORT_OPTIONS: IssueSort[] = ["severity", "file_path", "-file_path"];
 const DRAWER_SCROLL_TOP_THRESHOLD_PX = 240;
 const SNIPPET_ID_PREFIX = "issue-snippet";
+
+function formatSortOption(option: string): string {
+  switch (option) {
+    case "severity":
+      return "Severity (High → Low)";
+    case "file_path":
+      return "File path (A → Z)";
+    case "-file_path":
+      return "File path (Z → A)";
+    default:
+      return option.replaceAll("_", " ");
+  }
+}
 
 export default function ReviewIssuesPage() {
   const params = useParams<{ id: string }>();
   const router = useRouter();
   const searchParams = useSearchParams();
-  const appliedFilePathRef = useRef<string | null>(null);
   const jobId = params.id;
   const dispatch = useAppDispatch();
   const filters = useAppSelector((state) => state.filters.issues);
@@ -105,6 +117,8 @@ export default function ReviewIssuesPage() {
   const [issueList, setIssueList] = useState<IssueListResponse | null>(null);
   const [selectedIssue, setSelectedIssue] = useState<ReviewIssue | null>(null);
   const [fixSelections, setFixSelections] = useState<FixSelectionItem[]>([]);
+  const queryFilePath = searchParams.get("file_path");
+  const lastQueryFilePathRef = useRef<string | null>(null);
 
   useEffect(() => {
     setFixSelections(loadFixSelections(jobId, window.sessionStorage));
@@ -115,17 +129,12 @@ export default function ReviewIssuesPage() {
   }, [jobId, router]);
 
   useEffect(() => {
-    const filePath = searchParams.get("file_path") ?? "";
-    if (
-      filePath &&
-      filePath !== filters.filePath &&
-      appliedFilePathRef.current !== filePath
-    ) {
-      appliedFilePathRef.current = filePath;
-      dispatch(setIssueFilePath(filePath));
+    if (queryFilePath !== null && queryFilePath !== lastQueryFilePathRef.current) {
+      lastQueryFilePathRef.current = queryFilePath;
+      dispatch(setIssueFilePath(queryFilePath));
       dispatch(setIssuePage(1));
     }
-  }, [dispatch, filters.filePath, searchParams]);
+  }, [dispatch, queryFilePath]);
 
   const loadIssues = useCallback(async () => {
     setIsLoading(true);
@@ -281,6 +290,8 @@ export default function ReviewIssuesPage() {
             value={filters.source ?? ""}
           />
           <SelectFilter
+            allowAll={false}
+            formatOption={formatSortOption}
             label="Sort"
             onChange={(value) => dispatch(setIssueSort(value as IssueSort))}
             options={SORT_OPTIONS}
@@ -382,7 +393,11 @@ function SelectFilter({
   options,
   formatOption = (option) => option.replaceAll("_", " "),
   value,
+  allowAll = true,
+  allLabel = "All",
 }: {
+  allLabel?: string;
+  allowAll?: boolean;
   formatOption?: (option: string) => string;
   label: string;
   onChange: (value: string) => void;
@@ -397,7 +412,7 @@ function SelectFilter({
         onChange={(event) => onChange(event.target.value)}
         value={value}
       >
-        <option value="">All</option>
+        {allowAll ? <option value="">{allLabel}</option> : null}
         {options.map((option) => (
           <option key={option} value={option}>
             {formatOption(option)}
@@ -821,18 +836,22 @@ function getSourceContext(occurrence: IssueOccurrence): SourceContext | null {
     return null;
   }
 
-  const sourceContext = rawOutput.source_context;
-  if (
-    isRecord(sourceContext) &&
-    Array.isArray(sourceContext.lines) &&
-    typeof sourceContext.start_line === "number"
-  ) {
-    return {
-      lines: sourceContext.lines.map((line) => String(line)),
-      startLine: Math.max(1, sourceContext.start_line),
-    };
+  // Prefer the top-level source_context (already merged by the backend).
+  const topLevel = getSourceContextFromRecord(rawOutput.source_context);
+  if (topLevel !== null) {
+    return topLevel;
   }
 
+  // Fall back to the probe_review source_context when present.
+  const probeReview = rawOutput.probe_review;
+  if (isRecord(probeReview)) {
+    const probeContext = getSourceContextFromRecord(probeReview.source_context);
+    if (probeContext !== null) {
+      return probeContext;
+    }
+  }
+
+  // Last resort: use the raw code field.
   const code =
     typeof rawOutput.code === "string"
       ? rawOutput.code
@@ -846,6 +865,23 @@ function getSourceContext(occurrence: IssueOccurrence): SourceContext | null {
     lines: code.replaceAll("\r\n", "\n").split("\n"),
     startLine: occurrence.line_start ?? 1,
   };
+}
+
+function getSourceContextFromRecord(
+  sourceContext: unknown,
+): SourceContext | null {
+  if (
+    isRecord(sourceContext) &&
+    Array.isArray(sourceContext.lines) &&
+    typeof sourceContext.start_line === "number"
+  ) {
+    return {
+      lines: sourceContext.lines.map((line) => String(line)),
+      startLine: Math.max(1, sourceContext.start_line),
+    };
+  }
+
+  return null;
 }
 
 function issueToOccurrence(issue: ReviewIssue): IssueOccurrence {

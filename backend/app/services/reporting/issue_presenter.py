@@ -200,11 +200,24 @@ def _group_matches_filters(
     elif source is not None and all(issue.source is not source for issue in issues):
         return False
     if file_path is not None:
-        normalized_filter = file_path.replace("\\", "/").casefold()
-        if all(
-            normalized_filter not in issue.file_path.replace("\\", "/").casefold()
-            for issue in issues
-        ):
+        raw_filter = file_path.replace("\\", "/").casefold().strip()
+        norm_filter = normalize_finding_path(file_path).casefold().strip()
+        filter_targets = {target for target in (raw_filter, norm_filter) if target}
+
+        def _issue_matches_path(issue: ReviewIssue) -> bool:
+            raw_path = (issue.file_path or "").replace("\\", "/").casefold()
+            norm_path = normalize_finding_path(issue.file_path).casefold()
+            for target in filter_targets:
+                if (
+                    target in raw_path
+                    or target in norm_path
+                    or (raw_path and raw_path in target)
+                    or (norm_path and norm_path in target)
+                ):
+                    return True
+            return False
+
+        if not any(_issue_matches_path(issue) for issue in issues):
             return False
     return True
 
@@ -232,20 +245,63 @@ def _source_context_from_chunk(
     line_end: int,
     context_radius: int = 3,
 ) -> dict[str, object] | None:
-    if chunk is None:
-        return None
-    chunk_text = chunk.get("chunk_text")
-    chunk_line_start = chunk.get("line_start")
-    if not isinstance(chunk_text, str) or not isinstance(chunk_line_start, int):
+    """Build a continuous source snippet from one or more persisted chunks.
+
+    When a finding spans multiple chunks (or sits at a chunk boundary), the
+    caller can pass every overlapping chunk and this helper merges them into a
+    single continuous line range so the UI never shows a truncated snippet.
+    """
+
+    chunks = [chunk] if chunk is not None else []
+    return _source_context_from_chunks(
+        chunks,
+        line_start=line_start,
+        line_end=line_end,
+        context_radius=context_radius,
+    )
+
+
+def _source_context_from_chunks(
+    chunks: Sequence[dict[str, object] | None],
+    *,
+    line_start: int,
+    line_end: int,
+    context_radius: int = 3,
+) -> dict[str, object] | None:
+    """Merge multiple overlapping chunks into one continuous source snippet."""
+
+    parsed_chunks: list[tuple[int, list[str]]] = []
+    for chunk in chunks:
+        if not isinstance(chunk, dict):
+            continue
+        chunk_text = chunk.get("chunk_text")
+        chunk_line_start = chunk.get("line_start")
+        if not isinstance(chunk_text, str) or not isinstance(chunk_line_start, int):
+            continue
+        parsed_chunks.append((chunk_line_start, chunk_text.splitlines()))
+
+    if not parsed_chunks:
         return None
 
-    lines = chunk_text.splitlines()
-    first_line = max(chunk_line_start, line_start - context_radius)
-    chunk_line_end = chunk_line_start + len(lines) - 1
-    last_line = min(chunk_line_end, line_end + context_radius)
-    first_index = first_line - chunk_line_start
-    last_index = last_line - chunk_line_start + 1
+    # Merge all chunk line ranges into one continuous line-numbered map.
+    line_map: dict[int, str] = {}
+    for chunk_line_start, lines in parsed_chunks:
+        for offset, line in enumerate(lines):
+            line_map[chunk_line_start + offset] = line
+
+    if not line_map:
+        return None
+
+    all_line_numbers = sorted(line_map)
+    first_available = all_line_numbers[0]
+    last_available = all_line_numbers[-1]
+    first_line = max(first_available, line_start - context_radius)
+    last_line = min(last_available, line_end + context_radius)
+    merged_lines = [
+        line_map.get(line_number, "")
+        for line_number in range(first_line, last_line + 1)
+    ]
     return {
         "start_line": first_line,
-        "lines": lines[first_index:last_index],
+        "lines": merged_lines,
     }
